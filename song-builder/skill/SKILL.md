@@ -35,6 +35,7 @@ and the album YAMLs. Never commit tabs, audio, built sloppaks or `.env`.
 | `scripts/tab_check.py` | Grades a sloppak: Basic Pitch on its own guitar/bass stems vs chart notes → `lift` (hit rate ÷ luck), `best_shift`, weak bar ranges. |
 | `scripts/rebuild_song.py` | Rebuilds a song from its `x_build` recipe, picking up feedBack Studio sync points as `--anchors`. Backs up the old file. |
 | `scripts/drums_join.py` / `song_builder.py drums` | Adds a **Drums** arrangement (automatic at the end of `build`/`tune`): a Clone Hero chart (local or Chorus Encore) aligned to the stems, else the tab's drum track via `x_sync.json`, with Easy–Hard generated when missing. Validates against `stems/drums.ogg` and refuses weak joins (`--force` overrides). |
+| `scripts/solo_sections.py` / `song_builder.py solos` | Marks the guitar solo as a **Solo** section (automatic at the end of `build`/`tune`, after drums) when the tab's markers don't name one: unique, mostly single-note bars up the neck or fast, mid/late in the song, at most one per song. Slopsmith's solo meter / solo bonus needs it. Originals go to `_build/backup` (`--backup-dir` for the script). Detected solos are a guess — ask Matt to confirm by ear. |
 | `scripts/ch_to_sloppak.py` / `scripts/sloppak_to_ch.py` | YARG/CH song folder → new drums sloppak, and back (notes.mid + song.ini + stems). |
 | `scripts/gp7_to_gp5.py` | Songsterr/GP7/8 `.gp` → `.gp5` (song_builder does this automatically). |
 | `lib/gp2rs.py` | GP → RS XML. Patched 2026-10: ties extend sustain, H/P resolved on the destination note by fret direction, slide targets, slide-outs, ghost notes no longer muted, bends scaled right (quarter-tones/2), anchors one-per-chord at the index finger (`_compute_anchors`; the old per-note "fret-1" anchors shifted chord frames 2 frets). Backup: `_build/backup/gp2rs.py.bak`. |
@@ -81,6 +82,7 @@ Cheap 52 *Vermont*). Copy one to start a new album. The format is in song_builde
    from C to B.
 7. **Grade.** `build`/`tune` end with a report (also `ALBUM_report.json`); `song_builder.py check` regrades.
    Then the drums step runs (see Drums below) and prints which songs got a chart, the GP drums, or were flagged.
+   Then the solos step marks a Solo section in songs whose tab has no solo marker (prints the times).
 8. Update `_build/HANDOFF.md`; then give the user the graded list.
 
 ## Drums (Rock Band–style)
