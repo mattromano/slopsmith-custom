@@ -994,6 +994,7 @@
             starThresholds: this.starThresholds.slice(),
             baseScore: this.baseScore,
             dynamicsBonus: s.dynamicsBonus,
+            starPowerScore: s.starPowerScore,
             accentsHit: s.accentsHit,
             ghostsHit: s.ghostsHit,
             totalAccents: this.totalAccents,

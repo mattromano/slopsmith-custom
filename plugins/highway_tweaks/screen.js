@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.14.0' };
+    window.__highwayTweaks = { version: '1.15.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -1341,7 +1341,8 @@
 // Rock Band-style score from note_detect's judgments:
 //  - a hit single note is worth 50, a chord 50 per string heard;
 //  - timing: within 25 ms x1, within 50 ms x0.8, else x0.6;
-//  - technique bonus +25% for bends, slides and harmonics;
+//  - technique bonus: +25% bends and slides, +100% harmonics, +200% pinch
+//    harmonics (they are hard to sound; a pinch hit pops up);
 //  - technical bonus x1.5 for single notes in dense passages (>= 6 notes in
 //    the surrounding second); a run of them pops "TECHNICAL RUN h/n +pts";
 //  - streak multiplier x1-x4 (one step per 10 notes in a row, same as the
@@ -1363,8 +1364,10 @@
     const RUN_GAP_MS = 700, RUN_MIN = 8;
     // Tested on the highway's own chart notes (sl / slu = -1 means no slide);
     // judgment.chartNote can't be used: the engine path flags every note sl:true.
-    const TECH = [['bend', (n) => Number(n.bn) > 0], ['slide', (n) => Number(n.sl) >= 0 || Number(n.slu) >= 0],
-        ['harmonic', (n) => !!(n.hm || n.hp)]];
+    // [name, test, bonus share]: harmonics are hard to sound, pinch harmonics hardest.
+    const TECH = [['bend', (n) => Number(n.bn) > 0, 0.25], ['slide', (n) => Number(n.sl) >= 0 || Number(n.slu) >= 0, 0.25],
+        ['harmonic', (n) => !!n.hm && !n.hp, 1.0], ['pinch harmonic', (n) => !!n.hp, 2.0]];
+    const TECH_BONUS = Object.fromEntries(TECH.map(([name, , b]) => [name, b]));
     const rawKey = (t, s) => Math.round(t * 1000) * 10 + (s | 0);
     const fmt = (n) => Math.round(n).toLocaleString('en-US');
     const hw = () => window.highway;
@@ -1534,7 +1537,7 @@
             const te = Number.isFinite(j.timingError) ? Math.abs(j.timingError) : null;
             const tf = te == null ? 0.8 : te <= 25 ? 1 : te <= 50 ? 0.8 : 0.6;
             const techs = techniquesOf(j);
-            const techF = techs.length ? 1.25 : 1;
+            const techF = 1 + techs.reduce((q, t) => q + (TECH_BONUS[t] || 0), 0);
             const k = mult * f;
             const timed = base * tf;
             const techPts = timed * (techF - 1);
@@ -1547,6 +1550,7 @@
             SC.score += (timed + techPts) * k + densePts;
             for (const t of techs) SC.techN[t] = (SC.techN[t] || 0) + 1;
             if (techs.length) feed('+' + fmt(techPts * k) + ' ' + techs.join(' + '), PURPLE);
+            if (techs.includes('pinch harmonic') && window.__hwtPopup) window.__hwtPopup('PINCH HARMONIC!  +' + fmt(techPts * k), PURPLE, true);
         } else {
             SC.streak = 0;
         }

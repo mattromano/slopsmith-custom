@@ -1,7 +1,7 @@
 {
   "id": "highway_tweaks",
   "name": "_Highway Tweaks (colorblind G/B, frame-drop watchdog, stats card)",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "private": true,
   "script": "screen.js",
   "routes": "routes.py"

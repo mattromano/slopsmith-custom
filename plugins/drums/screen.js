@@ -680,7 +680,7 @@ function _loadScript(url) {
 // module, the same file the bundled 3D guitar highway imports.
 
 const PLUGIN_ID = 'drums';
-const ASSET_VERSION = '5.7.0';   // cache-buster for the lazily loaded files
+const ASSET_VERSION = '5.8.0';   // cache-buster for the lazily loaded files
 const THREE_URL = '/static/vendor/three/three.module.min.js';
 const PLUGIN_STATIC = '/api/plugins/' + PLUGIN_ID + '/static/';
 
@@ -1839,6 +1839,7 @@ function createFactory(forceView) {
     // unsubscribe of one we DID register would leak the listener
     // closure across the destroy.
     let _focusSubscribed = false;
+    let _onSongEnded = null;          // end-of-song card (3D view)
 
     // ── 3D view state (only used when _view === '3d') ──
     let _libs = null;               // { THREE, E: DrumsEngine, H: DrumsHighway3D }
@@ -3470,6 +3471,8 @@ function createFactory(forceView) {
             _resetForNewChart();
 
             _instances.add(instance);
+            _onSongEnded = () => { if (_view3d && _session) _drumsEndCard(_session, _badge); };
+            try { window.slopsmith.on('song:ended', _onSongEnded); } catch (_) { /* no host */ }
 
             // Kick off MIDI + synth. One-time init — subsequent
             // instances no-op out because the module singletons are
@@ -3591,6 +3594,10 @@ function createFactory(forceView) {
                     ss.offFocusChange(_onFocusChange);
                 }
                 _focusSubscribed = false;
+            }
+            if (_onSongEnded) {
+                try { window.slopsmith.off('song:ended', _onSongEnded); } catch (_) { /* ignore */ }
+                _onSongEnded = null;
             }
             _instances.delete(instance);
             if (_activeInstance === instance) _activeInstance = null;
@@ -3805,6 +3812,76 @@ function _drumsTakeover() {
         if (typeof window.setViz === 'function') window.setViz(picked);   // the user's own view, unchanged
         else hw.setRenderer(null);
     }
+}
+
+// ── End-of-song card (3D view) ──────────────────────────────────────
+// Final score (engine score + highway3d bonuses), stars, accuracy, streak,
+// and where the points came from: notes x multiplier, star power, accents /
+// ghosts, spot-on timing, rolls and drum solos. Best score per song and
+// difficulty is kept in localStorage ("drums.best:<file>|<difficulty>").
+let _endCardAt = 0;
+function _drumsEndCard(session, badge) {
+    const st = session && session.getState ? session.getState() : null;
+    if (!st || !(st.notesHit + st.notesMissed > 0)) return;
+    if (performance.now() - _endCardAt < 2000) return;   // splitscreen: one card
+    _endCardAt = performance.now();
+    const b = (session.getBonus && session.getBonus()) || { total: 0, timing: 0, rolls: 0, solo: 0, perfect: 0, runs: [], solos: [] };
+    const cs = (window.slopsmith && window.slopsmith.currentSong) || {};
+    const diff = badge && badge.text ? badge.text : 'EXPERT';
+    const total = Math.round((st.score || 0) + (b.total || 0));
+    const key = 'drums.best:' + (cs.filename || cs.title || '') + '|' + diff;
+    let prev = null;
+    try { prev = Number(localStorage.getItem(key)) || null; } catch (_) { /* ignore */ }
+    const isBest = prev == null || total > prev;
+    if (isBest) { try { localStorage.setItem(key, String(total)); } catch (_) { /* ignore */ } }
+    const n = (x) => Math.round(x || 0).toLocaleString('en-US');
+    const esc = (x) => String(x == null ? '' : x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const resolved = st.notesHit + st.notesMissed;
+    const acc = resolved ? 100 * st.notesHit / resolved : 100;
+    const stars = Math.floor(st.stars || 0), gold = (st.stars || 0) >= 6;
+    const starHtml = Array.from({ length: 5 }, (_, i) =>
+        `<span style="color:${gold ? '#ffcf3a' : i < stars ? '#f4f6ff' : '#3a4060'}">★</span>`).join('');
+    const chip = (label, col) => `<span style="font-size:12px;padding:3px 9px;border-radius:10px;background:rgba(255,255,255,.06);color:${col}">${label}</span>`;
+    const sp = st.starPowerScore || 0;
+    const chips = [
+        chip('notes × multiplier +' + n((st.score || 0) - sp), '#f1f5f9'),
+        sp ? chip('star power +' + n(sp), '#8fe6ff') : '',
+        (st.totalAccents || st.totalGhosts) ? chip('dynamics: ' + (st.accentsHit || 0) + '/' + (st.totalAccents || 0) + ' accents, ' +
+            (st.ghostsHit || 0) + '/' + (st.totalGhosts || 0) + ' ghosts', '#b77bff') : '',
+        b.timing ? chip('spot-on timing +' + n(b.timing) + ' (' + b.perfect + ' hits)', '#ffc531') : '',
+        b.rolls ? chip('rolls +' + n(b.rolls) + (b.runs.length ? ' (' + b.runs.map((r) => r.h + '/' + r.n).join(', ') + ')' : ''), '#ff9a40') : '',
+        b.solo ? chip('solos +' + n(b.solo), '#c9b6ff') : '',
+    ].join('');
+    const solos = (b.solos || []).map((x) => `<div style="color:#c9b6ff;font-size:13px">${esc(x.rating)} ${Number(x.pct).toFixed(2)}% (${x.h}/${x.n}) · +${n(x.bonus)}</div>`).join('');
+    const ov = document.createElement('div');
+    ov.className = 'drums-endcard';
+    ov.style.cssText = 'position:fixed;inset:0;z-index:300;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);font-family:system-ui,sans-serif';
+    ov.innerHTML = `<div style="width:30rem;max-width:92vw;background:#0e1322;border:1px solid #2b3556;border-radius:14px;padding:22px 24px;color:#cbd5e1;text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.6)">
+        <div style="font-size:12px;letter-spacing:3px;color:#8b95a5">DRUMS · ${esc(diff)}</div>
+        ${cs.title ? `<div style="font-size:17px;color:#f1f5f9;margin-top:2px">${esc(cs.title)}${cs.artist ? `<span style="color:#8b95a5"> — ${esc(cs.artist)}</span>` : ''}</div>` : ''}
+        <div style="font:900 46px/1.1 system-ui;color:${isBest ? '#ffc531' : '#f1f5f9'};margin-top:12px">${n(total)}</div>
+        <div style="font-size:12px;color:#8b95a5">${isBest ? '<b style="color:#ffc531">NEW BEST SCORE</b>' + (prev != null ? ' · previous ' + n(prev) : '') : 'best ' + n(prev)}</div>
+        <div style="font-size:26px;margin-top:6px;letter-spacing:4px">${starHtml}</div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:14px 0">
+            <div><div style="font-weight:800;font-size:20px;color:#f1f5f9">${acc.toFixed(2)}%</div><div style="font-size:11px;color:#8b95a5">accuracy</div></div>
+            <div><div style="font-weight:800;font-size:20px;color:#f1f5f9">${st.notesHit} / ${st.totalNotes}</div><div style="font-size:11px;color:#8b95a5">notes hit</div></div>
+            <div><div style="font-weight:800;font-size:20px;color:${st.fullCombo ? '#ffc531' : '#f1f5f9'}">${st.fullCombo ? 'FC' : st.maxCombo}</div><div style="font-size:11px;color:#8b95a5">${st.fullCombo ? 'full combo!' : 'best streak'}</div></div>
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-bottom:8px">${chips}</div>
+        ${solos}
+        ${st.overhits ? `<div style="font-size:12px;color:#8b95a5;margin-top:4px">${st.overhits} overhit${st.overhits > 1 ? 's' : ''}</div>` : ''}
+        <button class="drums-endcard-close" style="margin-top:14px;padding:6px 22px;border-radius:8px;border:1px solid #3a4670;background:#1b2440;color:#f1f5f9;cursor:pointer">Close</button>
+    </div>`;
+    const onKey = (e) => { if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); close(); } };
+    function close() {
+        ov.remove();
+        document.removeEventListener('keydown', onKey, true);
+        try { window.slopsmith.off('song:loading', close); } catch (_) { /* ignore */ }
+    }
+    ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest('.drums-endcard-close')) close(); });
+    document.addEventListener('keydown', onKey, true);
+    document.body.appendChild(ov);
+    try { window.slopsmith.on('song:loading', close); } catch (_) { /* ignore */ }
 }
 
 try {
