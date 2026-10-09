@@ -34,8 +34,20 @@ BANDS_HZ = (0, 180, 3000, SR // 2)     # low (kick) / mid (snare, toms) / high (
 
 def load_audio(path, sr=SR) -> np.ndarray:
     import librosa
-    y, _ = librosa.load(str(path), sr=sr, mono=True)
+    try:
+        y, _ = librosa.load(str(path), sr=sr, mono=True)
+    except Exception:
+        # libsndfile rejects some Ogg/Opus chart stems as "malformed" (seen with the Windows
+        # wheel); ffmpeg decodes them fine.
+        y = _ffmpeg_load(path, sr)
     return y.astype(np.float32)
+
+
+def _ffmpeg_load(path, sr) -> np.ndarray:
+    import subprocess
+    r = subprocess.run(["ffmpeg", "-v", "error", "-nostdin", "-i", str(path), "-ac", "1", "-ar", str(sr),
+                        "-f", "f32le", "-"], capture_output=True, check=True)
+    return np.frombuffer(r.stdout, dtype=np.float32)
 
 
 def onset_env(y: np.ndarray, sr=SR, hop=HOP) -> np.ndarray:

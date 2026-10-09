@@ -7,6 +7,7 @@ per process, a short pause between searches, retries with backoff.
 from __future__ import annotations
 
 import json
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -20,12 +21,21 @@ UA = "slopsmith-drums/1.0 (+https://github.com/mattromano/slopsmith-custom)"
 THROTTLE = Path.home() / ".cache" / "slopsmith-drums" / "chorus.throttle"
 
 
+def _lock(f, on: bool):
+    if sys.platform == "win32":                 # no fcntl on Windows; lock byte 0 with msvcrt
+        import msvcrt
+        f.seek(0)
+        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK if on else msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(f, fcntl.LOCK_EX if on else fcntl.LOCK_UN)
+
+
 def _throttle(min_gap: float):
     """Space requests out across every process on this machine (file lock + timestamp)."""
-    import fcntl
     THROTTLE.parent.mkdir(parents=True, exist_ok=True)
     with open(THROTTLE, "a+") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
+        _lock(f, True)
         f.seek(0)
         try:
             last = float(f.read().strip() or 0)
@@ -37,7 +47,8 @@ def _throttle(min_gap: float):
         f.seek(0)
         f.truncate()
         f.write(str(time.time()))
-        fcntl.flock(f, fcntl.LOCK_UN)
+        f.flush()
+        _lock(f, False)
 
 
 def _req(url, data=None, headers=None, timeout=30, tries=6, min_gap=1.0):
