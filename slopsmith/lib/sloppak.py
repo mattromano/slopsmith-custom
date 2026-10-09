@@ -48,6 +48,18 @@ def is_sloppak(path: Path) -> bool:
 # For zipped sloppaks, source_dir is a cache dir under the unpack root.
 _source_cache: dict[str, tuple[Path, float, int]] = {}
 _source_lock = threading.Lock()
+# One lock per sloppak around check-and-unpack. Without it, two requests for
+# the same song at once (multiplayer: every player loads the queued song
+# together) both rmtree + extract the same cache dir, and one can read
+# manifest.yaml while the other has just deleted/truncated it. Plugins that
+# patch this in for older cores check _UNPACK_SERIALISED.
+_unpack_locks: dict[str, threading.Lock] = {}
+_UNPACK_SERIALISED = True
+
+
+def _unpack_lock(filename: str) -> threading.Lock:
+    with _source_lock:
+        return _unpack_locks.setdefault(filename, threading.Lock())
 
 
 def _unpack_zip(zip_path: Path, dest: Path) -> None:
@@ -78,31 +90,32 @@ def resolve_source_dir(
     Caches the resolution so subsequent calls are ~free.
     """
     path = dlc_root / filename
-    stat = path.stat()
-    mtime, size = stat.st_mtime, stat.st_size
+    with _unpack_lock(filename):
+        stat = path.stat()
+        mtime, size = stat.st_mtime, stat.st_size
 
-    with _source_lock:
-        cached = _source_cache.get(filename)
-        if cached:
-            cached_dir, cached_mtime, cached_size = cached
-            if (
-                cached_mtime == mtime
-                and cached_size == size
-                and cached_dir.exists()
-            ):
-                return cached_dir
+        with _source_lock:
+            cached = _source_cache.get(filename)
+            if cached:
+                cached_dir, cached_mtime, cached_size = cached
+                if (
+                    cached_mtime == mtime
+                    and cached_size == size
+                    and cached_dir.exists()
+                ):
+                    return cached_dir
 
-    if path.is_dir():
-        resolved = path
-    else:
-        # Zip form — unpack to the cache.
-        dest = unpack_cache_root / _safe_id(filename)
-        _unpack_zip(path, dest)
-        resolved = dest
+        if path.is_dir():
+            resolved = path
+        else:
+            # Zip form — unpack to the cache.
+            dest = unpack_cache_root / _safe_id(filename)
+            _unpack_zip(path, dest)
+            resolved = dest
 
-    with _source_lock:
-        _source_cache[filename] = (resolved, mtime, size)
-    return resolved
+        with _source_lock:
+            _source_cache[filename] = (resolved, mtime, size)
+        return resolved
 
 
 def get_cached_source_dir(filename: str) -> Path | None:
