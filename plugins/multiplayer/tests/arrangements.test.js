@@ -117,3 +117,16 @@ test('screen.js still loads as a browser script with only window/document stubs'
     assert.equal(typeof global.window.mpSetArrangement, 'function');
     assert.equal(typeof m._arrangementChoices, 'function');
 });
+
+test('search results list songs with Drums first, then more parts, else library order', () => {
+    const m = freshPlugin();
+    const song = (filename, ...arrs) => ({ filename, arrangements: arrs.map(name => ({ name })) });
+    const sorted = m._sortSearchResults([
+        song('a_p.psarc', 'Lead', 'Rhythm', 'Bass'),
+        song('b_p.psarc', 'Lead', 'Bass'),
+        song('a.sloppak', 'Lead', 'Rhythm', 'Bass', 'Drums'),
+        song('c_p.psarc', 'Lead', 'Rhythm', 'Bass', 'Bass'),
+    ]);
+    assert.deepEqual(sorted.map(s => s.filename), ['a.sloppak', 'a_p.psarc', 'c_p.psarc', 'b_p.psarc']);
+    assert.equal(m._searchResultParts(['Lead', 'Rhythm', 'Bass', 'Bass', 'Drums']), 'Lead, Rhythm, Bass, Drums');
+});

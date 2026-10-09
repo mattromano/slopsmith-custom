@@ -4154,29 +4154,63 @@ window.mpLoadSong = function (index) {
 window.mpSearchSongs = async function () {
     const q = document.getElementById('mp-search')?.value.trim();
     if (!q) return;
-    const resp = await fetch(`/api/library?q=${encodeURIComponent(q)}&page=0&size=10&sort=artist`);
-    const data = await resp.json();
+    // A broad query (an artist name) easily matches 100+ songs, and the library
+    // often holds the same song twice (PSARC + a sloppak with Drums/stems). Fetch
+    // every match (local API, capped), list songs with more parts first, show the top.
+    const all = [];
+    for (let page = 0; page < 5; page++) {
+        const resp = await fetch(`/api/library?q=${encodeURIComponent(q)}&page=${page}&size=100&sort=artist`);
+        const data = await resp.json();
+        all.push(...(data.songs || []));
+        if (!data.songs || data.songs.length < 100 || all.length >= (data.total || 0)) break;
+    }
     const container = document.getElementById('mp-search-results');
     if (!container) return;
 
-    if (!data.songs || data.songs.length === 0) {
+    if (all.length === 0) {
         container.innerHTML = '<p class="text-gray-500 text-xs py-2">No results</p>';
         return;
     }
 
-    container.innerHTML = data.songs.map(s => {
+    const songs = _sortSearchResults(all).slice(0, 60);
+    _searchResults = songs;
+    container.innerHTML = songs.map((s, i) => {
         const arrs = (s.arrangements || []).map(a => a.name || a);
-        const arrsJson = JSON.stringify(arrs).replace(/'/g, "\\'").replace(/"/g, '&quot;');
         return `<div class="flex items-center gap-3 py-2 px-3 rounded-lg hover:bg-dark-700/50 transition">
             <div class="flex-1 min-w-0">
                 <span class="text-sm text-white">${esc(s.title)}</span>
                 <span class="text-xs text-gray-500 ml-2">${esc(s.artist)}</span>
+                <div class="text-[11px] text-gray-500 truncate">${esc(_searchResultParts(arrs))}${s.format ? ' · ' + esc(s.format) : ''}</div>
             </div>
-            <button onclick="mpAddToQueue('${encodeURIComponent(s.filename)}','${esc(s.title).replace(/'/g,"\\'")}','${esc(s.artist).replace(/'/g,"\\'")}', '${arrsJson}')"
+            <button onclick="mpAddSearchResult(${i})"
                 class="px-3 py-1 bg-dark-600 hover:bg-accent/30 rounded text-xs text-gray-300 hover:text-white transition flex-shrink-0">+ Add</button>
         </div>`;
     }).join('');
 };
+
+// Buttons refer to results by index: titles like "Don't Look Back in Anger" broke
+// the old inline onclick string (the HTML-decoded apostrophe ended the JS literal).
+let _searchResults = [];
+
+window.mpAddSearchResult = function (i) {
+    const s = _searchResults[i];
+    if (!s) return;
+    const arrs = (s.arrangements || []).map(a => a.name || a);
+    return window.mpAddToQueue(encodeURIComponent(s.filename), s.title, s.artist, JSON.stringify(arrs));
+};
+
+// Search results: songs with Drums first, then more arrangements, keeping the
+// library's own order otherwise (Array.prototype.sort is stable).
+function _sortSearchResults(songs) {
+    const names = s => (s.arrangements || []).map(a => a.name || a);
+    const rank = s => (names(s).includes('Drums') ? 1000 : 0) + new Set(names(s)).size;
+    return songs.slice().sort((a, b) => rank(b) - rank(a));
+}
+
+// "Lead, Rhythm, Bass, Drums": one entry per part (bonus duplicates collapsed).
+function _searchResultParts(arrs) {
+    return [...new Set(arrs)].join(', ');
+}
 
 window.mpAddToQueue = async function (filename, title, artist, arrsJson) {
     if (!_roomCode || !_playerId) return;
@@ -5279,6 +5313,7 @@ if (typeof module !== 'undefined' && module.exports) {
         DEFAULT_ARRANGEMENTS,
         _arrangementNames, _arrangementChoices, _arrangementOptionsHtml,
         _resolveArrangementIndex, _arrangementFixIndex, _arrangementSourceItem,
+        _sortSearchResults, _searchResultParts,
     };
 }
 
