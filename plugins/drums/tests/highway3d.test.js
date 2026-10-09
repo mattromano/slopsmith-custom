@@ -112,7 +112,7 @@ test('drumsMetaUrl builds the sloppak file URL for arrangements/drums.json', () 
 
 test('keyToPad: keyboard fallback layout (physical keys)', () => {
     const k = (code, extra) => H.keyToPad(Object.assign({ code, key: '' }, extra || {}));
-    assert.deepEqual(k('Space'), { pad: 0, cymbal: false });
+    assert.equal(k('Space'), null, 'Space stays play/pause');
     assert.deepEqual(k('KeyB'), { pad: 0, cymbal: false });
     assert.deepEqual(k('KeyF'), { pad: 1, cymbal: false });
     assert.deepEqual(k('KeyJ'), { pad: 2, cymbal: false });
@@ -124,14 +124,15 @@ test('keyToPad: keyboard fallback layout (physical keys)', () => {
     assert.deepEqual(k('KeyI'), { pad: 3, cymbal: true });
     assert.deepEqual(k('KeyO'), { pad: 4, cymbal: true });
     assert.deepEqual(k('KeyF', { shiftKey: true }), { pad: 1, cymbal: false }, 'red has no cymbal');
-    assert.deepEqual(k('Space', { shiftKey: true }), { pad: 0, cymbal: false });
+    assert.deepEqual(k('KeyB', { shiftKey: true }), { pad: 0, cymbal: false });
     assert.deepEqual(k('Enter'), { action: 'activate' });
     assert.deepEqual(k('NumpadEnter'), { action: 'activate' });
 });
 
 test('keyToPad: falls back to e.key, ignores modifiers and unmapped keys', () => {
     assert.deepEqual(H.keyToPad({ key: 'K' }), { pad: 3, cymbal: false });
-    assert.deepEqual(H.keyToPad({ key: ' ' }), { pad: 0, cymbal: false });
+    assert.deepEqual(H.keyToPad({ key: 'b' }), { pad: 0, cymbal: false });
+    assert.equal(H.keyToPad({ key: ' ' }), null);
     assert.deepEqual(H.keyToPad({ key: 'Enter' }), { action: 'activate' });
     assert.equal(H.keyToPad({ code: 'KeyF', ctrlKey: true }), null);
     assert.equal(H.keyToPad({ code: 'KeyJ', metaKey: true }), null);

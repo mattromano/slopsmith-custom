@@ -235,7 +235,6 @@
     // ── Pure helpers: input ─────────────────────────────────────────────────
 
     const _KEY_CODES = {
-        Space: { pad: PAD.KICK, cymbal: false },
         KeyB: { pad: PAD.KICK, cymbal: false },
         KeyF: { pad: PAD.RED, cymbal: false },
         KeyJ: { pad: PAD.YELLOW, cymbal: false },
@@ -245,10 +244,10 @@
         KeyI: { pad: PAD.BLUE, cymbal: true },
         KeyO: { pad: PAD.GREEN, cymbal: true },
     };
-    const _KEY_CHARS = { ' ': 'Space', b: 'KeyB', f: 'KeyF', j: 'KeyJ', k: 'KeyK', l: 'KeyL', u: 'KeyU', i: 'KeyI', o: 'KeyO' };
+    const _KEY_CHARS = { b: 'KeyB', f: 'KeyF', j: 'KeyJ', k: 'KeyK', l: 'KeyL', u: 'KeyU', i: 'KeyI', o: 'KeyO' };
 
     /**
-     * Keyboard fallback: Space/B = kick, F = red, J/K/L = yellow/blue/green pads (Shift+J/K/L or
+     * Keyboard fallback: B = kick (Space stays play/pause), F = red, J/K/L = yellow/blue/green pads (Shift+J/K/L or
      * U/I/O = the cymbal of that colour), Enter = activate star power. Matches the physical key
      * (e.code) first so it works on any layout. Returns {pad, cymbal}, {action:'activate'} or null.
      */

@@ -78,15 +78,14 @@ also exported for hosts that want one view regardless of the setting (they are n
 
   | Key | Pad |
   |---|---|
-  | Space or B | kick |
+  | B | kick |
   | F | red (snare) |
   | J / K / L | yellow / blue / green tom |
   | Shift+J/K/L, or U / I / O | yellow / blue / green cymbal |
   | Enter | activate star power (only when the chart has no drum fills) |
 
   The keys work only while the 3D view is visible and focused (in splitscreen: the focused panel), and not
-  while you type in a text field. While Keys is on, **Space is a kick, not play/pause** — use the player's
-  play button, or turn Keys off.
+  while you type in a text field. Space stays play/pause.
 - **Offset** (ms) — subtracted from the song time of every hit in the 3D view. Raise it if your hits register
   late (audio output or MIDI latency). Hits that arrive between frames are placed using the current
   playback rate, so timing is not quantised to the frame rate.

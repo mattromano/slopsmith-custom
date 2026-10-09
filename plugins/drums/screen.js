@@ -1225,8 +1225,9 @@ function createFactory(forceView) {
             try { bus.on('highway:canvas-replaced', _onCanvasReplaced); } catch (_) { _onCanvasReplaced = null; }
         }
 
-        // Keyboard drumming (capture phase, so Space is a kick rather
-        // than play/pause while this view is focused and Keys is on).
+        // Keyboard drumming (capture phase, so drum keys don't reach other
+        // shortcuts while this view is focused and Keys is on). Space is
+        // deliberately not a drum key: it stays play/pause.
         _onKeyDown = (e) => {
             if (_instanceDestroyed || !_isReady || !_isFocused || !_hwVisible || !_cfg.keyboard) return;
             if (!_libs || !_session) return;
@@ -1724,7 +1725,7 @@ function createFactory(forceView) {
                     </select>
                 </label>
                 <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:#999;cursor:pointer;"
-                    title="3D view: play with the keyboard. Space/B kick, F red, J/K/L yellow/blue/green, Shift or U/I/O for cymbals, Enter = star power. Space is a kick (not play/pause) while this is on.">
+                    title="3D view: play with the keyboard. B kick, F red, J/K/L yellow/blue/green, Shift or U/I/O for cymbals, Enter = star power.">
                     <input type="checkbox" class="drums-chk-keys" ${_cfg.keyboard ? 'checked' : ''}
                         style="accent-color:#3b82f6;"> Keys
                 </label>
