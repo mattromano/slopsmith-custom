@@ -34,6 +34,8 @@ and the album YAMLs. Never commit tabs, audio, built sloppaks or `.env`.
 | `scripts/gp_to_sloppak.py` | One song: GP tab + MP3 → sloppak. Syncs the tab to the recording (beat_this beats, beat-level DTW, constant-tempo fallback), polishes sustains and hand shapes, fills gaps from extra guitar parts, splits 6 Demucs stems, records `x_build` in the manifest. |
 | `scripts/tab_check.py` | Grades a sloppak: Basic Pitch on its own guitar/bass stems vs chart notes → `lift` (hit rate ÷ luck), `best_shift`, weak bar ranges. |
 | `scripts/rebuild_song.py` | Rebuilds a song from its `x_build` recipe, picking up feedBack Studio sync points as `--anchors`. Backs up the old file. |
+| `scripts/drums_join.py` / `song_builder.py drums` | Adds a **Drums** arrangement: a matching YARG/Clone Hero chart aligned to the stems, else the tab's drum track via `x_sync.json`. Validates against `stems/drums.ogg` and refuses weak joins (`--force` overrides). |
+| `scripts/ch_to_sloppak.py` / `scripts/sloppak_to_ch.py` | YARG/CH song folder → new drums sloppak, and back (notes.mid + song.ini + stems). |
 | `scripts/gp7_to_gp5.py` | Songsterr/GP7/8 `.gp` → `.gp5` (song_builder does this automatically). |
 | `lib/gp2rs.py` | GP → RS XML. Patched 2026-10: ties extend sustain, H/P resolved on the destination note by fret direction, slide targets, slide-outs, ghost notes no longer muted, bends scaled right (quarter-tones/2), anchors one-per-chord at the index finger (`_compute_anchors`; the old per-note "fret-1" anchors shifted chord frames 2 frets). Backup: `_build/backup/gp2rs.py.bak`. |
 
@@ -79,6 +81,16 @@ Cheap 52 *Vermont*). Copy one to start a new album. The format is in song_builde
    from C to B.
 7. **Grade.** `build`/`tune` end with a report (also `ALBUM_report.json`); `song_builder.py check` regrades.
 8. Update `_build/HANDOFF.md`; then give the user the graded list.
+
+## Drums (Rock Band–style)
+
+- `song_builder.py drums ALBUM.yaml --chart-dir "<Clone Hero Songs folder>" --dry-run` first: it prints
+  per song the source used (chart/gp), median offset, % of notes within 30 ms and drift. Drop
+  `--dry-run` to write. Joins that fail validation are flagged, not written; the old file is backed up
+  in `_build/backup/`. Report: `ALBUM_drums.json`; per-song detail in `_build/logs/<slug>_drums.json`.
+- Drums live in `arrangements/drums.json` (GM drum numbers as `s*24+f`; star power/fills in its `drums`
+  block). `--notation-only` rebuilds keep it; after an anchor rebuild re-run `drums` if it came from the GP tab.
+- `tab_check` ignores Drums, so grades are unaffected. The drums plugin's 3D view auto-selects for Drums.
 
 ## Reading the grades
 

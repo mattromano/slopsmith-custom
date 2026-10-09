@@ -1,0 +1,36 @@
+{
+  "id": "drums",
+  "name": "Drum Highway",
+  "version": "5.1.0",
+  "type": "visualization",
+  "private": false,
+  "script": "screen.js",
+  "routes": "routes.py",
+  "standards": [
+    "capability-pipelines.v1",
+    "plugin-runtime-idempotent.v1"
+  ],
+  "capabilities": {
+    "midi-input": {
+      "roles": [
+        "requester"
+      ],
+      "requests": [
+        "discover",
+        "list-sources",
+        "select-source",
+        "open-source",
+        "close-source"
+      ],
+      "mode": "active",
+      "compatibility": "degrade-noop",
+      "ownership": "requester-only",
+      "safety": "sensitive",
+      "description": "Reads the e-kit/MIDI-pad input through the core midi-input domain (Web-MIDI provider ships built-in with the domain). Absent domain \u2192 no MIDI devices, fail-soft.",
+      "version": 1
+    }
+  },
+  "category": "practice",
+  "description": "Drum chart playback with a 3D drum track (star power, scoring) or a 2D lane view, MIDI kit input and a built-in drum synth.",
+  "icon": "assets/thumb.svg"
+}
