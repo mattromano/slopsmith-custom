@@ -32,12 +32,14 @@ def add_common_args(ap):
     ap.add_argument("--min-within-30ms", type=float, default=drumjoin.drumalign.THRESHOLDS["min_within_30ms"])
     ap.add_argument("--max-median-ms", type=float, default=drumjoin.drumalign.THRESHOLDS["max_abs_median_ms"])
     ap.add_argument("--max-drift-ms", type=float, default=drumjoin.drumalign.THRESHOLDS["max_drift_span_ms"])
+    ap.add_argument("--min-pad-within-30ms", type=float, default=drumjoin.drumalign.THRESHOLDS["min_pad_within_30ms"],
+                    help="kick/cymbal notes vs kick-/cymbal-band onsets (catches whole-beat offsets)")
     ap.add_argument("--min-match", type=float, default=0.82, help="fuzzy artist/title match threshold (0-1)")
 
 
 def thresholds(a):
     return {"min_within_30ms": a.min_within_30ms, "max_abs_median_ms": a.max_median_ms,
-            "max_drift_span_ms": a.max_drift_ms}
+            "max_drift_span_ms": a.max_drift_ms, "min_pad_within_30ms": a.min_pad_within_30ms}
 
 
 def find_chart(index, artist, title, min_match):

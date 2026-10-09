@@ -345,8 +345,9 @@ def transcribe_candidate(sp: SloppakFiles, name: str, log=print) -> Candidate | 
 
 # ── driver ──────────────────────────────────────────────────────────────────
 
-def validate_candidate(c: Candidate, onsets, thresholds=None) -> drumalign.Validation:
-    c.validation = drumalign.validate([h.time for h in c.chart.hits], onsets, thresholds)
+def validate_candidate(c: Candidate, onsets, thresholds=None, bands=None) -> drumalign.Validation:
+    c.validation = drumalign.validate([h.time for h in c.chart.hits], onsets, thresholds,
+                                      pad_hits=[(h.time, h.pad, h.cymbal) for h in c.chart.hits], bands=bands)
     return c.validation
 
 
@@ -393,8 +394,11 @@ def join(sloppak: Path, *, chart_folder: Path | None = None, gp_path: Path | Non
         if stem is None:
             log("  no stems/drums.ogg; validating against the full mix (less reliable)")
             onsets = drumalign.detect_onsets(sp.mix_audio())
+            bands = None     # the mix's low band is full of bass guitar: no per-pad check
         else:
-            onsets = drumalign.detect_onsets(drumalign.load_audio(stem))
+            stem_y = drumalign.load_audio(stem)
+            onsets = drumalign.detect_onsets(stem_y)
+            bands = drumalign.band_onsets(stem_y)
         order = list(sources) + ([f"transcribe:{transcriber}"] if transcriber else [])
         chosen = None
         for src in order:
@@ -414,7 +418,7 @@ def join(sloppak: Path, *, chart_folder: Path | None = None, gp_path: Path | Non
                 continue
             if cand is None:
                 continue
-            v = validate_candidate(cand, onsets, thresholds)
+            v = validate_candidate(cand, onsets, thresholds, bands)
             log(f"  {cand.source}: {len(cand.chart.hits)} notes, median offset {v.median_offset * 1000:+.0f} ms, "
                 f"{v.within_30ms:.0%} within 30 ms, drift {v.drift_span * 1000:.0f} ms -> "
                 f"{'OK' if v.ok else 'FLAGGED: ' + '; '.join(v.reasons)}")

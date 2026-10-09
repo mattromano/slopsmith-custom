@@ -13,7 +13,7 @@ Python env for tests: `~/drums-work/.venv` (uv; slopsmith requirements + numpy/s
 | 3 | Drum-chart joiner (`scripts/drums_join.py`, `song_builder.py drums`) | done — 17 tests (+3 server) |
 | 4 | JS drum engine ported from YARG.Core (`plugins/drums/engine.js`) | done — 44 node tests |
 | 5 | 3D Rock Band–style renderer | in progress |
-| 6 | Exporter sloppak → YARG/CH folder (stretch) | pending |
+| 6 | Exporter sloppak → YARG/CH folder (`scripts/sloppak_to_ch.py`) | done — 3 tests incl. round trip |
 
 ## How to run things
 
@@ -24,6 +24,8 @@ python scripts/ch_to_sloppak.py "Band - Song/" "Song_-_Band.sloppak"
 # 3. add Drums to existing builds (album) or one song
 python scripts/song_builder.py drums _build/albums/ALBUM.yaml --chart-dir "D:/Clone Hero/Songs" [--dry-run] [--force]
 python scripts/drums_join.py SONG.sloppak --chart-dir "D:/Clone Hero/Songs" [--gp TAB.gp5] [--report r.json]
+# 6. export a sloppak as a YARG / Clone Hero song folder
+python scripts/sloppak_to_ch.py SONG.sloppak "Songs/Band - Song" [--no-guitar] [--no-pro]
 ```
 Tests: `pytest` in `slopsmith/` (874 pass); `node --test plugins/drums/tests/<file>.test.js` per file
 (Node 25 won't take a directory); multiplayer: `node --test plugins/multiplayer/tests/arrangements.test.js`.
@@ -127,10 +129,26 @@ Synthetic alignment benchmark (2-min charts, 2 seeds, % of notes within 30 ms af
 - Deviations listed at the top of engine.js (seconds + measure map instead of ticks, immediate hit/update
   API, no lanes/BRE/solos/unison, whole SP phrase fails on any miss incl. chord child notes, …).
 
+### M6 exporter (`scripts/sloppak_to_ch.py`)
+- Tempo map rebuilt from the sloppak beat grid, one tempo event per beat (deduplicated), x/4 time
+  signatures from measure starts. A lead-in shorter than half a beat with no notes in it becomes
+  `song.ini delay`; a longer one a pickup measure.
+- PART DRUMS exactly mirrors M1's reading rules (cymbal default + tom markers, 95 = 2x kick, velocity
+  127/1 + `[ENABLE_CHART_DYNAMICS]`, 116 SP, 120–124 fills, 103 solos). Round trip CH → sloppak → CH →
+  parse reproduces every hit, phrase, section and beat within 2 ms (tested with tempo and TS changes).
+- Guitars: 5-fret PART GUITAR / RHYTHM / BASS are a pitch-contour reduction (rank of each onset's pitch
+  among onsets ±4 s, chords → 2–3 adjacent lanes, sustains ≥ 0.3 s kept) — playable, not hand-charted.
+  PART REAL_GUITAR_22 / REAL_BASS_22 are exact (96+string, velocity 100+fret, muted ch 3, harmonic ch 5),
+  tuning in `real_guitar_tuning` / `real_bass_tuning`. No vocals/HOPO forcing/star power for guitars.
+- Hi-hat + hi-tom at the same instant (possible from GP tabs) collapse to one yellow gem (MIDI can't
+  hold both on one pad).
+
 ## Open issues
-- **Beat-ambiguous alignments pass validation.** If the warp/offset lands a whole beat or bar off on a
-  steady groove, notes still sit on onsets and validation is happy (synthetic "gap inserted" seed 2).
-  Idea: pad-aware validation (kick notes vs low-band onsets, cymbals vs high-band).
+- ~~Beat-ambiguous alignments pass validation~~ → mitigated: validation now also checks kick notes against
+  kick-band (<150 Hz) onsets and cymbal notes against cymbal-band (>5 kHz) onsets of the drum stem
+  (`min_pad_within_30ms`, default 35%). A chart an 8th off on a steady groove scores >90% on the plain
+  check but fails this one (tested). Not applied when validating against a full mix (bass guitar in the
+  low band). The 35% bar is a guess for Demucs stems — tune on real songs.
 - Chart notes in a section that our recording cut out are still placed (somewhere near the cut); no
   deletion of unmatched sections yet.
 - Validation thresholds are calibrated on synthetic audio only. Real Demucs drum stems will have bleed,

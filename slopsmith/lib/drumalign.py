@@ -474,19 +474,54 @@ class Validation:
     quarters: list
     ok: bool
     reasons: list
+    pads: dict = field(default_factory=dict)   # {"kick": frac within 30 ms of a low-band onset, "cymbal": ...}
 
     def summary(self) -> dict:
         return {"notes": self.n_notes, "onsets": self.n_onsets, "median_offset_ms": round(self.median_offset * 1000, 1),
                 "within_30ms": round(self.within_30ms, 3), "within_30ms_centered": round(self.within_30ms_centered, 3),
                 "drift_ms_per_min": round(self.drift_ms_per_min, 1), "drift_span_ms": round(self.drift_span * 1000, 1),
                 "quarters_ms": [None if q is None else round(q * 1000, 1) for q in self.quarters],
+                "pads_within_30ms": {k: round(v, 3) for k, v in self.pads.items()},
                 "ok": self.ok, "reasons": self.reasons}
 
 
-THRESHOLDS = {"min_within_30ms": 0.5, "max_abs_median_ms": 25.0, "max_drift_span_ms": 40.0}
+THRESHOLDS = {"min_within_30ms": 0.5, "max_abs_median_ms": 25.0, "max_drift_span_ms": 40.0,
+              "min_pad_within_30ms": 0.35}
 
 
-def validate(note_times, onsets, thresholds=None) -> Validation:
+def band_onsets(y, sr=SR) -> dict:
+    """Onsets in the kick band (< 150 Hz) and the cymbal band (> 5 kHz) of a drum stem."""
+    from scipy.signal import butter, sosfiltfilt
+    lo = sosfiltfilt(butter(4, 150 / (sr / 2), "low", output="sos"), y).astype(np.float32)
+    hi = sosfiltfilt(butter(4, 5000 / (sr / 2), "high", output="sos"), y).astype(np.float32)
+    return {"kick": detect_onsets(lo, sr), "cymbal": detect_onsets(hi, sr)}
+
+
+def _within(nt, on, win=0.03):
+    nt, on = np.asarray(nt, float), np.asarray(on, float)
+    if not len(nt) or not len(on):
+        return 0.0
+    idx = np.clip(np.searchsorted(on, nt), 1, max(1, len(on) - 1))
+    left, right = on[np.maximum(idx - 1, 0)], on[np.minimum(idx, len(on) - 1)]
+    return float(np.mean(np.minimum(np.abs(left - nt), np.abs(right - nt)) <= win))
+
+
+def pad_check(hits, bands: dict, min_notes=16) -> dict:
+    """Fraction of kick notes near a low-band onset and of cymbal notes near a high-band
+    onset.  Catches a chart that's a whole beat off on a steady groove: the overall
+    onset check passes (hats are everywhere) but the kicks no longer line up."""
+    out = {}
+    kicks = sorted({round(t, 3) for t, pad, _ in hits if pad == "kick"})
+    cyms = sorted({round(t, 3) for t, pad, cym in hits if cym})
+    if len(kicks) >= min_notes and "kick" in bands:
+        out["kick"] = _within(kicks, bands["kick"])
+    if len(cyms) >= min_notes and "cymbal" in bands:
+        out["cymbal"] = _within(cyms, bands["cymbal"])
+    return out
+
+
+def validate(note_times, onsets, thresholds=None, pad_hits=None, bands=None) -> Validation:
+    """pad_hits [(time, pad, cymbal)] + bands (band_onsets of the drum stem) add the per-pad check."""
     th = {**THRESHOLDS, **(thresholds or {})}
     nt = np.unique(np.round(np.asarray(note_times, float), 3))    # chords count once
     on = np.asarray(onsets, float)
@@ -520,4 +555,8 @@ def validate(note_times, onsets, thresholds=None) -> Validation:
         reasons.append(f"median offset {med * 1000:+.0f} ms")
     if span * 1000 > th["max_drift_span_ms"]:
         reasons.append(f"drifts {span * 1000:.0f} ms across the song")
-    return Validation(len(nt), len(on), med, w30, w30c, slope, span, quarters, not reasons, reasons)
+    pads = pad_check(pad_hits, bands) if pad_hits is not None and bands else {}
+    for k, v in pads.items():
+        if v < th["min_pad_within_30ms"]:
+            reasons.append(f"only {v:.0%} of {k} notes line up with {k}-band onsets (a beat off?)")
+    return Validation(len(nt), len(on), med, w30, w30c, slope, span, quarters, not reasons, reasons, pads)
