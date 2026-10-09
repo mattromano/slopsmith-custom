@@ -57,6 +57,14 @@ def test_round_trip_ch_sloppak_ch(tmp_path):
     assert sorted(map(_key, back.hits)) == sorted(map(_key, orig.hits))
     np.testing.assert_allclose(sorted(h.time for h in back.hits), sorted(h.time for h in orig.hits), atol=0.002)
     assert back.dynamics
+    # lower levels: the source has none, so ch_to_sloppak generated them; they export as real
+    # Easy/Medium/Hard parts and come back identical
+    import zipfile
+    meta = json.loads(zipfile.ZipFile(sp).read("arrangements/drums.json"))["drums"]
+    assert sorted(meta["levels_generated"]) == ["easy", "hard", "medium"]
+    for lv in ("easy", "medium", "hard"):
+        want = sorted(map(_key, drumchart.rows_to_hits(meta["levels"][lv])))
+        assert sorted(map(_key, back.levels[lv])) == want, lv
     np.testing.assert_allclose(back.star_power, orig.star_power, atol=0.002)
     np.testing.assert_allclose(back.fills, orig.fills, atol=0.002)
     assert [n for _, n in back.sections] == ["Intro", "Verse"]

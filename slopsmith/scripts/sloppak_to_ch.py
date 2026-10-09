@@ -134,24 +134,32 @@ def drums_track(arr: dict, clock: BeatClock):
         dict(cn, t=c["t"]) for c in arr.get("chords", []) for cn in c.get("notes", [])])
     meta = arr.get("drums") or {}
     ev = []
+    toms = set()
+    levels = [("expert", hits)] + [(lv, drumchart.rows_to_hits(rows)) for lv, rows in (meta.get("levels") or {}).items()
+                                   if lv in drumchart.DIFF_START]
     dyn = any(h.dyn for h in hits)
     if dyn:
         ev.append((0, 0, mido.MetaMessage("text", text="[ENABLE_CHART_DYNAMICS]")))
-    seen = set()
-    for h in hits:
-        tk = clock.tick(h.time)
-        if h.pad == "kick":
-            note = 95 if h.kick2x else 96
-            vel = 100
-        else:
-            note = PAD_NOTE[h.pad]
-            vel = 127 if h.dyn == "accent" else 1 if h.dyn == "ghost" else 100
-        if (tk, note) in seen:
-            continue
-        seen.add((tk, note))
-        _note(ev, tk, note, vel)
-        if h.pad in TOM_MARKER and not h.cymbal:
-            _note(ev, tk, TOM_MARKER[h.pad], 100, length=1 + 1)   # covers [tk, tk+1]
+    for lv, lv_hits in levels:
+        base = drumchart.DIFF_START[lv]
+        seen = set()
+        for h in lv_hits:
+            tk = clock.tick(h.time)
+            if h.pad == "kick":
+                if h.kick2x and lv != "expert":
+                    continue
+                note = base - 1 if h.kick2x else base
+                vel = 100
+            else:
+                note = base + "kick red yellow blue green".split().index(h.pad)
+                vel = 127 if h.dyn == "accent" else 1 if h.dyn == "ghost" else 100
+            if (tk, note) in seen:
+                continue
+            seen.add((tk, note))
+            _note(ev, tk, note, vel)
+            if h.pad in TOM_MARKER and not h.cymbal and (tk, h.pad) not in toms:
+                toms.add((tk, h.pad))
+                _note(ev, tk, TOM_MARKER[h.pad], 100, length=2)      # covers [tk, tk+1], every level
     for a, b in meta.get("star_power", []):
         ta, tb = clock.tick(a), clock.tick(b)
         _note(ev, ta, 116, 100, length=max(1, tb - ta))

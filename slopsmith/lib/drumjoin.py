@@ -287,7 +287,10 @@ def align_chart(folder: Path, sp: SloppakFiles, *, onsets=None, force_method: st
     placed = drumchart.shift_chart(chart, lambda t: warp(t) + snap)
     det = {"folder": str(Path(folder).resolve()), "artist": ini.get("artist"), "title": ini.get("name"),
            "chart_audio": src_kind, "delay": chart.offset, "alignment": al.summary(),
-           "format": chart.source_format}
+           "format": chart.source_format,
+           # chart-audio time -> our time, so a re-join (e.g. new levels) needs no re-alignment
+           "warp": ([[round(a, 3), round(b + snap, 3)] for a, b in al.warp_pairs] if al.method == "warp" and al.warp_pairs
+                    else {"offset": round(al.offset + snap, 4)})}
     return Candidate("chart", placed, det)
 
 
@@ -382,7 +385,8 @@ def validate_candidate(c: Candidate, onsets, thresholds=None, bands=None) -> dru
 
 
 def finalize_chart(chart: drumchart.DrumChart, sp: SloppakFiles) -> drumchart.DrumChart:
-    """Generate star power / fills when the source had none (GP tabs, transcriptions)."""
+    """Generate star power / fills when the source had none (GP tabs, transcriptions) and any
+    difficulty level the source didn't chart."""
     if not chart.star_power:
         beats = _sloppak_beats(sp)
         chart.star_power = drumchart.auto_star_power([h.time for h in chart.hits], beats)
@@ -392,6 +396,7 @@ def finalize_chart(chart: drumchart.DrumChart, sp: SloppakFiles) -> drumchart.Dr
         beats = _sloppak_beats(sp)
         chart.fills = drumchart.auto_fills([h.time for h in chart.hits], beats, chart.star_power, chart.solos,
                                            _sloppak_sections(sp))
+    drumchart.ensure_levels(chart, _sloppak_beats(sp) or None)    # Easy..Hard: authored, else reduced
     return chart
 
 

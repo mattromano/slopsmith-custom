@@ -125,6 +125,7 @@ def convert(folder: Path, out: Path, difficulty="expert", title=None, artist=Non
                "difficulty": difficulty, "delay": round(chart.offset, 4),
                "five_lane": chart.five_lane, "charter": ini.get("charter") or ini.get("frets") or None}
         src = {k: v for k, v in src.items() if v not in (None, "")}
+        drumchart.ensure_levels(chart)            # Easy..Hard: the chart's own, else reduced from Expert
         arr = drumchart.drums_arrangement(chart, with_beats=True, source=src)
         (work / "arrangements" / "drums.json").write_text(json.dumps(arr, separators=(",", ":")), encoding="utf-8")
         manifest = {

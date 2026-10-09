@@ -257,7 +257,7 @@ def main():
                     continue
             except Exception:
                 continue
-        if not a.redo:
+        if not a.redo and not (prev and prev.get("status") in retry):
             try:
                 if any(re.search(r"\bdrums?\b", x.get("name", ""), re.I) for x in manifest_of(p).get("arrangements", [])):
                     state[p.name] = {"file": p.name, "status": "has-drums"}
