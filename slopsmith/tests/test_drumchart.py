@@ -295,3 +295,12 @@ def test_ensure_levels_marks_generated_and_keeps_authored():
     assert c.levels["easy"] == hits[::4] and sorted(c.levels_generated) == ["hard", "medium"]
     back = drumchart.rows_to_hits(drumchart.level_rows(c.levels["hard"]))
     assert [(h.time, h.pad) for h in back] == [(h.time, h.pad) for h in c.levels["hard"]]
+
+
+def test_reduce_level_tolerates_repeated_beat_times():
+    # built songs' beat maps can repeat a time; that used to divide by zero
+    beats = [(0.5 * i, -1) for i in range(20)]
+    beats.insert(5, beats[4])
+    hits = [drumchart.DrumHit(0.25 * i, "red") for i in range(32)]
+    for lv in drumchart.LOWER_LEVELS:
+        assert drumchart.reduce_level(hits, beats, lv)
