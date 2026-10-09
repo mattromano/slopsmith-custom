@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.12.1' };
+    window.__highwayTweaks = { version: '1.13.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -1082,10 +1082,11 @@
             align-items: start; }
         .nd-hud > * { zoom: var(--hwt-scale, 1); width: 270px; grid-column: 1; }
         .nd-hud > .hwt-perf { grid-row: 1; }
-        .nd-hud > .hwt-timing { grid-row: 2; }
-        .nd-hud > .nd-hud-detected { grid-row: 3; }
-        .nd-hud > .pc-score { grid-column: 2; grid-row: 1 / span 4; }
-        .nd-hud > .nd-drill { grid-row: 4; }
+        .nd-hud > .hwt-score { grid-row: 2; }
+        .nd-hud > .hwt-timing { grid-row: 3; }
+        .nd-hud > .nd-hud-detected { grid-row: 4; }
+        .nd-hud > .pc-score { grid-column: 2; grid-row: 1 / span 5; }
+        .nd-hud > .nd-drill { grid-row: 5; }
         .nd-hud > .pc-score > :first-child { margin-top: 0 !important; border-top: 0 !important; padding-top: 0 !important; }
         .nd-hud .nd-hud-accuracy, .nd-hud .nd-hud-streak, .nd-hud .nd-hud-counts { display: none !important; }
         .nd-hud .nd-hud-detected { font-size: 14px !important; margin-top: 6px !important; text-align: right; }
@@ -1096,7 +1097,7 @@
         .nd-hud .row > .lbl:first-child { margin-right: auto; }
         .hwt-perf { font: 15px system-ui, sans-serif; color: #cbd5e1; text-shadow: 0 1px 3px #000; }
         .hwt-perf .head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 4px; }
-        .hwt-perf .acc { font: 800 54px/1 system-ui, sans-serif; letter-spacing: -1px; }
+        .hwt-perf .acc { font: 800 44px/1 system-ui, sans-serif; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
         .hwt-perf .head .lbl { text-align: right; font-size: 13px; line-height: 1.25; }
         .hwt-perf .row b { color: #f1f5f9; }
         .hwt-perf .lbl { color: ${DIM}; }
@@ -1207,7 +1208,7 @@
         const acc = pct(st.hits, total);
         const rows = [];
         rows.push('<div class="head"><div class="acc" style="color:' + (acc == null ? DIM : accCol(acc)) + '">' +
-            (acc == null ? '–' : acc + '%') + '</div><div class="lbl">' + st.hits + ' / ' + total + '<br>notes hit</div></div>');
+            (acc == null ? '–' : (100 * st.hits / total).toFixed(2) + '%') + '</div><div class="lbl">' + st.hits + ' / ' + total + '<br>notes hit</div></div>');
         if (S.recent.length >= 10) {
             const f = pct(S.recent.filter(Boolean).length, S.recent.length);
             const d = acc == null ? 0 : f - acc;
@@ -1337,6 +1338,292 @@
     }, 100);
 })();
 
+// ── 5b. Score ───────────────────────────────────────────────────────────
+// Rock Band-style score from note_detect's judgments:
+//  - a hit single note is worth 50, a chord 50 per string heard;
+//  - timing: within 25 ms x1, within 50 ms x0.8, else x0.6;
+//  - technique bonus +25% for bends, slides and harmonics;
+//  - technical bonus x1.5 for single notes in dense passages (>= 6 notes in
+//    the surrounding second); a run of them pops "TECHNICAL RUN h/n +pts";
+//  - streak multiplier x1-x4 (one step per 10 notes in a row, same as the
+//    streak counter); a miss scores nothing and resets the multiplier;
+//  - everything scaled by playback speed x difficulty (mastery) slider;
+//  - solos (chart sections named "solo"): a live solo meter (% of the
+//    solo's notes hit) at the top of the highway, a blue glow on the
+//    highway while the solo plays, and a solo bonus at its end: 100 per
+//    note hit, doubled for a perfect solo, with a Rock Band-style rating.
+// Accuracy elsewhere in the card shows two decimals. The final score and
+// its breakdown are exposed as window.__hwtScore for play_counts (best
+// score per song, end-of-song card).
+(function scoreEngine() {
+    const LS = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
+    if (LS('hwtPerfHudOff', '0') === '1') return;
+    const GOLD = '#ffc531', BLUE = '#45c8ff', PURPLE = '#b77bff', ORANGE = '#ff9a40', DIM = '#8b95a5', WHITE = '#f1f5f9';
+    const SOLO_RE = /solo/i;
+    const DENSE_N = 6, DENSE_WIN = 0.5;           // >= 6 single notes within +-0.5 s
+    const RUN_GAP_MS = 700, RUN_MIN = 8;
+    // Tested on the highway's own chart notes (sl / slu = -1 means no slide);
+    // judgment.chartNote can't be used: the engine path flags every note sl:true.
+    const TECH = [['bend', (n) => Number(n.bn) > 0], ['slide', (n) => Number(n.sl) >= 0 || Number(n.slu) >= 0],
+        ['harmonic', (n) => !!(n.hm || n.hp)]];
+    const rawKey = (t, s) => Math.round(t * 1000) * 10 + (s | 0);
+    const fmt = (n) => Math.round(n).toLocaleString('en-US');
+    const hw = () => window.highway;
+
+    let SC, chart = null, lastTotal = 0;
+    const reset = () => {
+        SC = { score: 0, streak: 0, notes: 0, base: 0, timing: 0, tech: 0, techN: {}, dense: 0, soloBonus: 0,
+            solos: {}, soloDone: [], run: null, runs: [], feed: [] };
+    };
+    reset();
+
+    function factorNow() {
+        const el = document.getElementById('speed-label');
+        const v = el ? parseFloat(el.textContent) : NaN;
+        const speed = Number.isFinite(v) && v > 0 ? Math.min(1, v) : 1;
+        let mastery = 1;
+        try { const m = hw().getMastery(); if (Number.isFinite(m) && m > 0) mastery = Math.min(1, m); } catch (_) { /* ignore */ }
+        return speed * mastery;
+    }
+
+    // Dense note times + solo sections, rebuilt when the chart changes.
+    function chartInfo() {
+        let notes = [], chords = [], sections = [];
+        try { notes = hw().getNotes() || []; chords = hw().getChords() || []; sections = hw().getSections() || []; } catch (_) { /* ignore */ }
+        const key = notes.length + ':' + chords.length + ':' + (notes[0] ? notes[0].t : '') + ':' + sections.length;
+        if (chart && chart.key === key) return chart;
+        const T = notes.map((n) => n.t).filter(Number.isFinite).sort((a, b) => a - b);
+        const dense = new Set();
+        for (let i = 0, lo = 0, hi = 0; i < T.length; i++) {
+            while (T[lo] < T[i] - DENSE_WIN) lo++;
+            while (hi + 1 < T.length && T[hi + 1] <= T[i] + DENSE_WIN) hi++;
+            if (hi - lo + 1 >= DENSE_N) dense.add(Math.round(T[i] * 1000));
+        }
+        const secs = sections.filter((s) => s && Number.isFinite(s.time)).slice().sort((a, b) => a.time - b.time);
+        const solos = [];
+        secs.forEach((s, i) => {
+            if (!SOLO_RE.test(String(s.name || ''))) return;
+            const end = i + 1 < secs.length ? secs[i + 1].time : Infinity;
+            // Adjacent solo sections (solo, solo) count as one solo.
+            const prev = solos[solos.length - 1];
+            if (prev && prev.end === s.time) { prev.end = end; return; }
+            solos.push({ id: solos.length, name: String(s.name), start: s.time, end });
+        });
+        const raw = new Map();
+        for (const n of notes) if (n && Number.isFinite(n.t)) raw.set(rawKey(n.t, n.s), n);
+        for (const c of chords) for (const n of (c && c.notes) || []) if (n) raw.set(rawKey(c.t, n.s), n);
+        chart = { key, dense, solos, raw };
+        return chart;
+    }
+    const soloAt = (t) => (chart ? chart.solos.find((s) => t >= s.start && t < s.end) : null);
+
+    function feed(text, color) {
+        SC.feed.push({ text, color, at: performance.now() });
+        if (SC.feed.length > 4) SC.feed.shift();
+    }
+
+    function techniquesOf(j) {
+        const strings = j.chord ? (j.notes || []).map((n) => n && n.s) : [(j.chartNote || j.note || {}).s];
+        const list = strings.filter(Number.isFinite).map((s) => chart.raw.get(rawKey(j.noteTime, s))).filter(Boolean);
+        const out = [];
+        for (const [name, test] of TECH) if (list.some((n) => n && test(n))) out.push(name);
+        return out;
+    }
+
+    function closeRun(force) {
+        const r = SC.run;
+        if (!r) return;
+        if (!force && performance.now() - r.at < 900) return;
+        SC.run = null;
+        if (r.n >= RUN_MIN) {
+            SC.runs.push({ h: r.h, n: r.n, pts: Math.round(r.pts) });
+            const pop = window.__hwtPopup;
+            if (pop) pop('TECHNICAL RUN ' + r.h + '/' + r.n + '  +' + fmt(r.pts), r.h === r.n ? GOLD : ORANGE, true);
+        }
+    }
+
+    function closeSolo(s, st) {
+        if (st.done) return;
+        st.done = true;
+        const pct = st.n ? 100 * st.h / st.n : 0;
+        const perfect = st.n > 0 && st.h === st.n;
+        const bonus = st.h * 100 * (perfect ? 2 : 1) * factorNow();
+        SC.score += bonus; SC.soloBonus += bonus;
+        const rating = perfect ? 'PERFECT SOLO!' : pct >= 95 ? 'AWESOME SOLO!' : pct >= 90 ? 'GREAT SOLO!' : pct >= 80 ? 'GOOD SOLO!'
+            : pct >= 70 ? 'SOLID SOLO' : pct >= 60 ? 'OKAY SOLO' : 'MESSY SOLO';
+        SC.soloDone.push({ name: s.name, h: st.h, n: st.n, pct: Math.round(pct * 100) / 100, bonus: Math.round(bonus), rating });
+        const pop = window.__hwtPopup;
+        if (pop && st.n > 0) {
+            pop(rating, perfect ? GOLD : pct >= 90 ? BLUE : WHITE);
+            setTimeout(() => pop(pct.toFixed(2) + '%  ·  solo bonus +' + fmt(bonus), perfect ? GOLD : BLUE, true), 900);
+        }
+    }
+
+    const prevHook = window.__hwtOnJudgment;
+    window.__hwtOnJudgment = (j, section) => {
+        if (prevHook) { try { prevHook(j, section); } catch (_) { /* ignore */ } }
+        if (!j || !Number.isFinite(j.noteTime)) return;
+        try {
+            const st = window.noteDetect.getStats();
+            const total = st.hits + st.misses;
+            if (total < lastTotal) reset();
+            lastTotal = total;
+        } catch (_) { /* ignore */ }
+        const info = chartInfo();
+        const tms = Math.round(j.noteTime * 1000);
+        const mult = Math.min(4, 1 + Math.floor(SC.streak / 10));
+        const f = factorNow();
+        SC.notes++;
+        const dense = !j.chord && info.dense.has(tms);
+        let densePts = 0;
+        if (j.hit) {
+            SC.streak++;
+            const base = j.chord ? 50 * Math.max(1, j.hitStrings || 0) : 50;
+            const te = Number.isFinite(j.timingError) ? Math.abs(j.timingError) : null;
+            const tf = te == null ? 0.8 : te <= 25 ? 1 : te <= 50 ? 0.8 : 0.6;
+            const techs = techniquesOf(j);
+            const techF = techs.length ? 1.25 : 1;
+            const k = mult * f;
+            const timed = base * tf;
+            const techPts = timed * (techF - 1);
+            densePts = dense ? (timed + techPts) * 0.5 : 0;
+            SC.base += base * k;
+            SC.timing += (timed - base) * k;
+            SC.tech += techPts * k;
+            SC.dense += densePts * k;
+            densePts *= k;
+            SC.score += (timed + techPts) * k + densePts;
+            for (const t of techs) SC.techN[t] = (SC.techN[t] || 0) + 1;
+            if (techs.length) feed('+' + fmt(techPts * k) + ' ' + techs.join(' + '), PURPLE);
+        } else {
+            SC.streak = 0;
+        }
+        if (dense) {
+            if (!SC.run || tms - SC.run.lastT > RUN_GAP_MS) { closeRun(true); SC.run = { h: 0, n: 0, pts: 0, lastT: tms, at: 0 }; }
+            const r = SC.run;
+            r.n++; if (j.hit) r.h++; r.pts += densePts; r.lastT = tms; r.at = performance.now();
+        }
+        const solo = info.solos.find((s) => j.noteTime >= s.start && j.noteTime < s.end);
+        if (solo) {
+            const st = SC.solos[solo.id] || (SC.solos[solo.id] = { h: 0, n: 0, done: false });
+            if (!st.done) { st.n++; if (j.hit) st.h++; }
+        }
+    };
+
+    // ── DOM: score block in the stats card, solo meter + glow on the highway ──
+    const css = document.createElement('style');
+    css.textContent = `
+        .hwt-score { font: 15px system-ui, sans-serif; color: #cbd5e1; text-shadow: 0 1px 3px #000; margin-top: 6px; }
+        .hwt-score .pts { font: 800 34px/1.05 system-ui, sans-serif; color: ${WHITE}; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
+        .hwt-score .pts small { font: 700 13px system-ui, sans-serif; color: ${DIM}; letter-spacing: 1px; margin-left: 6px; }
+        .hwt-score .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; min-height: 0; }
+        .hwt-score .tag { font: 800 11px system-ui, sans-serif; letter-spacing: 1px; padding: 1px 6px; border-radius: 4px; }
+        .hwt-score .feed { font: 13px system-ui, sans-serif; margin-top: 2px; }
+        .hwt-solo-meter { position: absolute; left: 50%; top: 5%; transform: translateX(-50%); z-index: 22; pointer-events: none;
+            text-align: center; font-family: system-ui, sans-serif; text-shadow: 0 2px 8px #000; transition: opacity .4s; opacity: 0; }
+        .hwt-solo-meter.on { opacity: 1; }
+        .hwt-solo-meter > * { zoom: var(--hwt-scale, 1); }
+        .hwt-solo-meter .lbl { font: 800 14px system-ui, sans-serif; letter-spacing: 4px; color: #9fd0ff; }
+        .hwt-solo-meter .pct { font: 900 64px/1 system-ui, sans-serif; color: ${WHITE}; font-variant-numeric: tabular-nums; }
+        .hwt-solo-meter .bar { width: 260px; height: 8px; margin: 6px auto 0; border-radius: 4px; background: rgba(255,255,255,.12); overflow: hidden; }
+        .hwt-solo-meter .bar > div { height: 100%; background: linear-gradient(90deg, #3d7bff, #8fd3ff); }
+        .hwt-solo-meter .cnt { font: 13px system-ui, sans-serif; color: #9fb4cc; margin-top: 3px; }
+        .hwt-solo-glow { position: absolute; inset: 0; z-index: 4; pointer-events: none; opacity: 0; transition: opacity .6s;
+            box-shadow: inset 0 0 120px 24px rgba(61,123,255,.55), inset 0 0 26px 3px rgba(143,211,255,.8);
+            background: linear-gradient(to top, rgba(61,123,255,.22), transparent 55%); }
+        .hwt-solo-glow.on { opacity: 1; }
+    `;
+    document.head.appendChild(css);
+
+    let box = null, meter = null, glow = null, lastHtml = '';
+    function ensure(hud) {
+        const root = hud.parentNode;
+        if (!box || box.parentNode !== hud) {
+            box = document.createElement('div');
+            box.className = 'hwt-score';
+            const perf = hud.querySelector(':scope > .hwt-perf');
+            if (perf) perf.after(box); else hud.insertBefore(box, hud.firstChild);
+            lastHtml = '';
+        }
+        if (!meter || meter.parentNode !== root) {
+            meter = document.createElement('div');
+            meter.className = 'hwt-solo-meter';
+            meter.innerHTML = '<div class="lbl">SOLO</div><div class="pct">0%</div><div class="bar"><div style="width:0"></div></div><div class="cnt"></div>';
+            root.appendChild(meter);
+            glow = document.createElement('div');
+            glow.className = 'hwt-solo-glow';
+            root.appendChild(glow);
+        }
+    }
+
+    function render() {
+        const hud = document.querySelector('.nd-hud');
+        if (!hud) {
+            if (meter) meter.classList.remove('on');
+            if (glow) glow.classList.remove('on');
+            return;
+        }
+        ensure(hud);
+        const info = chartInfo();
+        let t = 0;
+        try { t = hw().getTime(); } catch (_) { /* ignore */ }
+        // Solo meter: from just before the solo until its last judgments are in.
+        const live = info.solos.find((s) => t >= s.start - 0.5 && t < s.end + 1.0);
+        for (const s of info.solos) {
+            const st = SC.solos[s.id];
+            if (st && !st.done && t >= s.end + 1.0) closeSolo(s, st);
+        }
+        if (live) {
+            const st = SC.solos[live.id] || { h: 0, n: 0 };
+            const p = st.n ? 100 * st.h / st.n : 100;
+            meter.querySelector('.pct').textContent = (st.n ? Math.round(p) : 100) + '%';
+            meter.querySelector('.pct').style.color = p >= 100 ? GOLD : p >= 90 ? '#8fd3ff' : WHITE;
+            meter.querySelector('.bar > div').style.width = p + '%';
+            meter.querySelector('.cnt').textContent = st.n ? st.h + ' / ' + st.n + ' notes' : live.name;
+            meter.classList.add('on');
+        } else {
+            meter.classList.remove('on');
+        }
+        glow.classList.toggle('on', !!soloAt(t));
+        closeRun(false);
+
+        const mult = Math.min(4, 1 + Math.floor(SC.streak / 10));
+        const tags = [];
+        if (SC.run && SC.run.n >= 3) tags.push(['TECHNICAL ×1.5', ORANGE]);
+        if (soloAt(t)) tags.push(['SOLO', BLUE]);
+        const f = factorNow();
+        if (f < 0.999) tags.push(['×' + f.toFixed(2) + ' speed/difficulty', DIM]);
+        const now = performance.now();
+        const feedHtml = SC.feed.filter((x) => now - x.at < 2500).map((x) =>
+            '<div class="feed" style="color:' + x.color + ';opacity:' + (1 - (now - x.at) / 2500).toFixed(2) + '">' + x.text + '</div>').join('');
+        const html = '<div class="pts">' + fmt(SC.score) + '<small>SCORE · ' + mult + 'x</small></div>' +
+            (tags.length ? '<div class="tags">' + tags.map(([s, c]) => '<span class="tag" style="color:' + c + ';border:1px solid ' + c + '66">' + s + '</span>').join('') + '</div>' : '') +
+            feedHtml;
+        if (html !== lastHtml) { lastHtml = html; box.innerHTML = html; }
+    }
+    setInterval(render, 120);
+
+    // Song end: close any open solo / technical run so the final score is complete.
+    const bus = window.slopsmith;
+    if (bus && bus.on) {
+        bus.on('song:ended', () => {
+            const info = chartInfo();
+            for (const s of info.solos) { const st = SC.solos[s.id]; if (st && !st.done) closeSolo(s, st); }
+            closeRun(true);
+        });
+        bus.on('song:loading', () => { reset(); chart = null; lastTotal = 0; });
+    }
+
+    window.__hwtScore = {
+        get() {
+            const r = (x) => Math.round(x);
+            return { score: r(SC.score), notes: SC.notes, factor: factorNow(),
+                breakdown: { base: r(SC.base), timing: r(SC.timing), technique: r(SC.tech), technical: r(SC.dense), solo: r(SC.soloBonus) },
+                techniques: Object.assign({}, SC.techN), solos: SC.soloDone.slice(), runs: SC.runs.slice() };
+        },
+    };
+})();
+
 // ── 6. Compact stats card (multiplayer) + hide it on drums ──────────────
 // Side-by-side multiplayer windows leave little room for the full card, so
 // in "auto" mode the card goes compact while this window is in a multiplayer
@@ -1368,10 +1655,13 @@
         html.hwt-compact .hwt-perf .row { display: none !important; }
         html.hwt-compact .hwt-perf .head { margin-bottom: 0; }
         html.hwt-compact .hwt-perf .acc { font-size: 36px; }
+        html.hwt-compact .hwt-score .pts { font-size: 26px; }
+        html.hwt-compact .hwt-score .feed, html.hwt-compact .hwt-score .tags { display: none !important; }
         html.hwt-compact .hwt-timing { margin-top: 6px !important; padding-top: 6px; }
         html.hwt-compact .hwt-timing > div:nth-child(3) { display: none !important; }   /* early/150ms/late legend */
         html.hwt-compact .hwt-streak > * { zoom: calc(var(--hwt-scale, 1) * .55); }
-        html.hwt-drums .nd-hud, html.hwt-drums .hwt-streak, html.hwt-drums .hwt-fire { display: none !important; }
+        html.hwt-drums .nd-hud, html.hwt-drums .hwt-streak, html.hwt-drums .hwt-fire,
+        html.hwt-drums .hwt-solo-meter, html.hwt-drums .hwt-solo-glow { display: none !important; }
         .hwt-mode-btn { position: absolute; top: 4px; right: 6px; pointer-events: auto; cursor: pointer;
             font: 10px system-ui, sans-serif; color: #8b95a5; background: rgba(255,255,255,.06);
             border: 1px solid rgba(255,255,255,.1); border-radius: 4px; padding: 0 5px; line-height: 15px;

@@ -106,8 +106,11 @@ def _db():
         " hits INTEGER, misses INTEGER, best_streak INTEGER, complete INTEGER NOT NULL, speed REAL, progress REAL,"
         " played_s REAL)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_runs_song ON runs(grp, arr)")
-    if "details" not in {r[1] for r in conn.execute("PRAGMA table_info(runs)")}:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)")}
+    if "details" not in cols:
         conn.execute("ALTER TABLE runs ADD COLUMN details TEXT")
+    if "score" not in cols:
+        conn.execute("ALTER TABLE runs ADD COLUMN score INTEGER")
     return conn
 
 
@@ -208,13 +211,14 @@ def _song(filename, arrangement, artist="", title="", exclude_id=None):
     conn.row_factory = sqlite3.Row
     try:
         rows = [dict(r) for r in conn.execute(
-            "SELECT id, ts, accuracy, hits, misses, best_streak, complete, speed, progress, played_s, details FROM runs"
+            "SELECT id, ts, accuracy, hits, misses, best_streak, complete, speed, progress, played_s, details, score FROM runs"
             " WHERE grp = ? AND arr = ? ORDER BY id", (g, arr))]
     finally:
         conn.close()
     prior = [r for r in rows if r["id"] != exclude_id]
     counted = [r for r in prior if _is_best_run(r["complete"], r["speed"])]
     best = max(counted, key=lambda r: (r["accuracy"], -r["id"]), default=None)
+    best_score = max((r for r in counted if r["score"] is not None), key=lambda r: (r["score"], -r["id"]), default=None)
     # Best pass per chart section (any run, partial or not: section practice counts).
     section_best = {}
     for r in prior:
@@ -231,11 +235,12 @@ def _song(filename, arrangement, artist="", title="", exclude_id=None):
     old = [r["accuracy"] for r in counted if _ts_epoch(r["ts"]) < cutoff]
     with _lock:
         jr = (_state.get("slop_journal") or {}).get(g) or [0, 0.0, None]
-    runs = [{k: r[k] for k in ("ts", "accuracy", "hits", "misses", "best_streak", "complete", "speed", "progress")}
+    runs = [{k: r[k] for k in ("ts", "accuracy", "hits", "misses", "best_streak", "complete", "speed", "progress", "score")}
             for r in reversed(prior[-40:])]
     return {
         "group": g, "arr": arr, "runs": runs, "run_count": len(prior),
         "best": {k: best[k] for k in ("ts", "accuracy", "best_streak")} if best else None,
+        "best_score": {k: best_score[k] for k in ("ts", "score", "accuracy")} if best_score else None,
         "best_streak": max((r["best_streak"] or 0 for r in prior), default=0),
         "full_combos": sum(1 for r in counted if not r["misses"]),
         "section_best": section_best,
@@ -253,7 +258,11 @@ def _add_run(d):
     hits, misses = int(d.get("hits") or 0), int(d.get("misses") or 0)
     if not filename or hits + misses < 1:
         raise ValueError("filename and judgments required")
-    acc = round(100.0 * hits / (hits + misses), 1)
+    acc = round(100.0 * hits / (hits + misses), 2)
+    try:
+        score = int(round(float(d.get("score")))) if d.get("score") is not None else None
+    except (TypeError, ValueError):
+        score = None
     complete, speed = 1 if d.get("complete") else 0, float(d.get("speed") or 1.0)
     details = d.get("details") if isinstance(d.get("details"), dict) else None
     g, arr = _group_for(filename, d.get("artist") or "", d.get("title") or ""), _arr_key(arrangement)
@@ -261,10 +270,10 @@ def _add_run(d):
     try:
         cur = conn.execute(
             "INSERT INTO runs (grp, arr, filename, title, artist, arrangement, ts, accuracy, hits, misses, best_streak,"
-            " complete, speed, progress, played_s, details) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " complete, speed, progress, played_s, details, score) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (g, arr, filename, d.get("title"), d.get("artist"), arrangement,
              time.strftime("%Y-%m-%dT%H:%M:%S"), acc, hits, misses, int(d.get("best_streak") or 0), complete, speed,
-             float(d.get("progress") or 0), float(d.get("played_s") or 0), json.dumps(details) if details else None))
+             float(d.get("progress") or 0), float(d.get("played_s") or 0), json.dumps(details) if details else None, score))
         conn.commit()
         run_id = cur.lastrowid
     finally:
@@ -273,8 +282,11 @@ def _add_run(d):
     out = _song(filename, arrangement, d.get("artist") or "", d.get("title") or "")
     counted = _is_best_run(complete, speed)
     prev_best = before["best"]["accuracy"] if before["best"] else None
+    prev_best_score = before["best_score"]["score"] if before["best_score"] else None
     out.update(
-        accuracy=acc, counted=counted, full_combo=counted and misses == 0,
+        accuracy=acc, score=score, counted=counted, full_combo=counted and misses == 0,
+        prev_best_score=prev_best_score,
+        new_best_score=counted and score is not None and prev_best_score is not None and score > prev_best_score,
         prev_best=prev_best, prev_section_best=before["section_best"],
         new_best=counted and prev_best is not None and acc > prev_best,
         first_full_run=counted and prev_best is None,

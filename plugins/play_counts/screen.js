@@ -37,7 +37,7 @@
     // Scores: [Slopsmith best note-detect %, Rocksmith best mastery %].
     function scoreHtml(sc, cls) {
         let h = '';
-        if (sc[0] != null) h += `<span class="pc-badge pc-best ${cls}" title="Best full-speed, full-song note detection accuracy in Slopsmith">★ ${Math.round(sc[0])}%</span>`;
+        if (sc[0] != null) h += `<span class="pc-badge pc-best ${cls}" title="Best full-speed, full-song note detection accuracy in Slopsmith">★ ${Number(sc[0]).toFixed(2)}%</span>`;
         if (sc[2]) h += `<span class="pc-badge pc-fc ${cls}" title="Full combo: a full-speed, full-song run with no misses">FC</span>`;
         if (sc[1]) h += `<span class="pc-badge pc-rs ${cls}" title="Best Rocksmith mastery (any arrangement)">RS ${Math.round(sc[1])}%</span>`;
         return h;
@@ -292,11 +292,14 @@
 
     function payloadOf(r, reason) {
         const complete = !r.looped && (reason === 'ended' || r.maxProgress >= COMPLETE_AT);
+        let sc = null;   // highway_tweaks score (window.__hwtScore), when loaded
+        try { sc = window.__hwtScore ? window.__hwtScore.get() : null; } catch (_) { sc = null; }
         return {
             filename: r.filename, title: r.title, artist: r.artist, arrangement: r.arrangement,
             hits: r.hits, misses: r.misses, best_streak: r.bestStreak, complete,
             speed: r.minSpeed, progress: +r.maxProgress.toFixed(3), played_s: (performance.now() - r.t0) / 1000,
-            details: detailsOf(r),
+            score: sc ? sc.score : null,
+            details: Object.assign(detailsOf(r), sc ? { score: sc } : {}),
         };
     }
 
@@ -325,7 +328,8 @@
                 const pop = window.__hwtPopup;
                 if (pop) {
                     if (d.full_combo) pop('FULL COMBO!');
-                    else if (d.new_best) pop('NEW BEST ' + Math.round(d.accuracy) + '%!');
+                    else if (d.new_best) pop('NEW BEST ' + Number(d.accuracy).toFixed(2) + '%!');
+                    if (d.new_best_score) setTimeout(() => pop('NEW BEST SCORE!'), d.full_combo || d.new_best ? 2100 : 0);
                 }
                 if (reason === 'ended') endCard(d, payload);
                 window.dispatchEvent(new CustomEvent('songscores:run', { detail: d }));
@@ -485,11 +489,12 @@
             const best = song.best ? song.best.accuracy : null;
             const last = song.runs && song.runs.length ? song.runs[0].accuracy : null;
             rows.push('<div class="sub">This song</div>');
-            rows.push(row('best', '<b style="color:' + GOLD + ';font-size:22px">' + (best != null ? Math.round(best) + '%' : '–') + '</b>'));
-            if (last != null) rows.push(row('last run', '<b>' + Math.round(last) + '%</b>'));
+            rows.push(row('best', '<b style="color:' + GOLD + ';font-size:22px">' + (best != null ? Number(best).toFixed(2) + '%' : '–') + '</b>'));
+            if (song.best_score) rows.push(row('best score', '<b style="color:' + GOLD + '">' + Number(song.best_score.score).toLocaleString('en-US') + '</b>'));
+            if (last != null) rows.push(row('last run', '<b>' + Number(last).toFixed(2) + '%</b>'));
             if (best != null && live != null && total >= 10) {
-                const d = Math.round(live - best);
-                rows.push(row('pace vs best', '<b style="color:' + (d >= 0 ? GOLD : BLUE) + '">' + (d >= 0 ? '▲ +' : '▼ ') + d + '%</b>'));
+                const d = live - best;
+                rows.push(row('pace vs best', '<b style="color:' + (d >= 0 ? GOLD : BLUE) + '">' + (d >= 0 ? '▲ +' : '▼ ') + d.toFixed(2) + '%</b>'));
             }
             rows.push(spark(song.runs || [], best));
         }
@@ -534,6 +539,36 @@
             if (head) head.after(el); else box.prepend(el);
         })();
     }
+    // Score block: total, accuracy, best score, where the points came from,
+    // solos and technical runs (highway_tweaks' score engine).
+    function scoreHtml(d, payload) {
+        const sc = payload.details && payload.details.score;
+        if (!sc) return '';
+        const n = (x) => Number(x || 0).toLocaleString('en-US');
+        const isBest = d.new_best_score || (d.counted && d.prev_best_score == null && sc.score > 0);
+        const bestLine = d.prev_best_score != null
+            ? (d.new_best_score ? 'previous best ' + n(d.prev_best_score) + '  ▲ +' + n(sc.score - d.prev_best_score) : 'best score ' + n(d.prev_best_score))
+            : (d.counted ? 'first scored run' : 'practice run: not counted toward your best');
+        let h = `<div style="text-align:center;margin:0 0 10px"><div style="font:900 34px system-ui;color:${isBest ? GOLD : WHITE};letter-spacing:-.5px">${n(sc.score)}</div>` +
+            `<div style="font-size:12px;color:${DIM}">${isBest ? '<b style="color:' + GOLD + '">NEW BEST SCORE</b> · ' : ''}${bestLine} · accuracy <b style="color:${WHITE}">${Number(d.accuracy).toFixed(2)}%</b>` +
+            (sc.factor < 0.999 ? ' · ×' + sc.factor.toFixed(2) + ' speed/difficulty' : '') + '</div></div>';
+        const b = sc.breakdown || {};
+        const chip = (label, v, col) => v ? `<span style="font-size:12px;padding:2px 8px;border-radius:10px;background:rgba(255,255,255,.06);color:${col}">${label} ${v > 0 ? '+' : ''}${n(v)}</span>` : '';
+        const techs = Object.entries(sc.techniques || {}).map(([k, v]) => v + ' ' + k + (v > 1 ? 's' : '')).join(', ');
+        h += '<div style="display:flex;flex-wrap:wrap;gap:6px;justify-content:center;margin-bottom:8px">' +
+            chip('notes', b.base, WHITE) + chip('timing', b.timing, b.timing < 0 ? BLUE : GOLD) +
+            chip('technique' + (techs ? ' (' + techs + ')' : ''), b.technique, '#b77bff') +
+            chip('technical runs', b.technical, '#ff9a40') + chip('solos', b.solo, '#45c8ff') + '</div>';
+        for (const s of sc.solos || []) {
+            h += `<div style="text-align:center;font-size:12px;color:#9fd0ff;margin-bottom:3px">${esc(s.rating)} ${Number(s.pct).toFixed(2)}% (${s.h}/${s.n}) · +${n(s.bonus)}</div>`;
+        }
+        const runs = sc.runs || [];
+        if (runs.length) {
+            const hit = runs.reduce((a, r) => a + r.h, 0), tot = runs.reduce((a, r) => a + r.n, 0);
+            h += `<div style="text-align:center;font-size:12px;color:#ffb877;margin-bottom:3px">${runs.length} technical run${runs.length > 1 ? 's' : ''}: ${hit}/${tot} notes · ${runs.filter((r) => r.h === r.n).length} perfect</div>`;
+        }
+        return h;
+    }
     function endCardHtml(d, payload) {
         const acc = d.accuracy;
         const parts = [];
@@ -541,16 +576,17 @@
         if (!d.counted) banner = ['Practice run', DIM, payload.speed < 0.999 ? 'played at ' + Math.round(payload.speed * 100) + '% speed' : 'partial or looped — not counted toward your best'];
         else if (d.full_combo) banner = ['FULL COMBO!', GOLD, 'every note hit'];
         else if (d.first_full_run) banner = ['First full run', WHITE, 'this is the score to beat'];
-        else if (d.new_best) banner = ['NEW BEST!', GOLD, 'previous ' + Math.round(d.prev_best) + '%  ▲ +' + (acc - d.prev_best).toFixed(1) + '%'];
-        else banner = ['Best ' + Math.round(d.prev_best) + '%', WHITE, (acc - d.prev_best).toFixed(1) + '% from your best'];
+        else if (d.new_best) banner = ['NEW BEST!', GOLD, 'previous ' + Number(d.prev_best).toFixed(2) + '%  ▲ +' + (acc - d.prev_best).toFixed(2) + '%'];
+        else banner = ['Best ' + Number(d.prev_best).toFixed(2) + '%', WHITE, (acc - d.prev_best).toFixed(2) + '% from your best'];
         parts.push(`<div style="text-align:center;margin:-4px 0 10px"><div style="font:900 22px system-ui;color:${banner[1]};letter-spacing:1px">${banner[0]}</div>` +
             `<div style="font-size:12px;color:${DIM}">${banner[2]}</div></div>`);
+        parts.push(scoreHtml(d, payload));
         const stat = (v, label, col) => `<div style="text-align:center"><div style="font-weight:700;color:${col || WHITE}">${v}</div><div style="font-size:11px;color:${DIM}">${label}</div></div>`;
         const trend = d.week_ago_best != null ? [acc - d.week_ago_best, 'vs a week ago']
             : (d.first_counted != null && d.run_count > 1 && d.counted ? [acc - d.first_counted, 'vs first full run'] : null);
         parts.push('<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-bottom:10px">' +
-            stat(d.best ? Math.round(d.best.accuracy) + '%' : '–', 'song best', GOLD) +
-            stat(trend ? (trend[0] >= 0 ? '+' : '') + trend[0].toFixed(1) + '%' : '–', trend ? trend[1] : 'trend', trend ? (trend[0] >= 0 ? GOLD : BLUE) : DIM) +
+            stat(d.best ? Number(d.best.accuracy).toFixed(2) + '%' : '–', 'song best', GOLD) +
+            stat(trend ? (trend[0] >= 0 ? '+' : '') + trend[0].toFixed(2) + '%' : '–', trend ? trend[1] : 'trend', trend ? (trend[0] >= 0 ? GOLD : BLUE) : DIM) +
             stat(d.best_streak, 'best streak ever') +
             stat(fmtDur(d.practice_s), 'time on song') + '</div>');
         const rsd = d.rocksmith;
@@ -731,7 +767,7 @@
             case 'parts': return esc(r.parts);
             case 'duration': return fmtLen(r.duration);
             case 'plays': return r.plays ? '<span title="' + r.rsPlays + ' in Rocksmith, ' + r.slopPlays + ' in Slopsmith" style="color:#7dd3fc">' + r.plays + '</span>' : '';
-            case 'best': return r.best == null ? '' : '<span style="color:' + scoreCol(r.best) + ';font-weight:600">' + Math.round(r.best) + '%</span>';
+            case 'best': return r.best == null ? '' : '<span style="color:' + scoreCol(r.best) + ';font-weight:600">' + Number(r.best).toFixed(2) + '%</span>';
             case 'rs': return r.rs == null ? '' : '<span style="color:#a5b1c2">' + Math.round(r.rs) + '%</span>';
             case 'last': return '<span title="' + esc(r.last || '') + '">' + fmtLast(r.last) + '</span>';
             case 'time': return fmtTime(r.practice);
