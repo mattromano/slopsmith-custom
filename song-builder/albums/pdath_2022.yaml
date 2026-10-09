@@ -1,0 +1,13 @@
+artist: Prince Daddy & The Hyena
+album: Prince Daddy & The Hyena
+year: 2022
+audio_dir: C:/Users/mattr/Desktop/PDATH
+tab_dir: C:/Users/mattr/Desktop/gc pro tabs/songsterr
+cover: C:/Users/mattr/Desktop/slopsmith/_build/pdath_cover.jpg
+short: Prince_Daddy
+songs:
+  - {title: "A Random Exercise in Impermanence (The Collector)", tab: "The Collector)", audio: "02 "}
+  - {title: "Hollow, As You Figured", tab: "Hollow, As You Figured", audio: "06 "}
+  - {title: Keep Up That Talk, tab: Keep Up That Talk, audio: "08 "}
+  - {title: Shoelaces, tab: "Shoelaces [AI]", audio: "09 "}
+  - {title: Black Mold, tab: Black Mold, audio: "12 ", variant: Songsterr}

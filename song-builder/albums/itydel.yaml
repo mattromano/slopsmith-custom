@@ -1,0 +1,17 @@
+artist: Prince Daddy & The Hyena
+album: I Thought You Didn't Even Like Leaving
+year: 2016
+audio_dir: C:/Users/mattr/Desktop/P-Daddy Albums/Prince Daddy & The Hyena - I Thought You Didn't Even Like Leaving
+tab_dir: C:/Users/mattr/Desktop/gc pro tabs/songsterr
+cover: C:/Users/mattr/Desktop/P-Daddy Albums/Prince Daddy & The Hyena - I Thought You Didn't Even Like Leaving/cover.jpg
+short: Prince_Daddy
+songs:
+  - {title: "I Thought You Didn't Even Like Leaving", tab: "Hyena-I Thought You Didn't", audio: "- 01 "}
+  - {title: I Forgot To Take My Meds Today, tab: I Forgot To Take My Meds, audio: "- 02 "}
+  - {title: Clever Girl, tab: "Clever Girl (Really Really", audio: "- 03 "}
+  - {title: "Nika's Got It Wrong", tab: "Nika's Got It Wrong (remaster)", audio: "- 04 "}
+  - {title: Pop Song, tab: Pop Song, audio: "- 06 "}
+  - {title: Broc Ched, tab: Brocker Cheddlie, audio: "- 07 "}
+  - {title: I Wish I Could Ctrl+Alt+Del My Life, tab: Ctrl+Alt+Del, audio: "- 08 "}
+  - {title: Hundo Pos, tab: Hundo Pos, audio: "- 09 "}
+  - {title: Bromeo // Always Good, tab: Bromeo, audio: "- 05 ", variant: Songsterr}

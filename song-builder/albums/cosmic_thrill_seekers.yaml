@@ -1,0 +1,15 @@
+artist: Prince Daddy & The Hyena
+album: Cosmic Thrill Seekers
+year: 2019
+audio_dir: C:/Users/mattr/Desktop/P-Daddy Albums/Cosmic Thrill Seekers - PDaddy
+tab_dir: C:/Users/mattr/Desktop/gc pro tabs/songsterr
+cover: C:/Users/mattr/Desktop/P-Daddy Albums/Cosmic Thrill Seekers - PDaddy/cover.jpg
+short: Prince_Daddy
+songs:
+  - {title: I Lost My Life, tab: I Lost My Life, audio: "- 01 "}
+  - {title: Lauren (Track 2), tab: Lauren (Track 2), audio: "- 02 "}
+  - {title: "Fuckin' A", tab: "FUCKIN A", audio: "- 03 "}
+  - {title: Klonopin, tab: Klonopin, audio: "- 13 "}
+  - {title: Wacky Misadventures of the Passenger, tab: Wacky Misadventures, audio: "- 14 ", variant: Songsterr}
+  - {title: Cosmic Thrill Seeking Forever, tab: Cosmic Thrill Seeking Forever full song, audio: "- 05 ", variant: Songsterr}
+  - {title: "C'mon & Smoke Me Up", tab: "Hyena-C'mon & Smoke Me Up-", audio: "- 11 ", variant: Songsterr}

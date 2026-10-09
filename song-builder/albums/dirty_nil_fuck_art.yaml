@@ -1,0 +1,18 @@
+artist: The Dirty Nil
+album: Fuck Art
+year: 2021
+audio_dir: C:/Users/mattr/Desktop/Slopsmith Targets/The Dirty Nil - Fuck Art
+tab_dir: C:/Users/mattr/Desktop/Slopsmith Targets/tabs
+cover: C:/Users/mattr/Desktop/Slopsmith Targets/The Dirty Nil - Fuck Art/cover.jpg
+short: Dirty_Nil
+songs:
+  - {title: Doom Boy, tab: Doom Boy, audio: "01 "}
+  - {title: Blunt Force Concussion, tab: Blunt Force, audio: "02 "}
+  - {title: "Elvis '77", tab: Elvis, audio: "03 "}
+  - {title: Done With Drugs, tab: Done With Drugs, audio: "04 "}
+  - {title: Ride Or Die, tab: Ride or Die, audio: "05 "}
+  - {title: Hang Yer Moon, tab: Hang Yer Moon, audio: "06 "}
+  - {title: Damage Control, tab: Damage Control, audio: "07 "}
+  - {title: Possession, tab: Possession, audio: "09 "}
+  - {title: To The Guy Who Stole My Bike, tab: Stole My Bike, audio: "10 "}
+  - {title: One More And The Bill, tab: One More and the Bill, audio: "11 "}

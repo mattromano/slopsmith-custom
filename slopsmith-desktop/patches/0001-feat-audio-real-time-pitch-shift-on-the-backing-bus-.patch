@@ -1,0 +1,358 @@
+From 167f743397a581eeada6dbc752cb6f7b3a3d111c Mon Sep 17 00:00:00 2001
+From: mattromano <mattromano88@gmail.com>
+Date: Thu, 21 May 2026 05:41:42 -0700
+Subject: [PATCH 1/2] feat(audio): real-time pitch shift on the backing bus
+ (Auto-Tuner B)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Adds a tempo-preserving live-retune shifter to the backing-track render
+path so a physically detuned guitar can play along, driven by the
+Auto-Tuner plugin via IPC (added next). Runtime only — no DLC writes.
+
+- vendor signalsmith-stretch (MIT, header-only) as a submodule pinned to
+  tag 1.0.0, which bundles its own dsp/ headers (no transitive deps)
+- BackingPitchShifter: pImpl wrapper confining the heavy template to one
+  TU. prepare()/reset() allocate (off the audio thread); setSemitones()
+  and process() are RT-safe (atomics, no locks, no allocation). 0 st =
+  early-return bypass so normal playback stays bit-untouched.
+- AudioEngine: configure in audioDeviceAboutToStart(), process the
+  backing block in place before the mix, reset on seek. While a shift is
+  active, report the backing position minus the shifter latency so the
+  chart playhead stays aligned with the (delayed) audio. Expose
+  set/getBackingPitchSemitones + getBackingPitchLatencyMs.
+- CMake: add BackingPitchShifter.cpp + the signalsmith include dir.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+Signed-off-by: mattromano <mattromano88@gmail.com>
+---
+ .gitmodules                               |  3 +
+ src/audio/AudioEngine.cpp                 | 39 ++++++++-
+ src/audio/AudioEngine.h                   | 14 ++++
+ src/audio/BackingPitchShifter.cpp         | 98 +++++++++++++++++++++++
+ src/audio/BackingPitchShifter.h           | 52 ++++++++++++
+ src/audio/CMakeLists.txt                  |  7 ++
+ src/audio/third_party/signalsmith-stretch |  1 +
+ 7 files changed, 212 insertions(+), 2 deletions(-)
+ create mode 100644 src/audio/BackingPitchShifter.cpp
+ create mode 100644 src/audio/BackingPitchShifter.h
+ create mode 160000 src/audio/third_party/signalsmith-stretch
+
+diff --git a/.gitmodules b/.gitmodules
+index b671632..27dde36 100644
+--- a/.gitmodules
++++ b/.gitmodules
+@@ -10,3 +10,6 @@
+ 	path = src/audio/third_party/NAM
+ 	url = https://github.com/sdatkinson/NeuralAmpModelerCore.git
+ 	branch = main
++[submodule "src/audio/third_party/signalsmith-stretch"]
++	path = src/audio/third_party/signalsmith-stretch
++	url = https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+diff --git a/src/audio/AudioEngine.cpp b/src/audio/AudioEngine.cpp
+index 541f914..4f8307a 100644
+--- a/src/audio/AudioEngine.cpp
++++ b/src/audio/AudioEngine.cpp
+@@ -472,6 +472,10 @@ void AudioEngine::setBackingPosition(double seconds)
+     if (backingTransport)
+     {
+         backingTransport->setPosition(seconds);
++        // Drop the shifter's buffered audio so a seek doesn't bleed
++        // pitch-shifted content from the old position. Safe here: the callback
++        // takes backingLock via ScopedTryLock, so it can't run concurrently.
++        backingPitch.reset();
+         // Read back the actual position; the transport may clamp (e.g. negative or past EOF).
+         cachedBackingPosition.store(backingTransport->getCurrentPosition());
+     }
+@@ -502,6 +506,15 @@ void AudioEngine::stopBacking()
+     stopBackingNoLock();
+ }
+ 
++void AudioEngine::setBackingPitchSemitones(float semitones)
++{
++    // Lock-free: an atomic mirror for getBackingPitchSemitones() + re-assert on
++    // device start, plus the shifter's own RT-safe atomic. Callable from the
++    // IPC/JS thread without touching backingLock or the audio callback.
++    backingPitchSemitones.store(semitones, std::memory_order_relaxed);
++    backingPitch.setSemitones(semitones);
++}
++
+ void AudioEngine::resetPeaks()
+ {
+     inputPeak.store(0.0f);
+@@ -549,6 +562,14 @@ void AudioEngine::audioDeviceAboutToStart(juce::AudioIODevice* device)
+     noiseGate.prepare(sr, bs);
+     tonePolish.prepare(sr);
+ 
++    // Configure the live-retune shifter for this device (allocates — fine on
++    // the device-start thread). Match the output channel count the callback
++    // fills the backing buffer with, then re-assert the current shift.
++    int backingOutCh = device->getActiveOutputChannels().countNumberOfSetBits();
++    if (backingOutCh < 1) backingOutCh = 2;
++    backingPitch.prepare(backingOutCh, sr, bs);
++    backingPitch.setSemitones(backingPitchSemitones.load(std::memory_order_relaxed));
++
+     const juce::ScopedLock sl(backingLock);
+     if (backingTransport)
+         backingTransport->prepareToPlay(bs, sr);
+@@ -758,10 +779,24 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
+             juce::AudioSourceChannelInfo info(&backingBuffer, 0, numSamples);
+             backingTransport->getNextAudioBlock(info);
+ 
++            // Live retune: pitch-shift the backing block in place before it's
++            // mixed. No-op (early return) when the shift is 0, so normal
++            // playback stays bit-untouched and zero-latency.
++            backingPitch.process(backingBuffer, numSamples);
++
+             // Keep cached position and playing state up to date for lock-free polling.
+             // backingTransport is non-null (checked above) and backingLock is held for
+-            // this entire block via ScopedTryLock, so these reads are safe.
+-            cachedBackingPosition.store(backingTransport->getCurrentPosition());
++            // this entire block via ScopedTryLock, so these reads are safe. While a
++            // shift is active the audio coming out of the shifter lags the transport
++            // by its latency, so report the delayed position to keep the chart
++            // playhead aligned with what's actually heard.
++            double reportedBackingPos = backingTransport->getCurrentPosition();
++            if (backingPitch.isActive())
++            {
++                reportedBackingPos -= backingPitch.latencyMs() / 1000.0;
++                if (reportedBackingPos < 0.0) reportedBackingPos = 0.0;
++            }
++            cachedBackingPosition.store(reportedBackingPos);
+ 
+             // Sync the flag if transport stopped at EOF
+             if (!backingTransport->isPlaying())
+diff --git a/src/audio/AudioEngine.h b/src/audio/AudioEngine.h
+index 636d489..6d9939a 100644
+--- a/src/audio/AudioEngine.h
++++ b/src/audio/AudioEngine.h
+@@ -6,6 +6,7 @@
+ #include "ChordScorer.h"
+ #include "MlNoteDetector.h"
+ #include "NoteVerifier.h"
++#include "BackingPitchShifter.h"
+ #include <juce_audio_devices/juce_audio_devices.h>
+ #include <juce_audio_formats/juce_audio_formats.h>
+ #include <array>
+@@ -123,6 +124,14 @@ public:
+     double getBackingPosition() const { return cachedBackingPosition.load(); }
+     double getBackingDuration() const { return cachedBackingDuration.load(); }
+ 
++    // Live retune (Auto-Tuner, deliverable B): real-time, tempo-preserving
++    // pitch shift of the backing track. 0 = bypass. Applied in the audio
++    // callback; reported backing position is compensated by the shifter
++    // latency while a non-zero shift is active so the chart stays aligned.
++    void setBackingPitchSemitones(float semitones);
++    float getBackingPitchSemitones() const { return backingPitchSemitones.load(); }
++    double getBackingPitchLatencyMs() const { return backingPitch.latencyMs(); }
++
+     // Metering (read from any thread — atomic)
+     float getInputLevel() const { return currentInputLevel.load(); }
+     float getOutputLevel() const { return currentOutputLevel.load(); }
+@@ -235,6 +244,11 @@ private:
+     std::atomic<double> cachedBackingDuration{0.0};
+     juce::CriticalSection backingLock;
+ 
++    // Live-retune pitch shifter on the backing bus. Configured in
++    // audioDeviceAboutToStart(), applied under backingLock in the callback.
++    BackingPitchShifter backingPitch;
++    std::atomic<float> backingPitchSemitones{0.0f};
++
+     // Toggled from startAudio()/stopAudio() (main / device-management
+     // threads) and read from isAudioRunning() on the JS thread via the
+     // audio-bridge dispatch loop. Plain bool would be a data race;
+diff --git a/src/audio/BackingPitchShifter.cpp b/src/audio/BackingPitchShifter.cpp
+new file mode 100644
+index 0000000..b31a216
+--- /dev/null
++++ b/src/audio/BackingPitchShifter.cpp
+@@ -0,0 +1,98 @@
++#include "BackingPitchShifter.h"
++
++// signalsmith-stretch is header-only and pulls in its bundled dsp/ headers via
++// relative includes; the include dir is wired in src/audio/CMakeLists.txt.
++#include "signalsmith-stretch.h"
++
++#include <atomic>
++#include <cmath>
++#include <limits>
++
++struct BackingPitchShifter::Impl
++{
++    signalsmith::stretch::SignalsmithStretch<float> stretch;
++    juce::AudioBuffer<float> scratch;     // distinct output (process() isn't in-place)
++    int    channels   = 0;
++    double sampleRate = 0.0;
++    int    maxBlock   = 0;
++    int    latency    = 0;
++    bool   configured = false;
++
++    std::atomic<float> semitones{0.0f};   // target (written off-thread, read on RT)
++    float  appliedSemitones = 0.0f;       // last value pushed to the stretcher (RT only)
++};
++
++BackingPitchShifter::BackingPitchShifter() : impl(std::make_unique<Impl>()) {}
++BackingPitchShifter::~BackingPitchShifter() = default;
++
++void BackingPitchShifter::prepare(int numChannels, double sampleRate, int maxBlockSamples)
++{
++    if (numChannels < 1) numChannels = 1;
++    impl->channels   = numChannels;
++    impl->sampleRate = sampleRate;
++    impl->maxBlock   = juce::jmax(1, maxBlockSamples);
++
++    // presetDefault: ~120 ms analysis window — good music quality. Latency is
++    // inputLatency()+outputLatency() == one window; exposed via latencyMs() so
++    // the renderer can keep the chart aligned with the delayed audio.
++    impl->stretch.presetDefault(numChannels, static_cast<float>(sampleRate));
++    impl->latency = impl->stretch.inputLatency() + impl->stretch.outputLatency();
++
++    impl->scratch.setSize(numChannels, impl->maxBlock, false, false, true);
++    impl->stretch.reset();
++    impl->appliedSemitones = std::numeric_limits<float>::quiet_NaN(); // force re-push
++    impl->configured = true;
++}
++
++void BackingPitchShifter::reset()
++{
++    if (impl->configured) impl->stretch.reset();
++}
++
++void BackingPitchShifter::setSemitones(float semitones)
++{
++    impl->semitones.store(semitones, std::memory_order_relaxed);
++}
++
++float BackingPitchShifter::getSemitones() const
++{
++    return impl->semitones.load(std::memory_order_relaxed);
++}
++
++bool BackingPitchShifter::isActive() const
++{
++    return impl->configured
++        && std::abs(impl->semitones.load(std::memory_order_relaxed)) > 1.0e-4f;
++}
++
++int    BackingPitchShifter::numChannels()    const { return impl->channels; }
++int    BackingPitchShifter::latencySamples() const { return impl->configured ? impl->latency : 0; }
++
++double BackingPitchShifter::latencyMs() const
++{
++    return (impl->configured && impl->sampleRate > 0.0)
++        ? 1000.0 * impl->latency / impl->sampleRate
++        : 0.0;
++}
++
++void BackingPitchShifter::process(juce::AudioBuffer<float>& buffer, int numSamples)
++{
++    if (!impl->configured) return;
++
++    const float semis = impl->semitones.load(std::memory_order_relaxed);
++    if (std::abs(semis) <= 1.0e-4f) return;                 // bypass
++    if (buffer.getNumChannels() != impl->channels) return;  // channel-count guard
++    if (numSamples <= 0 || numSamples > impl->maxBlock) return; // size guard (no RT alloc)
++
++    if (!(semis == impl->appliedSemitones)) {               // != also catches the NaN sentinel
++        impl->stretch.setTransposeSemitones(semis);
++        impl->appliedSemitones = semis;
++    }
++
++    // Equal input/output sample counts ⇒ playback rate 1.0 ⇒ tempo preserved,
++    // only the transpose applies. signalsmith wants a distinct output buffer.
++    impl->stretch.process(buffer.getArrayOfReadPointers(),  numSamples,
++                          impl->scratch.getArrayOfWritePointers(), numSamples);
++    for (int ch = 0; ch < impl->channels; ++ch)
++        buffer.copyFrom(ch, 0, impl->scratch, ch, 0, numSamples);
++}
+diff --git a/src/audio/BackingPitchShifter.h b/src/audio/BackingPitchShifter.h
+new file mode 100644
+index 0000000..b49c0c9
+--- /dev/null
++++ b/src/audio/BackingPitchShifter.h
+@@ -0,0 +1,52 @@
++#pragma once
++
++#include <juce_audio_basics/juce_audio_basics.h>
++#include <memory>
++
++// Real-time, tempo-preserving pitch shifter for the backing-track bus
++// (Auto-Tuner / Live Retune, deliverable B). Wraps signalsmith-stretch (MIT,
++// header-only) behind a pImpl so the heavy template header is confined to one
++// translation unit (BackingPitchShifter.cpp).
++//
++// Threading contract:
++//   - prepare() / reset() ALLOCATE and configure — call off the audio thread
++//     (device-start hook, song load, seek). They take no locks themselves; the
++//     caller serialises them against process() via the existing backingLock.
++//   - setSemitones() / process() are real-time safe (no allocation, no locks).
++//
++// process() introduces an algorithmic latency of ~one analysis window
++// (latencySamples()); callers that drive a visual playhead should compensate by
++// that amount while a non-zero shift is active so audio and chart stay aligned.
++class BackingPitchShifter
++{
++public:
++    BackingPitchShifter();
++    ~BackingPitchShifter();
++
++    // (Re)configure for this device. Allocates — off the audio thread only.
++    void prepare(int numChannels, double sampleRate, int maxBlockSamples);
++
++    // Drop buffered audio (call on seek / track change). Off the audio thread.
++    void reset();
++
++    // RT-safe: target shift in semitones. 0 = bypass (process() becomes a no-op).
++    void setSemitones(float semitones);
++    float getSemitones() const;
++
++    // True when configured AND a non-zero shift is set.
++    bool isActive() const;
++    int numChannels() const;
++
++    // Algorithmic latency: output lags input by ~one analysis window.
++    int latencySamples() const;
++    double latencyMs() const;
++
++    // RT-safe: pitch-shift `buffer` in place over its first `numSamples` frames.
++    // No-op when inactive, or on a channel-count / block-size mismatch (so we
++    // never allocate or read out of bounds on the audio thread).
++    void process(juce::AudioBuffer<float>& buffer, int numSamples);
++
++private:
++    struct Impl;
++    std::unique_ptr<Impl> impl;
++};
+diff --git a/src/audio/CMakeLists.txt b/src/audio/CMakeLists.txt
+index 8b6efc6..45ca8fa 100644
+--- a/src/audio/CMakeLists.txt
++++ b/src/audio/CMakeLists.txt
+@@ -6,6 +6,7 @@ set(AUDIO_SOURCES
+     NoiseGate.cpp
+     TonePolish.cpp
+     AudioEngine.cpp
++    BackingPitchShifter.cpp
+     SignalChain.cpp
+     VSTHost.cpp
+     NAMProcessor.cpp
+@@ -217,3 +218,9 @@ endif()
+ 
+ # Include directory for our headers
+ target_include_directories(slopsmith_audio PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
++
++# signalsmith-stretch (MIT, header-only) — real-time pitch shift on the backing
++# bus (BackingPitchShifter.cpp). Pinned to tag 1.0.0, which bundles its own dsp/
++# headers (resolved via the header's relative includes), so no further deps.
++target_include_directories(slopsmith_audio PRIVATE
++    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/signalsmith-stretch")
+diff --git a/src/audio/third_party/signalsmith-stretch b/src/audio/third_party/signalsmith-stretch
+new file mode 160000
+index 0000000..4cbaafc
+--- /dev/null
++++ b/src/audio/third_party/signalsmith-stretch
+@@ -0,0 +1 @@
++Subproject commit 4cbaafc2da4fce3b5cbbff74c8afdb07dc43d790
+-- 
+2.52.0.windows.1
+

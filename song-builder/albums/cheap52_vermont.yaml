@@ -1,0 +1,9 @@
+artist: Cheap 52
+album: Vermont
+year: 2024
+audio_dir: C:/Users/mattr/Desktop/Slopsmith Targets
+tab_dir: C:/Users/mattr/Desktop/Slopsmith Targets/tabs
+short: Cheap_52
+songs:
+  - {title: My Fault, tab: My Fault, audio: My Fault}
+  - {title: Wish in Twos, tab: [Wish in Twos, Wish ln Twos], audio: Wish in Twos}

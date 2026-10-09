@@ -1,0 +1,109 @@
+From febffac69b55ced440733219bfaff3032928adc5 Mon Sep 17 00:00:00 2001
+From: mattromano <mattromano88@gmail.com>
+Date: Thu, 21 May 2026 05:41:51 -0700
+Subject: [PATCH 2/2] feat(audio): IPC for backing pitch shift (Auto-Tuner B)
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Expose the engine's live-retune controls to the renderer so the
+Auto-Tuner plugin can feature-detect and prefer the native engine over
+the web AudioWorklet:
+
+- NodeAddon: setBackingPitchSemitones / getBackingPitchSemitones /
+  getBackingPitchLatencyMs N-API functions
+- audio-bridge: matching audio:setBackingPitchSemitones (+ getters) IPC
+  handlers
+- preload: window.slopsmithDesktop.audio.setBackingPitchSemitones (+
+  getters) — setBackingPitchSemitones is the capability the plugin probes
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
+Signed-off-by: mattromano <mattromano88@gmail.com>
+---
+ src/audio/NodeAddon.cpp  | 26 ++++++++++++++++++++++++++
+ src/main/audio-bridge.ts |  6 ++++++
+ src/main/preload.ts      |  7 +++++++
+ 3 files changed, 39 insertions(+)
+
+diff --git a/src/audio/NodeAddon.cpp b/src/audio/NodeAddon.cpp
+index 0d86bdf..b65817a 100644
+--- a/src/audio/NodeAddon.cpp
++++ b/src/audio/NodeAddon.cpp
+@@ -1632,6 +1632,27 @@ static Napi::Value IsBackingPlaying(const Napi::CallbackInfo& info)
+     return Napi::Boolean::New(info.Env(), playing);
+ }
+ 
++// ── Live retune (Auto-Tuner, deliverable B) ─────────────────────────────────────
++
++static Napi::Value SetBackingPitchSemitones(const Napi::CallbackInfo& info)
++{
++    if (engine && info.Length() > 0)
++        engine->setBackingPitchSemitones((float) info[0].As<Napi::Number>().DoubleValue());
++    return info.Env().Undefined();
++}
++
++static Napi::Value GetBackingPitchSemitones(const Napi::CallbackInfo& info)
++{
++    float s = engine ? engine->getBackingPitchSemitones() : 0.0f;
++    return Napi::Number::New(info.Env(), s);
++}
++
++static Napi::Value GetBackingPitchLatencyMs(const Napi::CallbackInfo& info)
++{
++    double ms = engine ? engine->getBackingPitchLatencyMs() : 0.0;
++    return Napi::Number::New(info.Env(), ms);
++}
++
+ // ── Presets ───────────────────────────────────────────────────────────────────
+ 
+ static Napi::Value SavePreset(const Napi::CallbackInfo& info)
+@@ -1962,6 +1983,11 @@ static Napi::Object InitModule(Napi::Env env, Napi::Object exports)
+     exports.Set("getBackingDuration", Napi::Function::New(env, GetBackingDuration));
+     exports.Set("isBackingPlaying", Napi::Function::New(env, IsBackingPlaying));
+ 
++    // Live retune (Auto-Tuner)
++    exports.Set("setBackingPitchSemitones", Napi::Function::New(env, SetBackingPitchSemitones));
++    exports.Set("getBackingPitchSemitones", Napi::Function::New(env, GetBackingPitchSemitones));
++    exports.Set("getBackingPitchLatencyMs", Napi::Function::New(env, GetBackingPitchLatencyMs));
++
+     // Presets
+     exports.Set("savePreset", Napi::Function::New(env, SavePreset));
+     exports.Set("loadPreset", Napi::Function::New(env, LoadPreset));
+diff --git a/src/main/audio-bridge.ts b/src/main/audio-bridge.ts
+index b8012c3..550eb95 100644
+--- a/src/main/audio-bridge.ts
++++ b/src/main/audio-bridge.ts
+@@ -501,6 +501,12 @@ export function initAudioBridge(): void {
+     ipcMain.handle('audio:getBackingDuration', () => audio?.getBackingDuration() ?? 0);
+     ipcMain.handle('audio:isBackingPlaying', () => audio?.isBackingPlaying() ?? false);
+ 
++    // Live retune (Auto-Tuner, deliverable B)
++    ipcMain.handle('audio:setBackingPitchSemitones', (_event, semitones: number) =>
++        audio?.setBackingPitchSemitones(semitones));
++    ipcMain.handle('audio:getBackingPitchSemitones', () => audio?.getBackingPitchSemitones() ?? 0);
++    ipcMain.handle('audio:getBackingPitchLatencyMs', () => audio?.getBackingPitchLatencyMs() ?? 0);
++
+     // ── Presets ────────────────────────────────────────────────────────────
+ 
+     ipcMain.handle('audio:savePreset', () => {
+diff --git a/src/main/preload.ts b/src/main/preload.ts
+index 780cc78..0216bc9 100644
+--- a/src/main/preload.ts
++++ b/src/main/preload.ts
+@@ -239,6 +239,13 @@ contextBridge.exposeInMainWorld('slopsmithDesktop', {
+         getBackingDuration: (): Promise<number> => ipcRenderer.invoke('audio:getBackingDuration'),
+         isBackingPlaying: (): Promise<boolean> => ipcRenderer.invoke('audio:isBackingPlaying'),
+ 
++        // Live retune (Auto-Tuner, deliverable B). The plugin feature-detects
++        // setBackingPitchSemitones to prefer this native engine over the web worklet.
++        setBackingPitchSemitones: (semitones: number) =>
++            ipcRenderer.invoke('audio:setBackingPitchSemitones', semitones),
++        getBackingPitchSemitones: (): Promise<number> => ipcRenderer.invoke('audio:getBackingPitchSemitones'),
++        getBackingPitchLatencyMs: (): Promise<number> => ipcRenderer.invoke('audio:getBackingPitchLatencyMs'),
++
+         // Presets
+         savePreset: () => ipcRenderer.invoke('audio:savePreset'),
+         loadPreset: (presetJson: string) => ipcRenderer.invoke('audio:loadPreset', presetJson),
+-- 
+2.52.0.windows.1
+

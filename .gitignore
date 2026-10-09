@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.sloppak
+*.feedpak
+*.gp
+*.gp5
+*.mp3
+*.ogg
+.env
+_build/
