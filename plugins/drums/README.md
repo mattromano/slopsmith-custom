@@ -38,8 +38,8 @@ The 3D view is a WebGL renderer (`highway3d.js`, built on the three.js copy that
 in the style of the classic drum games:
 
 - **Lanes** — red, yellow, blue and green pad lanes plus an orange kick bar across the whole track. Pad
-  targets sit on the strikeline at the bottom; the track recedes into the distance.
-- **Gems** — snare and toms are flat round "drum head" pucks; cymbals (hi-hat, ride, crash) are raised domes
+  targets (rectangular frames in the lane colours) sit on the strikeline at the bottom; the track recedes into the distance.
+- **Gems** — snare and toms are wide rounded-rectangle blocks with a bevelled edge (Rock Band style); cymbals (hi-hat, ride, crash) are raised domes
   with a bell and a ring, floating over a shadow; kicks are wide orange bars, double-bass (2x) kicks are
   magenta with a white stripe. Accents are bigger and brighter, ghost notes smaller and translucent. Missed
   notes go grey and slide past the strikeline.
@@ -51,7 +51,7 @@ in the style of the classic drum games:
   (up to x8).
 - **HUD** — score, star rating (5 stars + gold), accuracy and notes hit, the difficulty badge, star power
   meter, note streak and the multiplier badge (x1-x4, x8 in star power, with a ring showing progress to the
-  next multiplier).
+  next multiplier). Score, stars and star power sit right of the track; streak and multiplier left of it.
   Core draw hooks (`window.highway.fireDrawHooks`) run on the HUD canvas, so overlay plugins still work.
 
 Scoring follows the YARG drums rules ported in `engine.js` (hit window ±70 ms, 10 notes per multiplier

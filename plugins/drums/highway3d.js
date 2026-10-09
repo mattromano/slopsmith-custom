@@ -3,7 +3,7 @@
  *
  * A perspective drum track in the style of the classic plastic-instrument drum games: four coloured
  * pad lanes (red, yellow, blue, green) plus a full-width kick bar, a strikeline with pad targets,
- * flat "drum-head" gems for pads/toms, raised domed gems for cymbals, star power and drum-fill
+ * rounded-rectangle gems for pads/toms, raised domed gems for cymbals, star power and drum-fill
  * highlighting, hit sparks and a 2D HUD (score, multiplier, streak, star power meter, stars,
  * accuracy). It contains no ported game logic; scoring comes from engine.js (DrumsEngine), which is
  * used only through its public API.
@@ -918,6 +918,28 @@
         return tex;
     }
 
+    // A rounded-rectangle Shape (w x h, corner radius r) centred on the origin; with hw/hh/hr it gets a
+    // centred rounded-rectangle hole, which makes a frame.
+    function _roundedRect(T, w, h, r, hw, hh, hr) {
+        const path = (P, w, h, r) => {
+            const x = -w / 2, y = -h / 2;
+            r = Math.min(r, w / 2, h / 2);
+            P.moveTo(x + r, y);
+            P.lineTo(x + w - r, y);
+            P.quadraticCurveTo(x + w, y, x + w, y + r);
+            P.lineTo(x + w, y + h - r);
+            P.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+            P.lineTo(x + r, y + h);
+            P.quadraticCurveTo(x, y + h, x, y + h - r);
+            P.lineTo(x, y + r);
+            P.quadraticCurveTo(x, y, x + r, y);
+            return P;
+        };
+        const s = path(new T.Shape(), w, h, r);
+        if (hw > 0 && hh > 0) s.holes.push(path(new T.Path(), hw, hh, hr));
+        return s;
+    }
+
     // Pixel-store state survives on a context shared by successive renderers (same <canvas>); three.js
     // assumes the defaults when it creates a renderer.
     function _resetPixelStore(gl) {
@@ -1040,17 +1062,19 @@
         kickGlow.position.set(0, 0.02, 0);
         scene.add(kickGlow);
 
-        const targetRingGeo = own(new T.TorusGeometry(0.37, 0.05, 12, 48));
-        const targetDiscGeo = own(new T.CircleGeometry(0.33, 40));
+        // Pad targets: a rounded-rectangle frame in the lane colour over a translucent pad face.
+        const targetRingGeo = own(new T.ExtrudeGeometry(_roundedRect(T, 0.9, 0.4, 0.08, 0.76, 0.27, 0.05),
+            { depth: 0.035, bevelEnabled: false, curveSegments: 6 }));
+        const targetDiscGeo = own(new T.ShapeGeometry(_roundedRect(T, 0.8, 0.31, 0.06), 6));
         const targets = [];
         for (let i = 0; i < TRACK.lanes; i++) {
             const col = LANE_COLORS[LANE_NAMES[i]];
             const ringMat = own(new T.MeshBasicMaterial({ color: col }));
             const ring = new T.Mesh(targetRingGeo, ringMat);
             ring.rotation.x = -Math.PI / 2;
-            ring.position.set(laneX(i), 0.05, 0);
+            ring.position.set(laneX(i), 0.01, 0);
             scene.add(ring);
-            const discMat = own(new T.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.22, depthWrite: false }));
+            const discMat = own(new T.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.92, depthWrite: false }));
             const disc = new T.Mesh(targetDiscGeo, discMat);
             disc.rotation.x = -Math.PI / 2;
             disc.position.set(laneX(i), 0.035, 0);
@@ -1119,17 +1143,20 @@
         const glowMat = own(new T.MeshBasicMaterial({ map: glowTex, transparent: true, opacity: 0.85,
             blending: T.AdditiveBlending, depthWrite: false }));
 
-        // Pad / tom: a low rounded puck with a bright drum-head centre and a dark rim line.
-        const puckProfile = [
-            [0, 0], [0.30, 0], [0.345, 0.01], [0.365, 0.04], [0.36, 0.075], [0.335, 0.1], [0.29, 0.112], [0, 0.112],
-        ].map(([x, y]) => new T.Vector2(x, y));
-        const padGeo = own(new T.LatheGeometry(puckProfile, 40));
-        const padCapGeo = own(new T.CircleGeometry(0.235, 32));
+        // Pad / tom: a wide rounded-rectangle block with a bevelled edge, a lighter inset top face and a
+        // dark frame line between the two.
+        const PAD_W = 0.76, PAD_D = 0.31, PAD_BEVEL = 0.03, PAD_H = 0.075 + 2 * PAD_BEVEL;
+        const padGeo = own(new T.ExtrudeGeometry(_roundedRect(T, PAD_W - 2 * PAD_BEVEL, PAD_D - 2 * PAD_BEVEL, 0.05), {
+            depth: PAD_H - 2 * PAD_BEVEL, bevelEnabled: true, bevelThickness: PAD_BEVEL, bevelSize: PAD_BEVEL,
+            bevelSegments: 3, curveSegments: 6 }));
+        padGeo.rotateX(-Math.PI / 2);
+        padGeo.translate(0, PAD_BEVEL, 0);
+        const padCapGeo = own(new T.ShapeGeometry(_roundedRect(T, PAD_W - 0.15, PAD_D - 0.12, 0.04), 6));
         padCapGeo.rotateX(-Math.PI / 2);
-        padCapGeo.translate(0, 0.114, 0);
-        const padRimGeo = own(new T.TorusGeometry(0.265, 0.018, 8, 40));
+        padCapGeo.translate(0, PAD_H + 0.002, 0);
+        const padRimGeo = own(new T.ShapeGeometry(_roundedRect(T, PAD_W - 0.1, PAD_D - 0.07, 0.055, PAD_W - 0.15, PAD_D - 0.12, 0.04), 6));
         padRimGeo.rotateX(-Math.PI / 2);
-        padRimGeo.translate(0, 0.115, 0);
+        padRimGeo.translate(0, PAD_H + 0.001, 0);
         // Cymbal: a raised conical dome with a bell on a thick ring, floating over a shadow on the track.
         const CYM_Y = 0.24;
         const domeGeo = own(new T.SphereGeometry(0.36, 36, 12, 0, Math.PI * 2, 0, Math.PI / 2));
@@ -1145,10 +1172,10 @@
         shadowGeo.translate(0, 0.006, 0);
         const shadowMat = own(new T.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.55, depthWrite: false }));
         // Kick: a wide bar across the track; 2x kick adds a white centre stripe.
-        const kickGeo = own(new T.BoxGeometry(W4 - 0.06, 0.08, 0.17));
-        kickGeo.translate(0, 0.04, 0);
-        const stripeGeo = own(new T.BoxGeometry(W4 * 0.55, 0.085, 0.05));
-        stripeGeo.translate(0, 0.045, 0);
+        const kickGeo = own(new T.BoxGeometry(W4 - 0.06, 0.045, 0.13));
+        kickGeo.translate(0, 0.0225, 0);
+        const stripeGeo = own(new T.BoxGeometry(W4 * 0.55, 0.05, 0.04));
+        stripeGeo.translate(0, 0.025, 0);
         const glowGeo = own(new T.PlaneGeometry(1, 1));
         glowGeo.rotateX(-Math.PI / 2);
         glowGeo.translate(0, 0.01, 0);
@@ -1380,12 +1407,13 @@
             const left = project(-W4 / 2 - 0.15, 0, 0);
             const right = project(W4 / 2 + 0.15, 0, 0);
             const strikeY = clamp(left.y, Hc * 0.4, Hc - 20);
-            const narrow = left.x < 190 || Wc - right.x < 150;
+            // Rock Band layout: score column right of the track, multiplier + streak left of it.
+            const narrow = Wc - right.x < 190 || left.x < 150;
             const scale = clamp(Math.min(Wc, Hc * 1.6) / 1100, 0.6, 1.25);
 
-            // Left column: star power meter, score, stars, accuracy.
-            const lx = narrow ? 16 : left.x - 28 * scale;
-            const align = narrow ? 'left' : 'right';
+            // Score column: star power meter, score, stars, accuracy.
+            const lx = narrow ? 16 : right.x + 28 * scale;
+            const align = 'left';
             const ly = narrow ? 24 * scale : strikeY - 150 * scale;
             ctx.textAlign = align;
             ctx.textBaseline = 'alphabetic';
@@ -1488,8 +1516,8 @@
                 diffRect = { x: px, y: py, w: pw, h: ph };
             }
 
-            // Right column: multiplier badge + streak.
-            const rx = narrow ? Wc - 16 - 40 * scale : right.x + 28 * scale + 40 * scale;
+            // Multiplier badge + streak.
+            const rx = narrow ? Wc - 16 - 40 * scale : left.x - 28 * scale - 40 * scale;
             const ry = narrow ? 104 * scale : strikeY - 70 * scale;
             const br = 34 * scale;
             ctx.shadowBlur = 14;
@@ -1657,13 +1685,13 @@
                             const pk = g.ghost ? 'padGhost' : 'pad';
                             place(meshes[pk], cnt[pk]++, x, 0, z, s, s, s, col);
                             if (!g.ghost) {
-                                place(meshes.padCap, cnt.padCap++, x, 0, z, s, s, s, tmp2.copy(col).lerp(white, 0.45));
-                                place(meshes.padRim, cnt.padRim++, x, 0, z, s, s, s, tmp2.copy(col).multiplyScalar(0.35));
+                                place(meshes.padCap, cnt.padCap++, x, 0, z, s, s, s, tmp2.copy(col).lerp(white, 0.08));
+                                place(meshes.padRim, cnt.padRim++, x, 0, z, s, s, s, tmp2.copy(col).multiplyScalar(0.22));
                             }
                         }
                         if (!missed && !g.auto) {
                             const gs = (g.ghost ? 0.9 : (g.accent ? 1.75 : 1.35));
-                            place(meshes.glow, cnt.glow++, x, 0, z, gs, 1, gs,
+                            place(meshes.glow, cnt.glow++, x, 0, z, gs, 1, g.kind === 'cymbal' ? gs : gs * 0.6,
                                 tmp2.copy(col).multiplyScalar(g.ghost ? 0.3 : (g.accent ? 0.9 : 0.6)));
                         }
                         if (canActivate && !spActive && !missed && eng && eng.isActivatorNote(g.id) && cnt.activator < 16) {
@@ -1693,7 +1721,7 @@
                 const sc = 1 + 0.14 * k;
                 tg.ring.scale.set(sc, sc, sc);
                 tg.ringMat.color.copy(tg.color).lerp(white, 0.5 * k);
-                tg.discMat.opacity = 0.2 + 0.45 * k;
+                tg.discMat.color.setHex(COLORS.track).lerp(tg.color, 0.16 + 0.66 * k);
                 const lt = laneTints[i];
                 const red = clamp(1 - (wall - lt.red) / 380, 0, 1);
                 const press = clamp(1 - (wall - lt.press) / 160, 0, 1);
@@ -1720,11 +1748,11 @@
                 } else {
                     const rs = 0.8 + p * 1.3;
                     f.ring.position.set(f.x, 0.08, 0);
-                    f.ring.scale.set(rs, 1, rs);
+                    f.ring.scale.set(rs * 1.05, 1, rs * 0.55);
                     f.ringMat.opacity = (f.strong ? 1 : 0.9) * (1 - p);
                     const gs = 1.6 + p * 0.8;
                     f.flare.position.set(f.x, 0.09, 0);
-                    f.flare.scale.set(gs, 1, gs);
+                    f.flare.scale.set(gs * 1.1, 1, gs * 0.7);
                     f.glowM.opacity = 1.0 * (1 - p) * (1 - p);
                 }
             }
