@@ -12,6 +12,8 @@ workflow that turns Guitar Pro tabs plus my own album MP3s into graded, stem-spl
 | `plugins/autotune/` | My Auto-Tuner plugin (snapshot; full history stays in the local repo) |
 | `plugins/drums/` | feedBack drum highway + YARG-ported scoring engine and a Rock Band–style 3D view (see `PROGRESS.md`) |
 | `plugins/multiplayer/` | feedBack multiplayer, with the arrangement picker built from each song's real arrangements |
+| `plugins/highway_tweaks/` | My user plugin: colorblind G/B strings, frame-drop watchdog, the note-detection stats card + timing gauge (compact in multiplayer, hidden on Drums) |
+| `plugins/play_counts/` | My user plugin: play counts / scores in the library, and the song / section / weak-spots column of the stats card |
 | `slopsmith-desktop/` | Desktop app changes (backing-track pitch shift) as patches on upstream; see its README |
 | `song-builder/` | The skill, setup scripts, feedBack Studio setup, album recipes (YAML) and working notes |
 | `.claude/skills/` | The same skill, auto-loaded when Claude Code runs inside this repo |

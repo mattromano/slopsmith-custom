@@ -1,0 +1,1049 @@
+// Highway Tweaks — user plugin (lives in AppData, so app updates don't wipe it).
+//
+// 1. Colorblind G/B strings. Bundled plugins can't be overridden by a user
+//    copy, so instead this plugin (app.js loads plugins sorted by display
+//    name — the leading '_' in plugin.json makes this one load first)
+//    intercepts the <script> tags app.js appends for highway_3d / fretboard,
+//    rewrites the G (index 3) and B (index 4) string colours in the source,
+//    and loads the patched copy from a blob URL. If an app update changes
+//    the source so a pattern no longer matches, that piece is skipped and
+//    the stock colours are used — it never breaks loading.
+//
+// 2. Frame-drop watchdog. While a song is playing, measures real frame
+//    intervals; when frames are being dropped it POSTs a diagnostic snapshot
+//    to /api/plugins/highway_tweaks/log (-> jank_log.jsonl next to this file)
+//    so the cause of the session-dependent lag can be read off disk without
+//    restarting the app (restarting always makes the lag disappear).
+(function () {
+    'use strict';
+    if (window.__highwayTweaks) return;
+    window.__highwayTweaks = { version: '1.10.0' };
+
+    // ── 1. String colours ───────────────────────────────────────────────
+    // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
+    // blue–yellow axis AND in lightness, both of which survive red-green
+    // colour blindness (simulated deutan ΔE 9 -> 87, protan 16 -> 79).
+    const G_HEX = 0xff7300, B_HEX = 0xb4f8ff;
+    const G_GRAD = '[0xff8a1a, 0xd85a00]', B_GRAD = '[0xe4fdff, 0x7fe3f5]';
+    const G_OUTLINE = '0xFFA040', B_OUTLINE = '0xF0FFFF';
+    const G_CSS = '#ff7300', B_CSS = '#b4f8ff';
+    const G_CSS_BRIGHT = '#ff9a40', B_CSS_BRIGHT = '#e6fdff';
+    const hex = (n) => '0x' + n.toString(16).padStart(6, '0');
+
+    // Replace entries 3 and 4 of a comma-separated literal list.
+    function setGB(listSrc, g, b) {
+        const parts = listSrc.split(',');
+        let idx = -1;
+        return parts.map((p) => {
+            if (!p.trim()) return p;
+            idx++;
+            const lead = p.match(/^\s*/)[0], trail = p.match(/\s*$/)[0];
+            if (idx === 3) return lead + g + trail;
+            if (idx === 4) return lead + b + trail;
+            return p;
+        }).join(',');
+    }
+
+    // Injected at the top of highway_3d's smoothNow(bundle). With native
+    // (JUCE) playback, sample the smoothed jucePlayer clock (see section 3)
+    // at the exact moment this frame is drawn, instead of bundle.currentTime,
+    // which was captured by app.js's free-running 60 Hz setInterval up to a
+    // frame earlier (random phase -> uneven per-frame steps). The chart/AV
+    // offset is recovered as bundle.currentTime minus the last raw audio time
+    // passed to highway.setTime(). Falls through to stock logic otherwise.
+    const SMOOTH_NOW_PREFIX = `function smoothNow(bundle) {
+            {
+                // [highway_tweaks] Frame-exact clock when the stems transport
+                // (patched to a precise clock) is playing: read it now instead
+                // of bundle.currentTime, which app.js sampled on its own 60 Hz
+                // timer up to a frame earlier. Offset (chart + AV) recovered
+                // from the last raw time passed to highway.setTime().
+                const __a = document.getElementById('audio');
+                if (bundle.isPlaying !== false && __a && typeof window.__hwtLastSetT === 'number'
+                        && window.__hwtStemsSmooth && window.__hwtStemsSmooth()) {
+                    const __t = __a.currentTime + (bundle.currentTime - window.__hwtLastSetT);
+                    _clkAudioT = bundle.currentTime; _clkPerf = performance.now(); _clkRate = 1;
+                    window.__h3dFrameNow = __t;
+                    return (_frameNow = __t);
+                }
+            }
+`;
+
+    const PATCHERS = {
+        highway_3d(code, hits) {
+            // Every selectable palette (default/neon/pastel/colorblind_hc).
+            code = code.replace(/const PALETTES = \{[\s\S]*?\n {4}\};/, (block) => {
+                hits.push('palettes');
+                return block.replace(/\[([^\]]*)\]/g, (_, list) => '[' + setGB(list, hex(G_HEX), hex(B_HEX)) + ']');
+            });
+            // Frame-exact smooth clock for native playback (see SMOOTH_NOW_PREFIX).
+            code = code.replace(/function smoothNow\(bundle\) \{\r?\n/, () => { hits.push('frame-clock'); return SMOOTH_NOW_PREFIX; });
+            // Hardcoded per-string gem gradients.
+            code = code.replace(/\[0xf77b0b, 0xdb5808\]/, () => { hits.push('gradG'); return G_GRAD; });
+            code = code.replace(/\[0x37c40b, 0x139305\]/, () => { hits.push('gradB'); return B_GRAD; });
+            // Hardcoded gem outline colours.
+            code = code.replace(/(const _outlineColors = \[)([^\]]*)(\])/, (_, a, list, c) => {
+                hits.push('outline');
+                return a + setGB(list, G_OUTLINE, B_OUTLINE) + c;
+            });
+            return code;
+        },
+        fretboard(code, hits) {
+            code = code.replace(/(const FB_STRING_COLORS = \[)([^\]]*)(\])/, (_, a, list, c) => {
+                hits.push('colors');
+                return a + setGB(list, `'${G_CSS}'`, `'${B_CSS}'`) + c;
+            });
+            code = code.replace(/(const FB_STRING_BRIGHT = \[)([^\]]*)(\])/, (_, a, list, c) => {
+                hits.push('bright');
+                return a + setGB(list, `'${G_CSS_BRIGHT}'`, `'${B_CSS_BRIGHT}'`) + c;
+            });
+            return code;
+        },
+
+        // ── Main-thread fixes (the actual cause of the highway frame drops) ──
+        // capability_inspector re-renders its (normally hidden) dev panel on
+        // every `slopsmith:capabilities:changed` event, which fires ~30x/s.
+        // Each re-render rewrites innerHTML, which in turn wakes
+        // sloppak_converter's document-wide MutationObserver, which rescans
+        // the whole library DOM (+ forced layout via offsetParent) — measured
+        // 61 full scans/s, ~30% of the renderer main thread, growing with the
+        // library DOM. That steals the frame budget and the highway drops to
+        // 40-50 fps.
+        capability_inspector(code, hits) {
+            // Defer renders while the screen is hidden; render once on show.
+            code = code.replace(/ {4}function scheduleRender\(\) \{\r?\n/, () => {
+                hits.push('render-when-visible');
+                return '    function scheduleRender() {\n' +
+                    "        const __ciScreen = document.getElementById('plugin-capability_inspector');\n" +
+                    "        if (__ciScreen && !__ciScreen.classList.contains('active')) { __ciDirty = true; return; }\n";
+            });
+            code = code.replace(/ {4}if \(document\.readyState === 'loading'\) document\.addEventListener\('DOMContentLoaded', install\);\r?\n/, (line) => {
+                hits.push('on-show-watch');
+                return '    var __ciDirty = false;\n' +
+                    '    (function __ciWatch() {\n' +
+                    "        const s = document.getElementById('plugin-capability_inspector');\n" +
+                    '        if (!s) { setTimeout(__ciWatch, 1000); return; }\n' +
+                    '        new MutationObserver(() => {\n' +
+                    "            if (__ciDirty && s.classList.contains('active')) { __ciDirty = false; scheduleRender(); }\n" +
+                    "        }).observe(s, { attributes: true, attributeFilter: ['class'] });\n" +
+                    '    })();\n' + line;
+            });
+            // Both pieces or neither — a half patch could leave the panel stale.
+            return hits.length === 2 ? code : (hits.length = 0, null);
+        },
+        stems(code, hits) {
+            // Precise stem playhead. transportPlayhead() read ctx.currentTime,
+            // which only advances once per audio callback (~10 ms ticks), so
+            // the highway clock built on it stuttered (76% of frames off by
+            // >4 ms, frozen frames, backward steps). getOutputTimestamp() maps
+            // context time to performance.now() to ~0.1 ms (measured); we
+            // extrapolate from it and keep ctx.currentTime's render-ahead
+            // offset (slowly averaged) so A/V sync is unchanged.
+            code = code.replace(/ {4}function transportPlayhead\(\) \{\r?\n/, (m) => {
+                hits.push('precise-clock');
+                return '    let __hwtOff = null;\n' +
+                    '    function __hwtCtxNow() {\n' +
+                    '        const ct = ctx.currentTime;\n' +
+                    '        let ts = null;\n' +
+                    '        try { ts = ctx.getOutputTimestamp && ctx.getOutputTimestamp(); } catch (_) { ts = null; }\n' +
+                    '        if (!ts || !(ts.performanceTime > 0)) return ct;\n' +
+                    '        const est = ts.contextTime + (performance.now() - ts.performanceTime) / 1000;\n' +
+                    '        const d = ct - est;\n' +
+                    '        if (__hwtOff === null || Math.abs(d - __hwtOff) > 0.2) __hwtOff = d;\n' +
+                    '        else __hwtOff += (d - __hwtOff) * 0.002;\n' +
+                    '        return est + __hwtOff;\n' +
+                    '    }\n' +
+                    '    window.__hwtStemsSmooth = () => !!(sloppakActive && buffersReady && transport.playing && ctx);\n' + m;
+            });
+            code = code.replace('const elapsed = Math.max(0, ctx.currentTime - transport.baseCtxTime);',
+                () => { hits.push('use-precise'); return 'const elapsed = Math.max(0, __hwtCtxNow() - transport.baseCtxTime);'; });
+            // The "full" stem is the complete original mix. When a sloppak also
+            // has separated stems, playing it doubles the song underneath them,
+            // and Stem Mixer has no slider for it (its keys are guitar/bass/
+            // vocals/drums/piano/other), so muting every slider still leaves
+            // the whole song playing. Keep "full" off whenever separated stems
+            // exist; full-mix-only songs are unaffected.
+            code = code.replace(/( {12})const vol = clampVolume\(savedVols\[r\.id\]\);/, (m, ind) => {
+                hits.push('full-off');
+                return ind + "if (/^full$/i.test(r.id) && ok.some((x) => !/^full$/i.test(x.id))) on = false;\n" + m;
+            });
+            if (hits.length !== 3) { hits.length = 0; return null; }
+            // Cent-accurate pitch shift (UI: the pitch_shift plugin). Reuses the
+            // master-bus SoundTouch worklet that already cancels the speed
+            // slider's pitch change: target pitch = 2^(cents/1200) / rate.
+            // All-or-nothing on a copy, so a future stems update that breaks
+            // one anchor drops only this feature, not the fixes above.
+            const pitchHits = [];
+            let pc = code;
+            pc = pc.replace('try { pitchNode.port.postMessage({ pitch: 1 / r }); } catch (_) {}', () => {
+                pitchHits.push('cents');
+                return 'try { pitchNode.port.postMessage({ pitch: Math.pow(2, (Number(window.__hwtPitchCents) || 0) / 1200) / r }); } catch (_) {}';
+            });
+            // Keep the highway delay-compensated whenever the worklet is engaged
+            // for a cents shift, not only at non-1x speed.
+            pc = pc.replace('        if (Math.abs(r - 1) < 1e-3) return 0;', () => {
+                pitchHits.push('latency');
+                return '        if (Math.abs(r - 1) < 1e-3 && !(Number(window.__hwtPitchCents) || 0)) return 0;';
+            });
+            // The worklet bypasses itself when |pitch - 1| < 1e-3 (~1.7 cents);
+            // load a copy with a 1e-6 threshold so single-cent shifts are heard.
+            pc = pc.replace('? ctx.audioWorklet.addModule(PITCH_WORKLET_URL).then(() => true)', () => {
+                pitchHits.push('worklet');
+                return '? fetch(PITCH_WORKLET_URL).then((r) => r.text())' +
+                    '.then((src) => URL.createObjectURL(new Blob([src.split("Math.abs(p - 1) < 1e-3").join("Math.abs(p - 1) < 1e-6")], { type: "text/javascript" })))' +
+                    '.catch(() => PITCH_WORKLET_URL)' +
+                    '.then((u) => ctx.audioWorklet.addModule(u)).then(() => true)';
+            });
+            pc = pc.replace(/ {4}function applyPitchForRate\(\) \{\r?\n/, (m) => {
+                pitchHits.push('expose');
+                return '    window.__stemsApplyPitch = () => applyPitchForRate();\n' + m;
+            });
+            if (pitchHits.length === 4) { code = pc; hits.push(...pitchHits); }
+            return code;
+        },
+        note_detect(code, hits) {
+            // Capo charts. Rocksmith charts give fretted notes as ABSOLUTE
+            // frets (fret 0 = "at the capo"): Fall Back Down, capo 4, writes
+            // an E chord as A7 D6 G0 B5. Stock note_detect computes
+            // open + capo + fret for every note, so each fretted note is
+            // expected `capo` semitones too high and power chords almost never
+            // match. Fix: open + (fret > 0 ? fret : capo). The native verifier
+            // applies capo the same stock way and can't be patched, so it gets
+            // capo 0 plus notes whose fret 0 is rewritten to the capo fret.
+            // All-or-nothing, so a partial match can't mix the two models.
+            const cp = [];
+            let cc = code;
+            cc = cc.replace('    return base[string] + offset + (capo || 0) + fret;', () => {
+                cp.push('capo-expected');
+                return '    return base[string] + offset + (fret > 0 ? fret : (capo || 0));';
+            });
+            cc = cc.replace('                f: n.f,\n', () => { cp.push('capo-engine-notes'); return '                f: (n.f > 0 || !capo) ? n.f : capo,\n'; });
+            cc = cc.replace('                    f: cn.f,\n', () => { cp.push('capo-engine-chords'); return '                    f: (cn.f > 0 || !capo) ? cn.f : capo,\n'; });
+            cc = cc.replace(/( {16})capo,\n( {16}\/\/ The engine's harmonic-comb)/, (m, a, b) => {
+                cp.push('capo-engine-zero');
+                return a + 'capo: 0,   // [highway_tweaks] frets above are already absolute\n' + b;
+            });
+            // Display fallback (detected pitch -> string/fret): report absolute frets too.
+            cc = cc.replace('            bestFret = fret;\n', () => {
+                cp.push('capo-display');
+                return '            bestFret = (fret > 0 && capo) ? fret + capo : fret;\n';
+            });
+            if (cp.length === 5) { code = cc; hits.push(...cp); }
+            // Keep scoring right when the song is pitch-shifted (pitch_shift
+            // plugin, window.__hwtPitchCents): expected pitch = chart pitch +
+            // the song shift, e.g. an E♭ song shifted +100¢ expects E standard.
+            // Browser detector: exact fractional semitones. Native verifier
+            // takes integer tuning offsets, so it gets the rounded semitones;
+            // any remainder (≤50 ¢) sits inside the pitch tolerance.
+            const OFF = '((Number(window.__hwtPitchCents) || 0) / 100)';
+            const ph = [];
+            let pc = code;
+            // (Matches the stock line or the capo-patched one above.)
+            pc = pc.replace(/    return base\[string\] \+ offset \+ (\(capo \|\| 0\) \+ fret|\(fret > 0 \? fret : \(capo \|\| 0\)\));/, (m, expr) => {
+                ph.push('fractional-expected');
+                return '    return base[string] + offset + ' + expr + ' + (typeof window !== "undefined" ? ' + OFF + ' : 0);';
+            });
+            pc = pc.replace('                tuningOffsets: tuningOffsets.slice(0, currentStringCount),', () => {
+                ph.push('engine-semitones');
+                return '                tuningOffsets: tuningOffsets.slice(0, currentStringCount).map((o) => o + Math.round(' + OFF + ')),';
+            });
+            // Fold the offset into the chart signature so a shift change
+            // triggers the existing "chart changed → re-push to engine" path.
+            pc = pc.replace("            + ':' + firstT + ':' + lastT;", () => {
+                ph.push('resync-on-shift');
+                return "            + ':' + firstT + ':' + lastT + ':' + Math.round(" + OFF + ");";
+            });
+            if (ph.length === 3) { code = pc; hits.push(...ph); }
+            // Timing gauge (section 4): forward every counted judgment and
+            // expose the live latency offset. Independent of the pitch patch.
+            code = code.replace(/( {12})_recordDiagnostic\(judgment\);\r?\n/, (m, ind) => {
+                hits.push('timing-hook');
+                return m + ind + 'try { if (isDefault) { window.__hwtNdLatency = () => latencyOffset;' +
+                    ' if (window.__hwtOnJudgment) window.__hwtOnJudgment(judgment, currentSection); } } catch (_) {}\n';
+            });
+            return code;
+        },
+        sloppak_converter(code, hits) {
+            // Only react to structural changes in the library / favorites
+            // lists (or screen-level mounts on <body>), the same scoping
+            // song_preview already uses — not to every DOM change in the app.
+            return code.replace(
+                "if (m.type === 'childList' && (m.addedNodes.length || m.removedNodes.length)) {",
+                (s) => {
+                    hits.push('scoped-observer');
+                    return "if (m.type === 'childList' && (m.addedNodes.length || m.removedNodes.length) && " +
+                        "(m.target === document.body || (m.target.closest && m.target.closest('#lib-grid, #lib-tree, #fav-grid, #fav-tree')))) {";
+                });
+        },
+    };
+
+    const origAppendChild = Node.prototype.appendChild;
+    Node.prototype.appendChild = function (el) {
+        const id = el && el.tagName === 'SCRIPT' && el.dataset ? el.dataset.pluginId : null;
+        if (!id || !PATCHERS[id] || !el.src || el.__hwtPatched) return origAppendChild.call(this, el);
+        // Kill switch for A/B testing the perf patches:
+        // localStorage.highwayTweaksNoPerfFix = '1', then restart.
+        let noPerf = false;
+        try { noPerf = localStorage.getItem('highwayTweaksNoPerfFix') === '1'; } catch (_) { /* ignore */ }
+        if (noPerf && (id === 'capability_inspector' || id === 'sloppak_converter')) return origAppendChild.call(this, el);
+        el.__hwtPatched = true;
+        const parent = this, src = el.src;
+        fetch(src).then((r) => {
+            if (!r.ok) throw new Error('HTTP ' + r.status);
+            return r.text();
+        }).then((code) => {
+            const hits = [];
+            const patched = PATCHERS[id](code, hits);
+            if (hits.length) {
+                el.src = URL.createObjectURL(new Blob([patched + '\n//# sourceURL=' + src], { type: 'text/javascript' }));
+                console.log('[highway_tweaks] patched ' + id + ':', hits.join(', '));
+            } else {
+                console.warn('[highway_tweaks] no patch patterns matched in ' + id + ' — loading stock');
+            }
+        }).catch((e) => {
+            console.warn('[highway_tweaks] could not patch ' + id + ', loading stock:', e);
+        }).finally(() => origAppendChild.call(parent, el));
+        return el;
+    };
+
+    // ── 3. Smooth native-playback clock ─────────────────────────────────
+    // app.js's jucePlayer polls the native engine's song position every
+    // 100 ms over IPC, interpolates in between, then SNAPS to each new
+    // (already-stale) sample — ~10 visible jumps per second ("skippy"
+    // highway at a solid 60 fps). Replacement: keep the interpolated clock
+    // continuous and absorb the error by nudging its speed (max ±3%,
+    // invisible) instead of jumping. Samples are timestamped at the midpoint
+    // of the IPC round trip. Errors > 250 ms (seek, loop, engine restart)
+    // still snap. Kill switch: localStorage.highwayTweaksNoClockFix = '1'.
+    (function smoothJuceClock() {
+        // DISABLED 2026-10-01 pending investigation: the user's songs play via HTML5
+        // audio (_juceMode false), so this path was never exercised. Re-enable by
+        // setting this to false only after testing with the user.
+        let off = true;
+        const jp = window.jucePlayer;
+        if (off || !jp || jp.__hwtSmooth) return;
+        const MAX_CORR = 0.03, HORIZON_S = 1.0, SNAP_S = 0.25;
+        let corr = 0, synced = false;
+        const audio = window.slopsmithDesktop && window.slopsmithDesktop.audio;
+        if (!audio || typeof audio.getBackingPosition !== 'function') return;
+        jp.__hwtSmooth = true;
+        Object.defineProperty(jp, 'currentTime', {
+            configurable: true,
+            get() {
+                if (!this._polling) return this._pos;
+                const el = (performance.now() - this._pollAt) / 1000;
+                return Math.min(this._pos + el * this._speed * (1 + corr), this._dur > 0 ? this._dur : Infinity);
+            },
+        });
+        const origSetRate = jp.setRate, origSeek = jp.seek;
+        jp.setRate = function (rate) { const r = origSetRate.call(this, rate); synced = false; return r; };
+        jp.seek = function (s) { synced = false; corr = 0; return origSeek.call(this, s); };
+        jp._startPolling = function () {
+            this._stopPolling();
+            this._polling = true;
+            this._pollAt = performance.now();
+            synced = false; corr = 0;
+            const self = this;
+            function scheduleNext() {
+                self._timer = setTimeout(async () => {
+                    if (!self._polling) return;
+                    try {
+                        const t0 = performance.now();
+                        const raw = await window.slopsmithDesktop.audio.getBackingPosition();
+                        const now = performance.now();
+                        if (!self._polling) return;
+                        // Engine position as of ~mid round trip, projected to now.
+                        const truth = raw + ((now - (t0 + now) / 2) / 1000) * self._speed;
+                        const shown = self.currentTime;   // continuous clock, evaluated now
+                        const err = truth - shown;
+                        if (!synced || Math.abs(err) > SNAP_S) {
+                            self._pos = truth; corr = 0; synced = true;
+                        } else {
+                            self._pos = shown;
+                            corr = Math.max(-MAX_CORR, Math.min(MAX_CORR, err / (HORIZON_S * Math.max(self._speed, 0.05))));
+                        }
+                        self._pollAt = now;
+                        window.__hwtClockErrMs = err * 1000;
+                        _emitSongPositionChanged(self.currentTime, self.duration || null);
+                    } catch (err) {
+                        console.warn('[jucePlayer] position poll failed:', err);
+                    } finally {
+                        if (self._polling) scheduleNext();
+                    }
+                }, 100);
+            }
+            scheduleNext();
+        };
+        // If a song is already playing (plugin reload), restart polling under the new logic.
+        if (jp._polling) jp._startPolling();
+    })();
+
+    // Record the raw audio time app.js feeds the highway each tick, so the 3D
+    // renderer's patched smoothNow can recover the chart/AV offset.
+    (function hookSetTime() {
+        const hw = window.highway;
+        if (!hw || typeof hw.setTime !== 'function') { setTimeout(hookSetTime, 500); return; }
+        if (hw.__hwtSetTime) return;
+        hw.__hwtSetTime = true;
+        const orig = hw.setTime;
+        hw.setTime = function (t) { window.__hwtLastSetT = t; return orig.apply(this, arguments); };
+    })();
+
+    // ── 2. Frame-drop watchdog ──────────────────────────────────────────
+    // Track every canvas context created from here on so a snapshot can
+    // show leaked / hidden WebGL canvases.
+    const ctxInfo = new WeakMap();
+    const ctxCanvases = new Set();
+    const origGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function (type, ...rest) {
+        const ctx = origGetContext.call(this, type, ...rest);
+        if (ctx && !ctxInfo.has(this)) {
+            ctxInfo.set(this, { type, at: Math.round(performance.now() / 1000) });
+            ctxCanvases.add(new WeakRef(this));
+        }
+        return ctx;
+    };
+
+    // Count rAF callbacks per frame (leaked render loops show up here).
+    let rafCalls = 0;
+    const origRaf = window.requestAnimationFrame;
+    window.requestAnimationFrame = function (cb) { rafCalls++; return origRaf.call(window, cb); };
+
+    const events = [];   // display/visibility events, for correlating onset
+    function noteEvent(type, extra) {
+        events.push(Object.assign({ type, t: Math.round(performance.now() / 1000) }, extra || {}));
+        if (events.length > 40) events.shift();
+    }
+    document.addEventListener('visibilitychange', () => noteEvent('visibility', { state: document.visibilityState }));
+    window.addEventListener('resize', () => noteEvent('resize', { w: innerWidth, h: innerHeight, sx: screenX, sw: screen.width, dpr: devicePixelRatio }));
+    window.addEventListener('blur', () => noteEvent('blur'));
+    window.addEventListener('focus', () => noteEvent('focus'));
+    try {
+        const mq = () => matchMedia(`(resolution: ${devicePixelRatio}dppx)`);
+        let m = mq();
+        const onDpr = () => { noteEvent('dpr-change', { dpr: devicePixelRatio }); m.removeEventListener('change', onDpr); m = mq(); m.addEventListener('change', onDpr); };
+        m.addEventListener('change', onDpr);
+    } catch (_) { /* best effort */ }
+
+    function canvasReport() {
+        const out = [];
+        for (const ref of ctxCanvases) {
+            const c = ref.deref();
+            if (!c) { ctxCanvases.delete(ref); continue; }
+            const info = ctxInfo.get(c) || {};
+            const r = c.isConnected ? c.getBoundingClientRect() : null;
+            let lost = null;
+            if (/webgl/.test(info.type)) {
+                try { lost = origGetContext.call(c, info.type).isContextLost(); } catch (_) { /* ignore */ }
+            }
+            out.push({
+                type: info.type, id: c.id || null, cls: (c.className && String(c.className).slice(0, 40)) || null,
+                px: c.width + 'x' + c.height, css: r ? Math.round(r.width) + 'x' + Math.round(r.height) : null,
+                connected: c.isConnected, shown: !!(r && r.width && r.height && c.offsetParent !== null),
+                lost, bornAtS: info.at,
+            });
+        }
+        return out;
+    }
+
+    function snapshot(kind, stats) {
+        const hw = window.highway;
+        let perf = null; try { perf = hw && hw.getPerfStats ? hw.getPerfStats() : null; } catch (_) { /* ignore */ }
+        const canvases = canvasReport();
+        const activeScreen = document.querySelector('.screen.active');
+        const entry = {
+            kind, stats,
+            uptimeMin: +(performance.now() / 60000).toFixed(1),
+            domNodes: document.getElementsByTagName('*').length,
+            iframes: document.querySelectorAll('iframe').length,
+            videosPlaying: [...document.querySelectorAll('video')].filter((v) => !v.paused).length,
+            audiosPlaying: [...document.querySelectorAll('audio')].filter((a) => !a.paused).length,
+            infiniteAnimations: (() => { try { return document.getAnimations().filter((a) => a.playState === 'running').length; } catch (_) { return null; } })(),
+            canvasCount: canvases.length,
+            webglLive: canvases.filter((c) => /webgl/.test(c.type) && c.lost === false).length,
+            webglHiddenOrDetached: canvases.filter((c) => /webgl/.test(c.type) && c.lost === false && !c.shown).length,
+            // Only the canvases that can cost GPU/compositor time: WebGL ones,
+            // and big on-screen 2D ones (skip the dozens of tiny offscreen
+            // texture canvases).
+            canvases: canvases.filter((c) => /webgl/.test(c.type) || (c.connected && c.css && c.css !== '0x0')),
+            screen: activeScreen ? activeScreen.id : null,
+            win: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio, sx: screenX, sy: screenY, sw: screen.width, sh: screen.height },
+            focused: document.hasFocus(), visibility: document.visibilityState,
+            heapMB: performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : null,
+            highway: perf,
+            renderer: (() => { try { return hw && hw.isDefaultRenderer ? (hw.isDefaultRenderer() ? '2d' : 'plugin') : null; } catch (_) { return null; } })(),
+            recentEvents: events.slice(-15),
+        };
+        console.warn('[highway_tweaks] ' + kind, entry);
+        fetch('/api/plugins/highway_tweaks/log', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(entry),
+        }).catch(() => { /* server not reachable — console copy above still exists */ });
+    }
+
+    // Sampling: 5 s windows, only while the chart clock is advancing.
+    const WINDOW_MS = 5000;
+    let intervals = [], lastFrame = 0, winStart = 0, rafAtWinStart = 0;
+    let lastChartT = NaN, lastMoveAt = -Infinity, playingSince = 0, badWindows = 0;
+    let lastJankLogAt = -Infinity, baselineLogged = false, jankEpisodes = 0;
+
+    function isPlaying() {
+        const hw = window.highway;
+        if (!hw || typeof hw.getTime !== 'function') return false;
+        let t; try { t = hw.getTime(); } catch (_) { return false; }
+        const nowP = performance.now();
+        if (Number.isFinite(t) && t !== lastChartT) { lastChartT = t; lastMoveAt = nowP; }
+        // Chart clock moved recently = playing (tolerates a frame or two
+        // where the clock didn't tick, which would otherwise reset windows).
+        return nowP - lastMoveAt < 250 && document.visibilityState === 'visible';
+    }
+
+    function tick(now) {
+        origRaf.call(window, tick);
+        if (!isPlaying()) { intervals = []; lastFrame = 0; winStart = 0; playingSince = 0; return; }
+        if (!playingSince) playingSince = now;
+        if (lastFrame) intervals.push(now - lastFrame);
+        lastFrame = now;
+        if (!winStart) { winStart = now; rafAtWinStart = rafCalls; return; }
+        if (now - winStart < WINDOW_MS || intervals.length < 30) return;
+
+        const sorted = intervals.slice().sort((a, b) => a - b);
+        const pct = (p) => +sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))].toFixed(1);
+        const median = pct(0.5);
+        // A "dropped" frame took noticeably longer than the typical frame.
+        const dropped = intervals.filter((d) => d > median * 1.5).length;
+        const stats = {
+            fps: +(intervals.length * 1000 / (now - winStart)).toFixed(1),
+            droppedPct: +(100 * dropped / intervals.length).toFixed(1),
+            p50: median, p90: pct(0.9), p99: pct(0.99),
+            rafPerFrame: +((rafCalls - rafAtWinStart) / intervals.length).toFixed(2),
+        };
+        intervals = []; winStart = now; rafAtWinStart = rafCalls;
+        window.__highwayTweaks.lastStats = stats;
+
+        // One healthy baseline per session, ~1 min into playback, for comparison.
+        if (!baselineLogged && now - playingSince > 60000 && stats.droppedPct < 3) {
+            baselineLogged = true;
+            snapshot('baseline', stats);
+        }
+        badWindows = stats.droppedPct >= 10 ? badWindows + 1 : 0;
+        if (badWindows >= 2 && now - lastJankLogAt > 120000) {
+            lastJankLogAt = now;
+            jankEpisodes++;
+            snapshot('jank', stats);
+        }
+    }
+    origRaf.call(window, tick);
+
+    // Manual trigger from devtools / CDP: highwayTweaksSnapshot()
+    window.highwayTweaksSnapshot = () => snapshot('manual', window.__highwayTweaks.lastStats || null);
+})();
+
+// ── 4. Early/late timing gauge ──────────────────────────────────────────
+// note_detect only labels misses EARLY/LATE on the 2D highway (the 3D
+// highway suppresses its overlay), and gives no running picture of whether
+// you're consistently ahead or behind — which is what you need to set the
+// Audio Latency Offset. This adds a gauge under note_detect's score HUD:
+// the last N timed notes (hits and timing misses) as ticks, their median,
+// and the latency value that would centre them.
+//
+// Sign: timingError = (detect time - latencyOffset) - note time, so + is
+// late and raising the offset by the median centres it. Samples are stored
+// latency-independent (error + offset at judgment time), so moving the
+// slider re-centres the gauge immediately. Colours are blue (early) vs
+// orange (late) — safe for red-green colour blindness.
+// Notes off by more than the Timing Tolerance can't be matched at all and
+// never reach the gauge (they count as plain misses).
+(function timingGauge() {
+    const N = 24, RANGE = 150, MIN_N = 6, DEAD = 12;
+    const EARLY = '#66c7ff', LATE = '#ff9a40', OK = '#e5e7eb';
+    let raw = [], lastTotal = 0, lastMiss = null, el = null;
+
+    const latMs = () => {
+        try { return Math.round(window.__hwtNdLatency() * 1000); } catch (_) { return null; }
+    };
+    const median = (a) => {
+        const s = a.slice().sort((x, y) => x - y), m = s.length >> 1;
+        return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+    };
+    const fmt = (ms) => (ms > 0 ? '+' : '') + Math.round(ms) + ' ms';
+
+    function ensureEl() {
+        const hud = document.querySelector('.nd-hud');
+        if (!hud) return null;
+        if (el && el.parentNode === hud) return el;
+        el = document.createElement('div');
+        el.className = 'hwt-timing';
+        el.style.cssText = 'margin-top:10px;font:13px ui-monospace,monospace;color:#9ca3af;text-align:right;';
+        el.innerHTML =
+            '<div class="hwt-t-head"></div>' +
+            '<div style="position:relative;width:240px;height:22px;margin:4px 0 2px auto;' +
+                'background:rgba(0,0,0,.45);border-radius:3px;overflow:hidden">' +
+                '<div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:#6b7280"></div>' +
+                '<div class="hwt-t-ticks"></div>' +
+                '<div class="hwt-t-med" style="position:absolute;top:0;bottom:0;width:3px;margin-left:-1px;display:none"></div>' +
+            '</div>' +
+            '<div style="width:240px;margin-left:auto;display:flex;justify-content:space-between;color:#6b7280">' +
+                '<span style="color:' + EARLY + '">early</span><span>' + RANGE + 'ms</span><span style="color:' + LATE + '">late</span></div>' +
+            '<div class="hwt-t-hint" style="margin-top:2px"></div>' +
+            '<div class="hwt-t-miss" style="margin-top:2px;font-weight:bold"></div>';
+        hud.appendChild(el);
+        return el;
+    }
+
+    function render() {
+        const e = ensureEl();
+        if (!e) return;
+        const L = latMs();
+        const head = e.querySelector('.hwt-t-head'), hint = e.querySelector('.hwt-t-hint');
+        const ticks = e.querySelector('.hwt-t-ticks'), med = e.querySelector('.hwt-t-med');
+        const missEl = e.querySelector('.hwt-t-miss');
+        const pos = (ms) => (50 + 50 * Math.max(-1, Math.min(1, ms / RANGE))) + '%';
+        const col = (ms) => (Math.abs(ms) < DEAD ? OK : ms < 0 ? EARLY : LATE);
+
+        if (!raw.length || L == null) {
+            head.textContent = 'timing: waiting for notes';
+            ticks.innerHTML = ''; med.style.display = 'none'; hint.textContent = '';
+        } else {
+            const errs = raw.map((r) => r - L);
+            ticks.innerHTML = errs.map((ms, i) =>
+                '<div style="position:absolute;top:3px;bottom:3px;width:2px;margin-left:-1px;left:' + pos(ms) +
+                ';background:' + col(ms) + ';opacity:' + (0.25 + 0.75 * (i + 1) / errs.length).toFixed(2) + '"></div>').join('');
+            const m = median(errs);
+            med.style.display = '';
+            med.style.left = pos(m);
+            med.style.background = col(m);
+            med.style.boxShadow = '0 0 6px ' + col(m);
+            const word = Math.abs(m) < DEAD ? 'on time' : m < 0 ? 'EARLY' : 'LATE';
+            head.innerHTML = 'timing <span style="color:' + col(m) + ';font-weight:bold;font-size:17px">' +
+                (Math.abs(m) < DEAD ? '' : fmt(m) + ' ') + word + '</span> <span style="color:#6b7280">(median of ' + errs.length + ')</span>';
+            if (errs.length < MIN_N) {
+                hint.textContent = '';
+            } else if (Math.abs(m) < DEAD) {
+                hint.innerHTML = '<span style="color:#6b7280">latency offset ' + L + ' ms looks right</span>';
+            } else {
+                const want = Math.round(L + m), clamped = Math.max(0, Math.min(250, want));
+                hint.innerHTML = (m > 0 ? '▲ raise' : '▼ lower') + ' Audio Latency Offset ' + L + ' → <b style="color:' + OK + '">' +
+                    clamped + ' ms</b>' + (clamped !== want ? ' (slider limit)' : '');
+            }
+        }
+        if (lastMiss && performance.now() - lastMiss.at < 1500) {
+            missEl.style.color = lastMiss.ms < 0 ? EARLY : LATE;
+            missEl.style.opacity = String(1 - (performance.now() - lastMiss.at) / 1500);
+            missEl.textContent = 'miss: ' + (lastMiss.ms < 0 ? 'EARLY ' : 'LATE ') + fmt(lastMiss.ms);
+        } else {
+            missEl.textContent = '';
+        }
+    }
+
+    window.__hwtOnJudgment = (j) => {
+        if (!j) return;
+        // New song / scoring reset → start the gauge over.
+        try {
+            const st = window.noteDetect && window.noteDetect.getStats && window.noteDetect.getStats();
+            const total = st ? st.hits + st.misses : 0;
+            if (st && total < lastTotal) { raw = []; lastMiss = null; }
+            lastTotal = total;
+        } catch (_) { /* ignore */ }
+        const L = latMs();
+        if (!Number.isFinite(j.timingError) || L == null) return;
+        raw.push(j.timingError + L);
+        if (raw.length > N) raw.shift();
+        if (!j.hit && (j.timingState === 'EARLY' || j.timingState === 'LATE')) {
+            lastMiss = { ms: j.timingError, at: performance.now() };
+        }
+        render();
+    };
+    // Repaint for slider moves and the fading miss label; cheap, and a no-op
+    // while note_detect's HUD isn't on screen.
+    setInterval(() => { if (raw.length && document.querySelector('.nd-hud')) render(); }, 200);
+    window.highwayTweaksTimingReset = () => { raw = []; lastMiss = null; render(); };
+})();
+
+// ── 5. Performance HUD + streak effects ─────────────────────────────────
+// Replaces note_detect's small accuracy/streak/count lines with:
+//  - a stats panel (top right, above the timing gauge): big accuracy, last-50
+//    form, current section pass, single-note vs chord accuracy, pitch
+//    tendency, and why notes were missed;
+//  - a large Rock Band-style streak counter with a 1x–4x multiplier
+//    (left, vertically centred), plus the per-song best kept in localStorage;
+//  - an "on fire" glow around the highway once the streak reaches 50
+//    (gold 50+, blue 100+, purple 200+), with milestone popups every 50 and
+//    a "streak ended" popup when a 25+ streak breaks.
+// Colours stay off the red-green axis. All DOM, so it works over the 3D
+// highway. Settings: highwayTweaksHud({ scale: 1.2 }) / ({ off: true }).
+(function perfHud() {
+    const LS = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
+    const LSset = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { /* ignore */ } };
+    if (LS('hwtPerfHudOff', '0') === '1') {
+        window.highwayTweaksHud = (o) => { if (o && o.off === false) LSset('hwtPerfHudOff', '0'); };
+        return;
+    }
+    const GOLD = '#ffc531', BLUE = '#45c8ff', PURPLE = '#b77bff', ORANGE = '#ff9a40', DIM = '#8b95a5';
+    const TIERS = [[200, PURPLE], [100, BLUE], [50, GOLD]];
+    const fireColor = (s) => { for (const [n, c] of TIERS) if (s >= n) return c; return null; };
+    const MULT_COL = ['#e5e7eb', BLUE, GOLD, ORANGE];
+
+    const css = document.createElement('style');
+    css.textContent = `
+        /* The note_detect HUD becomes one stats card in the empty space on the
+           right of the highway: below the 3D highway's "Now / Up Next" section
+           card (top right) and above the fretboard. Children are zoomed by
+           --hwt-scale (auto from window height) — the card itself isn't, so its
+           %-based position stays put. */
+        .nd-hud { top: 19% !important; right: 1.2% !important; text-align: left !important;
+            background: rgba(8, 12, 18, .66); border: 1px solid rgba(255,255,255,.08);
+            border-radius: calc(12px * var(--hwt-scale, 1));
+            padding: calc(10px * var(--hwt-scale, 1)) calc(14px * var(--hwt-scale, 1));
+            max-height: 62%; overflow: hidden;
+            /* Two columns: live stats + timing | song / section / weak spots / Rocksmith */
+            display: grid !important; grid-template-columns: auto auto; column-gap: calc(22px * var(--hwt-scale, 1));
+            align-items: start; }
+        .nd-hud > * { zoom: var(--hwt-scale, 1); width: 270px; grid-column: 1; }
+        .nd-hud > .hwt-perf { grid-row: 1; }
+        .nd-hud > .hwt-timing { grid-row: 2; }
+        .nd-hud > .nd-hud-detected { grid-row: 3; }
+        .nd-hud > .pc-score { grid-column: 2; grid-row: 1 / span 4; }
+        .nd-hud > .nd-drill { grid-row: 4; }
+        .nd-hud > .pc-score > :first-child { margin-top: 0 !important; border-top: 0 !important; padding-top: 0 !important; }
+        .nd-hud .nd-hud-accuracy, .nd-hud .nd-hud-streak, .nd-hud .nd-hud-counts { display: none !important; }
+        .nd-hud .nd-hud-detected { font-size: 14px !important; margin-top: 6px !important; text-align: right; }
+        .nd-hud .nd-drill-header, .nd-hud .nd-drill-list { font-size: 13px !important; }
+        .nd-hud .nd-hud-detected:empty { display: none; }
+        /* Stat rows: label on the left, value(s) on the right. */
+        .nd-hud .row { display: flex; align-items: baseline; justify-content: flex-end; gap: 5px; margin-top: 4px; white-space: nowrap; }
+        .nd-hud .row > .lbl:first-child { margin-right: auto; }
+        .hwt-perf { font: 15px system-ui, sans-serif; color: #cbd5e1; text-shadow: 0 1px 3px #000; }
+        .hwt-perf .head { display: flex; align-items: flex-end; justify-content: space-between; margin-bottom: 4px; }
+        .hwt-perf .acc { font: 800 54px/1 system-ui, sans-serif; letter-spacing: -1px; }
+        .hwt-perf .head .lbl { text-align: right; font-size: 13px; line-height: 1.25; }
+        .hwt-perf .row b { color: #f1f5f9; }
+        .hwt-perf .lbl { color: ${DIM}; }
+        .hwt-timing { text-align: left !important; border-top: 1px solid rgba(255,255,255,.12); padding-top: 8px; }
+        .hwt-timing > div[style*="width:240px"] { width: 100% !important; }
+        .hwt-streak { position: absolute; left: 1.5%; top: 50%; transform: translateY(-50%); z-index: 20;
+            pointer-events: none; text-align: center; width: max-content; font-family: system-ui, sans-serif;
+            text-shadow: 0 2px 8px #000; transition: opacity .3s; }
+        .hwt-streak > * { zoom: var(--hwt-scale, 1); }
+        .hwt-streak .num { font: 900 104px/1 system-ui, sans-serif; letter-spacing: -3px; transition: color .3s; }
+        .hwt-streak .cap { font: 700 14px system-ui, sans-serif; letter-spacing: 3px; color: ${DIM}; }
+        .hwt-streak .mult { font: 900 34px/1 system-ui, sans-serif; margin-top: 10px; }
+        .hwt-streak .pips { display: flex; gap: 4px; justify-content: center; margin-top: 6px; }
+        .hwt-streak .pips i { width: 11px; height: 11px; border-radius: 50%; background: rgba(255,255,255,.12); }
+        .hwt-streak .best { font: 13px/1.4 system-ui, sans-serif; color: ${DIM}; margin-top: 10px; white-space: pre-line; }
+        .hwt-fire { position: absolute; inset: 0; z-index: 5; pointer-events: none; opacity: 0;
+            transition: opacity .5s; will-change: opacity; }
+        .hwt-fire.on { opacity: 1; }
+        .hwt-fire > div { position: absolute; inset: 0; animation: hwt-pulse 1.1s ease-in-out infinite alternate; will-change: opacity; }
+        @keyframes hwt-pulse { from { opacity: .55; } to { opacity: 1; } }
+        .hwt-pop { position: absolute; left: 50%; top: 38%; z-index: 25; pointer-events: none; white-space: nowrap;
+            transform: translate(-50%, -50%); font: 900 calc(64px * var(--hwt-scale, 1)) system-ui, sans-serif;
+            text-shadow: 0 0 24px currentColor, 0 3px 8px #000; }
+        .hwt-pop.small { font-size: calc(30px * var(--hwt-scale, 1)); top: 46%; text-shadow: 0 3px 8px #000; }
+    `;
+    document.head.appendChild(css);
+    // Auto-size to the window: 1x at ~900 px tall (so ~2.2x on a 4K-height
+    // window), times the user's own multiplier from highwayTweaksHud({scale}).
+    const applyScale = () => {
+        const auto = Math.max(1, Math.min(2.8, (window.innerHeight || 900) / 900));
+        const user = Number(LS('hwtHudScale', '1')) || 1;
+        document.documentElement.style.setProperty('--hwt-scale', (auto * user).toFixed(3));
+    };
+    applyScale();
+    window.addEventListener('resize', applyScale);
+    window.highwayTweaksHud = (o) => {
+        o = o || {};
+        if (Number.isFinite(o.scale)) { LSset('hwtHudScale', String(o.scale)); applyScale(); }
+        if (o.off === true) LSset('hwtPerfHudOff', '1');
+        return { scale: Number(LS('hwtHudScale', '1')), off: LS('hwtPerfHudOff', '0') === '1', note: 'off takes effect after restart' };
+    };
+
+    function stats() {
+        try { return window.noteDetect && window.noteDetect.getStats ? window.noteDetect.getStats() : null; } catch (_) { return null; }
+    }
+
+    // ── per-song judgment stats ──
+    let S, lastTotal = 0, dirty = true;
+    const reset = () => {
+        S = { recent: [], singles: [0, 0], chords: [0, 0], pitch: [], why: { unheard: 0, early: 0, late: 0, pitch: 0, chord: 0 },
+            sec: null, secH: 0, secM: 0 };
+    };
+    reset();
+    const prevHook = window.__hwtOnJudgment;
+    window.__hwtOnJudgment = (j, section) => {
+        if (prevHook) { try { prevHook(j, section); } catch (_) { /* ignore */ } }
+        if (!j) return;
+        const st = stats();
+        const total = st ? st.hits + st.misses : 0;
+        if (st && total < lastTotal) reset();
+        lastTotal = total;
+        S.recent.push(!!j.hit); if (S.recent.length > 50) S.recent.shift();
+        const bucket = j.chord ? S.chords : S.singles;
+        bucket[j.hit ? 0 : 1]++;
+        if (!j.chord && Number.isFinite(j.pitchError)) { S.pitch.push(j.pitchError); if (S.pitch.length > 24) S.pitch.shift(); }
+        if (!j.hit) {
+            if (j.chord) S.why.chord++;
+            else if (j.detectedMidi == null) S.why.unheard++;
+            else if (j.timingState === 'EARLY') S.why.early++;
+            else if (j.timingState === 'LATE') S.why.late++;
+            else S.why.pitch++;
+        }
+        if (section !== S.sec) { S.sec = section || null; S.secH = 0; S.secM = 0; }
+        if (j.hit) S.secH++; else S.secM++;
+        dirty = true;
+    };
+
+    // ── DOM ──
+    let perf = null, streakEl = null, fire = null;
+    let lastStreak = -1, songKey = '', songBest = 0, bestAnnounced = false;
+    function ensure(hud) {
+        const root = hud.parentNode;
+        if (!perf || perf.parentNode !== hud) {
+            perf = document.createElement('div');
+            perf.className = 'hwt-perf';
+            hud.insertBefore(perf, hud.firstChild);
+            dirty = true;
+        }
+        if (!streakEl || streakEl.parentNode !== root) {
+            streakEl = document.createElement('div');
+            streakEl.className = 'hwt-streak';
+            streakEl.innerHTML = '<div class="num">0</div><div class="cap">NOTE STREAK</div>' +
+                '<div class="mult"></div><div class="pips">' + '<i></i>'.repeat(10) + '</div><div class="best"></div>';
+            root.appendChild(streakEl);
+            fire = document.createElement('div');
+            fire.className = 'hwt-fire';
+            fire.innerHTML = '<div></div>';
+            root.appendChild(fire);
+            lastStreak = -1;
+        }
+    }
+    const pct = (h, t) => (t > 0 ? Math.round(100 * h / t) : null);
+    const accCol = (p) => (p >= 95 ? GOLD : p >= 85 ? '#f1f5f9' : p >= 70 ? '#9fd8ff' : DIM);
+    const esc = (s) => String(s).replace(/[<>&"]/g, '');
+
+    function renderPerf(st) {
+        const total = st.hits + st.misses;
+        const acc = pct(st.hits, total);
+        const rows = [];
+        rows.push('<div class="head"><div class="acc" style="color:' + (acc == null ? DIM : accCol(acc)) + '">' +
+            (acc == null ? '–' : acc + '%') + '</div><div class="lbl">' + st.hits + ' / ' + total + '<br>notes hit</div></div>');
+        if (S.recent.length >= 10) {
+            const f = pct(S.recent.filter(Boolean).length, S.recent.length);
+            const d = acc == null ? 0 : f - acc;
+            const arrow = d >= 3 ? ' <span style="color:' + GOLD + '">▲</span>' : d <= -3 ? ' <span style="color:' + BLUE + '">▼</span>' : '';
+            rows.push('<div class="row"><span class="lbl">last ' + S.recent.length + '</span> <b>' + f + '%</b>' + arrow + '</div>');
+        }
+        // Current-section pass vs. best lives in play_counts' "Section" block.
+        if (S.sec && S.secH + S.secM > 0 && !window.__songScores) {
+            rows.push('<div class="row"><span class="lbl">' + esc(S.sec) + '</span> <b>' +
+                pct(S.secH, S.secH + S.secM) + '%</b> <span class="lbl">(' + S.secH + '/' + (S.secH + S.secM) + ')</span></div>');
+        }
+        const sp = pct(S.singles[0], S.singles[0] + S.singles[1]), cp = pct(S.chords[0], S.chords[0] + S.chords[1]);
+        if (sp != null || cp != null) {
+            if (sp != null) rows.push('<div class="row"><span class="lbl">single notes</span><b>' + sp + '%</b></div>');
+            if (cp != null) rows.push('<div class="row"><span class="lbl">chords</span><b>' + cp + '%</b></div>');
+        }
+        if (S.pitch.length >= 6) {
+            const s = S.pitch.slice().sort((a, b) => a - b), m = Math.round(s[s.length >> 1]);
+            const word = Math.abs(m) <= 5 ? 'in tune' : m > 0 ? 'sharp' : 'flat';
+            const c = Math.abs(m) <= 5 ? '#f1f5f9' : m > 0 ? ORANGE : BLUE;
+            rows.push('<div class="row"><span class="lbl">pitch</span> <b style="color:' + c + '">' +
+                (Math.abs(m) <= 5 ? '' : (m > 0 ? '+' : '') + m + '¢ ') + word + '</b></div>');
+        }
+        const w = S.why, parts = [];
+        if (w.unheard) parts.push(w.unheard + ' not heard');
+        if (w.late) parts.push(w.late + ' late');
+        if (w.early) parts.push(w.early + ' early');
+        if (w.pitch) parts.push(w.pitch + ' pitch');
+        if (w.chord) parts.push(w.chord + ' chord');
+        if (parts.length) {
+            rows.push('<div class="row" style="font-size:13px"><span class="lbl">misses</span><span style="color:#cbd5e1;white-space:normal;text-align:right">' +
+                parts.join(' · ') + '</span></div>');
+        }
+        perf.innerHTML = rows.join('');
+    }
+
+    // ── streak / fire / popups ──
+    const curSongKey = () => {
+        const t = (id) => { const e = document.getElementById(id); return e ? e.textContent.trim() : ''; };
+        return t('hud-artist') + '|' + t('hud-title') + '|' + t('hud-arrangement');
+    };
+    function popup(text, color, small) {
+        const root = streakEl && streakEl.parentNode;
+        if (!root) return;
+        const p = document.createElement('div');
+        p.className = 'hwt-pop' + (small ? ' small' : '');
+        p.style.color = color;
+        p.textContent = text;
+        root.appendChild(p);
+        if (!p.animate) { setTimeout(() => p.remove(), 1600); return; }
+        const a = p.animate(small
+            ? [{ opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 1, offset: 0.6 }, { opacity: 0 }]
+            : [{ opacity: 0, transform: 'translate(-50%,-50%) scale(.6)' },
+               { opacity: 1, transform: 'translate(-50%,-50%) scale(1.12)', offset: 0.15 },
+               { opacity: 1, transform: 'translate(-50%,-50%) scale(1)', offset: 0.3 },
+               { opacity: 1, transform: 'translate(-50%,-50%) scale(1)', offset: 0.75 },
+               { opacity: 0, transform: 'translate(-50%,-50%) scale(1.05)' }],
+            { duration: small ? 1600 : 2000, easing: 'ease-out' });
+        a.onfinish = () => p.remove();
+    }
+    window.__hwtPopup = (text, color, small) => popup(text, color || GOLD, small);
+    function renderStreak(st) {
+        const s = st.streak | 0;
+        const k = curSongKey();
+        if (k !== songKey) {
+            songKey = k;
+            songBest = Number(LS('hwtBest:' + k, '0')) || 0;
+            bestAnnounced = false;
+            lastStreak = -1;
+        }
+        if (s === lastStreak) return;
+        const prev = lastStreak;
+        lastStreak = s;
+        // Milestone / break popups (skip the first sample after a (re)build).
+        if (prev >= 0) {
+            if (s > prev && s >= 50 && Math.floor(s / 50) > Math.floor(prev / 50)) {
+                popup(Math.floor(s / 50) * 50 + ' NOTE STREAK!', fireColor(s) || GOLD);
+            } else if (s > songBest && songBest >= 20 && !bestAnnounced) {
+                bestAnnounced = true;
+                popup('NEW SONG BEST!', GOLD, true);
+            }
+            if (s < prev && prev >= 25) popup('streak ended at ' + prev, DIM, true);
+        }
+        if (s > songBest) { songBest = s; LSset('hwtBest:' + k, String(s)); }
+
+        const mult = Math.min(4, 1 + Math.floor(s / 10));
+        const mc = MULT_COL[mult - 1];
+        const fc = fireColor(s);
+        streakEl.style.opacity = s > 0 ? '1' : '0.45';
+        const num = streakEl.querySelector('.num');
+        num.textContent = s;
+        num.style.color = fc || (s >= 10 ? mc : '#f1f5f9');
+        const multEl = streakEl.querySelector('.mult');
+        multEl.textContent = mult + 'x';
+        multEl.style.color = mc;
+        const lit = mult === 4 ? 10 : s % 10;
+        streakEl.querySelectorAll('.pips i').forEach((p, i) => {
+            p.style.background = i < lit ? mc : '';
+            p.style.boxShadow = i < lit ? '0 0 6px ' + mc : '';
+        });
+        streakEl.querySelector('.best').textContent = 'session best ' + (st.bestStreak | 0) + (songBest ? '\nsong best ' + songBest : '');
+        if (fc) {
+            fire.firstChild.style.boxShadow = 'inset 0 0 90px 14px ' + fc + 'aa, inset 0 0 22px 2px ' + fc;
+            fire.firstChild.style.background = 'linear-gradient(to top, ' + fc + '40, transparent 45%)';
+            fire.classList.add('on');
+        } else {
+            fire.classList.remove('on');
+        }
+    }
+
+    setInterval(() => {
+        const hud = document.querySelector('.nd-hud');
+        if (!hud) {
+            if (streakEl) streakEl.style.display = 'none';
+            if (fire) fire.classList.remove('on');
+            return;
+        }
+        ensure(hud);
+        streakEl.style.display = '';
+        const st = stats();
+        if (!st) return;
+        const total = st.hits + st.misses;
+        if (total < lastTotal) { reset(); dirty = true; }
+        lastTotal = total;
+        renderStreak(st);
+        if (dirty) { dirty = false; renderPerf(st); }
+    }, 100);
+})();
+
+// ── 6. Compact stats card (multiplayer) + hide it on drums ──────────────
+// Side-by-side multiplayer windows leave little room for the full card, so
+// in "auto" mode the card goes compact while this window is in a multiplayer
+// room (the multiplayer plugin sets <html data-mp-room>): big accuracy +
+// hits, and the timing readout/gauge/latency hint (to check sync). Hidden:
+// play_counts' column (song/section/weak spots/Rocksmith), the detail rows,
+// the drill panel; the streak counter shrinks.
+// On a Drums arrangement the whole card + streak counter are hidden: note
+// detection judges pitched notes, which means nothing on a drum chart (the
+// drum highway has its own score HUD).
+// Mode: the small button in the card's corner cycles auto → compact → full,
+// or highwayTweaksHud({ mode: 'auto' | 'compact' | 'full' }).
+(function compactCard() {
+    const LS = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
+    const LSset = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { /* ignore */ } };
+    const MODES = ['auto', 'compact', 'full'];
+    const LABEL = { auto: 'auto', compact: 'compact', full: 'full' };
+    let mode = MODES.includes(LS('hwtHudMode', 'auto')) ? LS('hwtHudMode', 'auto') : 'auto';
+
+    const css = document.createElement('style');
+    css.textContent = `
+        html.hwt-compact .nd-hud { grid-template-columns: auto !important; top: 12% !important;
+            padding-left: calc(10px * var(--hwt-scale, 1)) !important; padding-right: calc(10px * var(--hwt-scale, 1)) !important;
+            padding-bottom: calc(6px * var(--hwt-scale, 1)) !important; }
+        html.hwt-compact .nd-hud > * { width: 210px; }
+        html.hwt-compact .nd-hud > .pc-score,
+        html.hwt-compact .nd-hud > .nd-drill,
+        html.hwt-compact .nd-hud > .nd-hud-detected { display: none !important; }
+        html.hwt-compact .hwt-perf .row { display: none !important; }
+        html.hwt-compact .hwt-perf .head { margin-bottom: 0; }
+        html.hwt-compact .hwt-perf .acc { font-size: 36px; }
+        html.hwt-compact .hwt-timing { margin-top: 6px !important; padding-top: 6px; }
+        html.hwt-compact .hwt-timing > div:nth-child(3) { display: none !important; }   /* early/150ms/late legend */
+        html.hwt-compact .hwt-streak > * { zoom: calc(var(--hwt-scale, 1) * .55); }
+        html.hwt-drums .nd-hud, html.hwt-drums .hwt-streak, html.hwt-drums .hwt-fire { display: none !important; }
+        .hwt-mode-btn { position: absolute; top: 4px; right: 6px; pointer-events: auto; cursor: pointer;
+            font: 10px system-ui, sans-serif; color: #8b95a5; background: rgba(255,255,255,.06);
+            border: 1px solid rgba(255,255,255,.1); border-radius: 4px; padding: 0 5px; line-height: 15px;
+            width: auto !important; zoom: 1 !important; }
+        .hwt-mode-btn:hover { color: #f1f5f9; }
+        /* room for the mode button above the card's first line */
+        .nd-hud:has(> .hwt-mode-btn) { padding-top: calc(20px + 4px * var(--hwt-scale, 1)) !important; }
+    `;
+    document.head.appendChild(css);
+
+    const isDrums = () => {
+        let a = '';
+        try { const i = window.highway && window.highway.getSongInfo && window.highway.getSongInfo(); a = (i && i.arrangement) || ''; } catch (_) { /* ignore */ }
+        if (!a) { const el = document.getElementById('hud-arrangement'); a = el ? el.textContent : ''; }
+        return /drum/i.test(a);
+    };
+    const inRoom = () => !!document.documentElement.dataset.mpRoom;
+    const compactNow = () => mode === 'compact' || (mode === 'auto' && inRoom());
+
+    function apply() {
+        const root = document.documentElement;
+        root.classList.toggle('hwt-compact', compactNow());
+        root.classList.toggle('hwt-drums', isDrums());
+        const hud = document.querySelector('.nd-hud');
+        if (!hud) return;
+        let btn = hud.querySelector(':scope > .hwt-mode-btn');
+        if (!btn) {
+            btn = document.createElement('button');
+            btn.className = 'hwt-mode-btn';
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                setMode(MODES[(MODES.indexOf(mode) + 1) % MODES.length]);
+            });
+            hud.appendChild(btn);
+        }
+        const text = 'card: ' + LABEL[mode];
+        if (btn.textContent !== text) {
+            btn.textContent = text;
+            btn.title = 'Stats card size. auto = compact while in a multiplayer room, full otherwise. Click to cycle auto → compact → full.';
+        }
+    }
+    function setMode(m) {
+        if (!MODES.includes(m)) return;
+        mode = m;
+        LSset('hwtHudMode', m);
+        apply();
+    }
+    const prev = window.highwayTweaksHud;
+    window.highwayTweaksHud = (o) => {
+        if (o && o.mode) setMode(o.mode);
+        const r = prev ? prev(o) : {};
+        return Object.assign({}, r, { mode });
+    };
+    window.addEventListener('multiplayer:room', apply);
+    setInterval(apply, 300);
+    apply();
+})();
