@@ -76,7 +76,8 @@ test('parseDrumsMeta reads the arrangement JSON drums block into engine option s
         star_power: [[10, 14], [2, 4.5]], fills: [[20, 22]] } };
     const m = H.parseDrumsMeta(arr);
     assert.deepEqual(m, { version: 1, pro: true, kick2x: true,
-        starPower: [{ start: 2, end: 4.5 }, { start: 10, end: 14 }], activation: [{ start: 20, end: 22 }] });
+        starPower: [{ start: 2, end: 4.5 }, { start: 10, end: 14 }], activation: [{ start: 20, end: 22 }],
+        levels: null, levelsGenerated: [] });
     // the block itself is accepted too
     assert.deepEqual(H.parseDrumsMeta(arr.drums), m);
 });
@@ -106,6 +107,202 @@ test('drumsMetaUrl builds the sloppak file URL for arrangements/drums.json', () 
     assert.equal(H.drumsMetaUrl({}, { filename: 'x_p.psarc' }), null, 'unknown format needs a .sloppak name');
     assert.equal(H.drumsMetaUrl({ format: 'sloppak' }, {}), null);
     assert.equal(H.drumsMetaUrl(null, null), null);
+});
+
+// ── difficulty levels ─────────────────────────────────────────────────────
+
+const LEVELS_BLOCK = {
+    version: 1, pro: true, kick2x: true, star_power: [[1, 2]], fills: [],
+    levels: {
+        easy: [[2, 36, 0], [1, 38, 0], [1, 36, 0]],
+        medium: [[1, 36, 0], [1, 42, 0], [1.5, 38, 1], [2, 42, 2]],
+        hard: [[1, 36], ['x', 38, 0], [1.25, 200, 0], [1.5, -1, 0], 'nope', [1.75, 38.5, 0], [2, 38, 9]],
+        expert: [[0, 36, 0]],          // not a lower level: ignored
+    },
+    levels_generated: ['easy', 'medium', 'expert', 'bogus'],
+};
+
+test('parseDrumsMeta reads the levels block: sorted, malformed entries dropped, generated list filtered', () => {
+    const m = H.parseDrumsMeta({ drums: LEVELS_BLOCK });
+    assert.deepEqual(Object.keys(m.levels).sort(), ['easy', 'hard', 'medium']);
+    // stable sort by time keeps chord order
+    assert.deepEqual(m.levels.easy, [[1, 38, 0], [1, 36, 0], [2, 36, 0]]);
+    assert.deepEqual(m.levels.medium[2], [1.5, 38, 1]);
+    // missing flag -> 0, out-of-range / non-integer GM numbers and bad times dropped, unknown flag -> 0
+    assert.deepEqual(m.levels.hard, [[1, 36, 0], [2, 38, 0]]);
+    assert.deepEqual(m.levelsGenerated, ['easy', 'medium']);
+    // a block with only levels is accepted; non-object levels -> null
+    assert.ok(H.parseDrumsMeta({ levels: { easy: [[1, 36, 0]] } }).levels.easy);
+    assert.equal(H.parseDrumsMeta({ drums: { star_power: [], levels: [1, 2] } }).levels, null);
+    assert.equal(H.parseDrumsMeta({ drums: { star_power: [], levels: { easy: 'x' } } }).levels, null);
+    assert.equal(H.parseLevels(null), null);
+});
+
+test('levelToWireNotes converts [t, gm, flag] into wire notes (midi = s*24 + f) with accent / ghost', () => {
+    const out = H.levelToWireNotes([[1, 38, 1], [1, 36, 0], [1.5, 42, 2], [2, 35, 0], 'bad', [NaN, 38, 0]]);
+    assert.deepEqual(out, [
+        { t: 1, s: 1, f: 14, ac: true },
+        { t: 1, s: 1, f: 12 },
+        { t: 1.5, s: 1, f: 18, mt: true },
+        { t: 2, s: 1, f: 11 },
+    ]);
+    assert.deepEqual(out.map(n => n.s * 24 + n.f), [38, 36, 42, 35]);
+    assert.deepEqual(H.levelToWireNotes(null), []);
+    // the engine decodes them like bundle notes: one chord at t=1 (red + kick), accent kept
+    const dec = E.decodeNotes(out);
+    assert.equal(dec.chords[0].notes.length, 2);
+    assert.equal(dec.notes.find(n => n.pad === 1).dyn, 'accent');
+});
+
+test('hasKick2x / stripKick2x: 2x kick (GM 35) in notes and chords; same arrays when there is none', () => {
+    const notes = [w(1, 36), w(1.5, 35), w(2, 38)];
+    const chords = [{ t: 3, notes: [{ s: 1, f: 11 }, { s: 1, f: 14 }] }, { t: 4, notes: [{ s: 1, f: 11 }] }, { t: 5, notes: [{ s: 1, f: 12 }] }];
+    assert.equal(H.hasKick2x(notes, null), true);
+    assert.equal(H.hasKick2x([w(1, 36)], chords), true);
+    assert.equal(H.hasKick2x([{ t: 1, midi: 35 }], null), true);
+    assert.equal(H.hasKick2x([w(1, 36)], [chords[2]]), false);
+    const s = H.stripKick2x(notes, chords);
+    assert.deepEqual(s.notes.map(n => n.s * 24 + n.f), [36, 38]);
+    assert.equal(s.chords.length, 2, 'a chord of only 2x kicks disappears');
+    assert.deepEqual(s.chords[0].notes.map(n => n.s * 24 + n.f), [38]);
+    assert.equal(s.chords[1], chords[2], 'untouched chords are kept as they are');
+    assert.equal(chords[0].notes.length, 2, 'input not mutated');
+    const plain = [w(1, 36)], plainChords = [chords[2]];
+    const same = H.stripKick2x(plain, plainChords);
+    assert.ok(same.notes === plain && same.chords === plainChords);
+});
+
+test('difficultyOptions: Expert always, Expert+ with 2x kick, lower levels from the drums block', () => {
+    const byId = (opts) => Object.fromEntries(opts.map(o => [o.id, o]));
+    // old sloppak: no drums block / no levels
+    let o = byId(H.difficultyOptions({ meta: null, has2x: false }));
+    assert.deepEqual(H.DIFFICULTIES.filter(id => o[id].available), ['expert']);
+    assert.match(o.easy.reason, /only has Expert/);
+    assert.match(o.expert_plus.reason, /2x kick/);
+    o = byId(H.difficultyOptions({ meta: H.parseDrumsMeta({ drums: { star_power: [] } }), has2x: true }));
+    assert.deepEqual(H.DIFFICULTIES.filter(id => o[id].available), ['expert', 'expert_plus']);
+    // the meta's kick2x flag also enables Expert+
+    o = byId(H.difficultyOptions({ meta: H.parseDrumsMeta({ drums: { kick2x: true, star_power: [] } }) }));
+    assert.equal(o.expert_plus.available, true);
+    // still fetching
+    assert.match(byId(H.difficultyOptions({ metaPending: true })).hard.reason, /Loading/);
+    // levels present: available, generated marker
+    const meta = H.parseDrumsMeta({ drums: Object.assign({}, LEVELS_BLOCK, { levels: { easy: [[1, 36, 0]], medium: [] } }) });
+    o = byId(H.difficultyOptions({ meta, has2x: true }));
+    assert.deepEqual([o.easy.available, o.easy.generated, o.easy.label, o.easy.name], [true, true, 'EASY', 'Easy']);
+    assert.deepEqual([o.medium.available, o.hard.available], [false, false]);
+    assert.match(o.medium.reason, /Medium chart is empty/);
+    assert.match(o.hard.reason, /no Hard part/);
+    assert.equal(o.expert.generated, false);
+    // drum_tab charts: Expert only
+    o = byId(H.difficultyOptions({ meta, drumTab: true }));
+    assert.equal(o.easy.available, false);
+    assert.match(o.easy.reason, /Drum tabs/);
+    assert.equal(o.expert_plus.available, false);
+});
+
+test('resolveDifficulty falls back to Expert for unavailable levels without changing the request', () => {
+    const opts = H.difficultyOptions({ meta: null, has2x: false });
+    assert.deepEqual(H.resolveDifficulty('expert', opts), { id: 'expert', requested: 'expert', fallback: false, reason: '' });
+    const r = H.resolveDifficulty('hard', opts);
+    assert.deepEqual([r.id, r.requested, r.fallback], ['expert', 'hard', true]);
+    assert.match(r.reason, /only has Expert/);
+    assert.equal(H.resolveDifficulty('expert_plus', opts).id, 'expert');
+    assert.equal(H.resolveDifficulty('expert_plus', H.difficultyOptions({ has2x: true })).id, 'expert_plus');
+    // junk / missing preference -> Expert, no fallback flagged
+    assert.deepEqual(H.resolveDifficulty('insane', opts), { id: 'expert', requested: 'expert', fallback: false, reason: '' });
+    assert.equal(H.resolveDifficulty(undefined, null).id, 'expert');
+    assert.equal(H.normalizeDifficulty('easy'), 'easy');
+    assert.equal(H.normalizeDifficulty({}), 'expert');
+});
+
+test('nextDifficulty steps through the available levels and wraps', () => {
+    const all = H.difficultyOptions({ meta: H.parseDrumsMeta({ drums: LEVELS_BLOCK }), has2x: true });
+    assert.equal(H.nextDifficulty('easy', all, 1), 'medium');
+    assert.equal(H.nextDifficulty('expert_plus', all, 1), 'easy');
+    assert.equal(H.nextDifficulty('easy', all, -1), 'expert_plus');
+    const few = H.difficultyOptions({ meta: null, has2x: false });
+    assert.equal(H.nextDifficulty('expert', few, 1), 'expert');
+    const two = H.difficultyOptions({ meta: null, has2x: true });
+    assert.equal(H.nextDifficulty('expert', two, 1), 'expert_plus');
+    assert.equal(H.nextDifficulty('expert_plus', two, 1), 'expert');
+    assert.equal(H.nextDifficulty('expert', two, -1), 'expert_plus');
+});
+
+test('difficultyLabel / difficultyBadge: HUD text, AUTO marker for generated levels, fallback tooltip', () => {
+    assert.equal(H.difficultyLabel('hard'), 'HARD');
+    assert.equal(H.difficultyLabel('expert_plus'), 'EXPERT+');
+    assert.equal(H.difficultyLabel('easy', true), 'EASY · AUTO');
+    const meta = H.parseDrumsMeta({ drums: LEVELS_BLOCK });
+    const opts = H.difficultyOptions({ meta, has2x: true });
+    let b = H.difficultyBadge(H.resolveDifficulty('medium', opts), opts);
+    assert.deepEqual([b.id, b.text, b.sub, b.fallback, b.color], ['medium', 'MEDIUM', 'AUTO', false, H.DIFFICULTY_COLORS.medium]);
+    assert.match(b.title, /auto-generated/);
+    b = H.difficultyBadge(H.resolveDifficulty('hard', opts), opts);
+    assert.deepEqual([b.text, b.sub], ['HARD', null]);
+    const none = H.difficultyOptions({ meta: null });
+    b = H.difficultyBadge(H.resolveDifficulty('hard', none), none);
+    assert.deepEqual([b.id, b.text, b.fallback], ['expert', 'EXPERT', true]);
+    assert.match(b.title, /Hard is not available for this song/);
+    assert.equal(H.difficultyBadge(null, null).text, 'EXPERT');
+});
+
+test('difficultyChart: Expert+ as is, Expert without 2x kick, lower levels from the block', () => {
+    const notes = [w(1, 36), w(1, 42), w(1.25, 35), w(1.5, 38)];
+    const chords = [];
+    const meta = H.parseDrumsMeta({ drums: LEVELS_BLOCK });
+    const xp = H.difficultyChart('expert_plus', notes, chords, meta);
+    assert.ok(xp.notes === notes && xp.chords === chords && xp.id === 'expert_plus');
+    const ex = H.difficultyChart('expert', notes, chords, meta);
+    assert.deepEqual(ex.notes.map(n => n.s * 24 + n.f), [36, 42, 38]);
+    const plain = [w(1, 36)];
+    assert.equal(H.difficultyChart('expert', plain, null, null).notes, plain, 'no 2x kick: the same array');
+    const md = H.difficultyChart('medium', notes, chords, meta);
+    assert.equal(md.id, 'medium');
+    assert.deepEqual(md.notes.map(n => [n.t, n.s * 24 + n.f, !!n.ac, !!n.mt]),
+        [[1, 36, false, false], [1, 42, false, false], [1.5, 38, true, false], [2, 42, false, true]]);
+    assert.deepEqual(md.chords, []);
+    // a level the chart lacks plays Expert
+    const fb = H.difficultyChart('hard', notes, chords, null);
+    assert.equal(fb.id, 'expert');
+    assert.deepEqual(fb.notes.map(n => n.s * 24 + n.f), [36, 42, 38]);
+});
+
+test('isDifficultyKey: D harder, Shift+D easier; never a drum key', () => {
+    assert.deepEqual(H.isDifficultyKey({ code: 'KeyD', key: 'd' }), { dir: 1 });
+    assert.deepEqual(H.isDifficultyKey({ code: 'KeyD', key: 'D', shiftKey: true }), { dir: -1 });
+    assert.deepEqual(H.isDifficultyKey({ key: 'd' }), { dir: 1 });
+    assert.equal(H.isDifficultyKey({ code: 'KeyD', key: 'd', ctrlKey: true }), null);
+    assert.equal(H.isDifficultyKey({ code: 'KeyF', key: 'f' }), null);
+    assert.equal(H.isDifficultyKey(null), null);
+    assert.equal(H.keyToPad({ code: 'KeyD', key: 'd' }), null, 'D is not a drum key');
+    for (const code of ['KeyB', 'KeyF', 'KeyJ', 'KeyK', 'KeyL', 'KeyU', 'KeyI', 'KeyO', 'Enter', 'Space', 'ShiftLeft']) {
+        assert.equal(H.isDifficultyKey({ code, key: code }), null, code);
+    }
+});
+
+test('session: a level chart plays like any chart; switching level mid-song scores from the current time', () => {
+    const meta = H.parseDrumsMeta({ drums: { star_power: [], fills: [], levels: {
+        easy: [[1, 36, 0], [2, 38, 0], [3, 36, 0], [4, 38, 0]],
+        hard: [[1, 36, 0], [1, 42, 0], [2, 38, 0], [2, 42, 0], [3, 36, 0], [3, 42, 0], [4, 38, 0], [4, 42, 0]],
+    } } });
+    const s = H.createSession(E, { now: () => 0 });
+    s.load({ notes: H.difficultyChart('easy', [], [], meta).notes, chords: [], beats: [] });
+    s.setMeta(meta);
+    s.update(0);
+    for (const g of s.gems.filter(g => g.t < 2.5)) { s.update(g.t); s.hit(g.t, g.pad, { cymbal: g.cymbal }); }
+    s.update(2.5);
+    assert.equal(s.getState().notesHit, 2);
+    // switch to Hard at t=2.5 (what screen.js does: load the other chart, keep the meta)
+    s.load({ notes: H.difficultyChart('hard', [], [], meta).notes, chords: [], beats: [] });
+    s.setMeta(meta);
+    s.update(2.5);
+    const st = s.getState();
+    assert.equal(st.totalNotes, 4, 'only the Hard notes from 2.5 s on');
+    assert.equal(st.notesMissed, 0);
+    for (const g of s.gems.filter(g => g.t > 2.5)) { s.update(g.t); s.hit(g.t, g.pad, { cymbal: g.cymbal }); }
+    s.update(5);
+    assert.deepEqual([s.getState().notesHit, s.getState().notesMissed, s.getState().overhits], [4, 0, 0]);
 });
 
 // ── input mapping ─────────────────────────────────────────────────────────

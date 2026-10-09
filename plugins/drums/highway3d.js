@@ -9,8 +9,10 @@
  * used only through its public API.
  *
  * Three parts, all exported on window.DrumsHighway3D (browser) and module.exports (Node tests):
- *  - Pure helpers: chart flattening, gem classification, drums-meta parsing, HUD formatting,
- *    keyboard / MIDI -> pad mapping, timing helpers. No DOM, no THREE. Unit-tested.
+ *  - Pure helpers: chart flattening, gem classification, drums-meta parsing, difficulty levels
+ *    (levels -> wire notes, availability, fallback, labels), HUD formatting, keyboard / MIDI -> pad
+ *    mapping, timing helpers. No DOM, no THREE. Unit-tested. screen.js also loads this file in the
+ *    2D view for the meta / difficulty helpers.
  *  - createSession(DrumsEngine, opts): owns the engine for one chart. Builds it from wire notes,
  *    applies star power / fill metadata, rebuilds on seeks, queues engine events for the view.
  *  - createView(THREE, canvas, opts): the Three.js scene that renders into the given (webgl2) canvas
@@ -205,15 +207,241 @@
         if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
         let d = null;
         if (raw.drums && typeof raw.drums === 'object' && !Array.isArray(raw.drums)) d = raw.drums;
-        else if ('star_power' in raw || 'fills' in raw) d = raw;
+        else if ('star_power' in raw || 'fills' in raw || 'levels' in raw) d = raw;
         if (!d) return null;
+        const levels = parseLevels(d.levels);
+        const generated = Array.isArray(d.levels_generated)
+            ? LOWER_LEVELS.filter(id => d.levels_generated.includes(id)) : [];
         return {
             version: Number.isFinite(+d.version) ? +d.version : 1,
             pro: d.pro !== false,
             kick2x: !!d.kick2x,
             starPower: _ranges(d.star_power),
             activation: _ranges(d.fills),
+            levels,                       // {easy?, medium?, hard?}: [[t, gm, flag], ...] or null
+            levelsGenerated: generated,   // lower levels reduced by software rather than hand-charted
         };
+    }
+
+    // ── Pure helpers: difficulty levels ─────────────────────────────────────
+    //
+    // The arrangement's own notes are the Expert chart. Expert+ = Expert with the 2x kick (GM 35)
+    // notes; plain Expert drops them. Easy / Medium / Hard come from the drums block's `levels`
+    // ([[t, gm, flag], ...], flag 0 normal / 1 accent / 2 ghost) when the converter wrote them.
+
+    const DIFFICULTIES = Object.freeze(['easy', 'medium', 'hard', 'expert', 'expert_plus']);
+    const LOWER_LEVELS = Object.freeze(['easy', 'medium', 'hard']);
+    const DEFAULT_DIFFICULTY = 'expert';
+    const DIFFICULTY_LABELS = Object.freeze({
+        easy: 'EASY', medium: 'MEDIUM', hard: 'HARD', expert: 'EXPERT', expert_plus: 'EXPERT+',
+    });
+    const DIFFICULTY_NAMES = Object.freeze({
+        easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', expert_plus: 'Expert+',
+    });
+    const DIFFICULTY_COLORS = Object.freeze({
+        easy: '#4be37a', medium: '#ffd23f', hard: '#ff8a3d', expert: '#ff4b5c', expert_plus: '#ff4fc8',
+    });
+    const KICK2X_MIDI = 35;
+
+    /** A stored / user-supplied difficulty id, or the default ('expert') when it is not a known id. */
+    function normalizeDifficulty(raw) {
+        return typeof raw === 'string' && DIFFICULTIES.includes(raw) ? raw : DEFAULT_DIFFICULTY;
+    }
+
+    /** One level list -> sorted [[t, gm, flag]] with malformed entries dropped. */
+    function _levelEntries(list) {
+        if (!Array.isArray(list)) return null;
+        const out = [];
+        for (const e of list) {
+            if (!Array.isArray(e) || e.length < 2) continue;
+            const t = +e[0], gm = +e[1], f = e.length > 2 ? +e[2] : 0;
+            if (!Number.isFinite(t) || t < 0 || !Number.isInteger(gm) || gm < 0 || gm > 127) continue;
+            out.push([t, gm, f === 1 || f === 2 ? f : 0]);
+        }
+        // stable sort by time (Array.prototype.sort is stable), keeping chord order
+        out.sort((a, b) => a[0] - b[0]);
+        return out;
+    }
+
+    /** The drums block's `levels` object -> {easy?, medium?, hard?} or null when there is none. */
+    function parseLevels(raw) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+        const out = {};
+        let any = false;
+        for (const id of LOWER_LEVELS) {
+            if (!Object.prototype.hasOwnProperty.call(raw, id)) continue;
+            const entries = _levelEntries(raw[id]);
+            if (!entries) continue;
+            out[id] = entries;
+            any = true;
+        }
+        return any ? out : null;
+    }
+
+    /** [[t, gm, flag], ...] -> wire notes {t, s, f, ac?, mt?} (midi = s*24 + f), the bundle.notes shape. */
+    function levelToWireNotes(entries) {
+        const out = [];
+        if (!Array.isArray(entries)) return out;
+        for (const e of entries) {
+            if (!Array.isArray(e)) continue;
+            const t = +e[0], gm = e[1] | 0;
+            if (!Number.isFinite(t)) continue;
+            const n = { t, s: Math.floor(gm / 24), f: gm % 24 };
+            if (e[2] === 1) n.ac = true;
+            else if (e[2] === 2) n.mt = true;
+            out.push(n);
+        }
+        return out;
+    }
+
+    function _wireGm(n) {
+        if (n.midi != null && Number.isFinite(+n.midi)) return +n.midi;
+        return ((n.s | 0) * 24) + (n.f | 0);
+    }
+
+    /** True when the wire chart (notes + chords) has 2x kick (GM 35) notes. */
+    function hasKick2x(notes, chords) {
+        if (Array.isArray(notes)) {
+            for (const n of notes) if (n && typeof n === 'object' && _wireGm(n) === KICK2X_MIDI) return true;
+        }
+        if (Array.isArray(chords)) {
+            for (const c of chords) {
+                if (!c || !Array.isArray(c.notes)) continue;
+                for (const n of c.notes) if (n && typeof n === 'object' && _wireGm(n) === KICK2X_MIDI) return true;
+            }
+        }
+        return false;
+    }
+
+    /** Notes / chords without the 2x kick notes. Returns the same arrays when there are none. */
+    function stripKick2x(notes, chords) {
+        if (!hasKick2x(notes, chords)) return { notes, chords };
+        const keep = (n) => !(n && typeof n === 'object' && _wireGm(n) === KICK2X_MIDI);
+        const outNotes = Array.isArray(notes) ? notes.filter(keep) : notes;
+        let outChords = chords;
+        if (Array.isArray(chords)) {
+            outChords = [];
+            for (const c of chords) {
+                if (!c || !Array.isArray(c.notes)) { outChords.push(c); continue; }
+                const cn = c.notes.filter(keep);
+                if (cn.length === c.notes.length) outChords.push(c);
+                else if (cn.length) outChords.push(Object.assign({}, c, { notes: cn }));
+            }
+        }
+        return { notes: outNotes, chords: outChords };
+    }
+
+    /**
+     * Which difficulties the loaded chart offers.
+     *   ctx.meta        parseDrumsMeta() output (or null)
+     *   ctx.metaPending the drums block is still being fetched
+     *   ctx.has2x       the Expert chart has 2x kick notes (hasKick2x)
+     *   ctx.drumTab     the chart comes from a drum_tab (no difficulty levels)
+     * -> [{id, label, name, available, reason, generated}] in DIFFICULTIES order. Expert is always
+     * available; Expert+ needs 2x kick notes; Easy/Medium/Hard need the drums block's levels.
+     */
+    function difficultyOptions(ctx) {
+        ctx = ctx || {};
+        const meta = ctx.meta || null;
+        const levels = meta && meta.levels ? meta.levels : null;
+        const gen = meta && Array.isArray(meta.levelsGenerated) ? meta.levelsGenerated : [];
+        return DIFFICULTIES.map((id) => {
+            const o = { id, label: DIFFICULTY_LABELS[id], name: DIFFICULTY_NAMES[id], available: true, reason: '', generated: false };
+            if (id === 'expert') return o;
+            if (id === 'expert_plus') {
+                if (!ctx.has2x && !(meta && meta.kick2x && !ctx.drumTab)) {
+                    o.available = false;
+                    o.reason = 'No 2x kick notes in this chart';
+                }
+                return o;
+            }
+            const lv = levels && Array.isArray(levels[id]) ? levels[id] : null;
+            if (lv && lv.length && !ctx.drumTab) {
+                o.generated = gen.includes(id);
+                return o;
+            }
+            o.available = false;
+            if (ctx.drumTab) o.reason = 'Drum tabs only have the Expert chart';
+            else if (ctx.metaPending) o.reason = 'Loading the chart’s difficulty levels…';
+            else if (!levels) o.reason = 'This chart only has Expert';
+            else if (lv) o.reason = 'The ' + o.name + ' chart is empty';
+            else o.reason = 'This chart has no ' + o.name + ' part';
+            return o;
+        });
+    }
+
+    /**
+     * Pick the difficulty to play: the saved choice when the chart has it, otherwise Expert
+     * (the saved preference itself is left alone). -> {id, requested, fallback, reason}.
+     */
+    function resolveDifficulty(saved, options) {
+        const requested = normalizeDifficulty(saved);
+        const opts = Array.isArray(options) ? options : [];
+        const want = opts.find(o => o && o.id === requested);
+        if (!want || want.available) return { id: requested, requested, fallback: false, reason: '' };
+        return { id: DEFAULT_DIFFICULTY, requested, fallback: true, reason: want.reason || '' };
+    }
+
+    /** The next available difficulty up (dir > 0) or down (dir < 0), wrapping around. */
+    function nextDifficulty(current, options, dir) {
+        const avail = DIFFICULTIES.filter(id => {
+            const o = Array.isArray(options) ? options.find(x => x && x.id === id) : null;
+            return !o || o.available;
+        });
+        if (!avail.length) return normalizeDifficulty(current);
+        const step = dir < 0 ? -1 : 1;
+        let i = DIFFICULTIES.indexOf(normalizeDifficulty(current));
+        for (let k = 0; k < DIFFICULTIES.length; k++) {
+            i = (i + step + DIFFICULTIES.length) % DIFFICULTIES.length;
+            if (avail.includes(DIFFICULTIES[i])) return DIFFICULTIES[i];
+        }
+        return normalizeDifficulty(current);
+    }
+
+    /** 'hard' -> 'HARD'; generated levels get an AUTO marker ('HARD · AUTO'). */
+    function difficultyLabel(id, generated) {
+        const base = DIFFICULTY_LABELS[normalizeDifficulty(id)];
+        return generated ? base + ' · AUTO' : base;
+    }
+
+    /**
+     * HUD badge for a resolved difficulty: {id, text, sub, color, title}. `sub` is 'AUTO' for an
+     * auto-generated level; `title` explains a fallback.
+     */
+    function difficultyBadge(resolved, options) {
+        const id = resolved ? normalizeDifficulty(resolved.id) : DEFAULT_DIFFICULTY;
+        const o = Array.isArray(options) ? options.find(x => x && x.id === id) : null;
+        const generated = !!(o && o.generated);
+        let title = 'Drum difficulty: ' + DIFFICULTY_NAMES[id] + (generated ? ' (auto-generated from Expert)' : '');
+        if (resolved && resolved.fallback) {
+            title += '. ' + DIFFICULTY_NAMES[resolved.requested] + ' is not available for this song'
+                + (resolved.reason ? ' (' + resolved.reason + ')' : '');
+        }
+        return {
+            id,
+            text: DIFFICULTY_LABELS[id],
+            sub: generated ? 'AUTO' : null,
+            color: DIFFICULTY_COLORS[id],
+            fallback: !!(resolved && resolved.fallback),
+            title,
+        };
+    }
+
+    /**
+     * Wire chart for a difficulty: Expert+ = the arrangement's notes/chords as they are, Expert = the
+     * same without 2x kick notes, Easy/Medium/Hard = the level from the drums block (no chords).
+     * Unknown / unavailable lower levels fall back to Expert.
+     */
+    function difficultyChart(id, notes, chords, meta) {
+        id = normalizeDifficulty(id);
+        if (id === 'expert_plus') return { id, notes, chords };
+        if (LOWER_LEVELS.includes(id)) {
+            const lv = meta && meta.levels && Array.isArray(meta.levels[id]) ? meta.levels[id] : null;
+            if (lv && lv.length) return { id, notes: levelToWireNotes(lv), chords: [] };
+            id = 'expert';
+        }
+        const s = stripKick2x(notes, chords);
+        return { id, notes: s.notes, chords: s.chords };
     }
 
     /**
@@ -261,6 +489,18 @@
         if (!m) return null;
         const cymbal = m.cymbal || (!!e.shiftKey && m.pad >= PAD.YELLOW);
         return { pad: m.pad, cymbal };
+    }
+
+    /**
+     * Difficulty shortcut: D = next harder difficulty, Shift+D = next easier (both views). D is not a
+     * drum key (B F J K L U I O Enter) and not a core player shortcut. -> {dir: 1 | -1} or null.
+     */
+    function isDifficultyKey(e) {
+        if (!e || e.ctrlKey || e.metaKey || e.altKey) return null;
+        const code = typeof e.code === 'string' ? e.code : '';
+        const key = typeof e.key === 'string' ? e.key : '';
+        if (code !== 'KeyD' && !(code === '' && key.toLowerCase() === 'd')) return null;
+        return { dir: e.shiftKey ? -1 : 1 };
     }
 
     /**
@@ -564,7 +804,9 @@
     /**
      * createView(THREE, canvas, {hudCanvas, context}) -> view.
      *   view.resize(cssW, cssH, pixelRatio)
-     *   view.render({time, session, wallNow, lookahead, loading, message})
+     *   view.render({time, session, wallNow, lookahead, loading, message, hint, difficulty})
+     *     difficulty: difficultyBadge() output, drawn as a pill in the HUD; view.difficultyRect is
+     *     its css-px rect after the frame (screen.js overlays a clickable button there)
      *   view.dispose()
      */
     function createView(T, canvas, opts) {
@@ -863,6 +1105,7 @@
         let spEndedAt = -1e9;
         let toast = null; // {text, color, born}
         let cssW = 1, cssH = 1, dpr = 1;
+        let diffRect = null;    // css-px rect of the HUD difficulty badge (last frame), or null
 
         function laneOf(pad) { return pad >= 1 && pad <= 4 ? pad - 1 : -1; }
         function padColor(pad, cymbal) {
@@ -981,6 +1224,17 @@
             if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = 1.5; ctx.stroke(); }
         }
 
+        function _pill(ctx, x, y, w, h) {
+            const r = Math.min(h / 2, w / 2);
+            ctx.beginPath();
+            ctx.moveTo(x + r, y);
+            ctx.lineTo(x + w - r, y);
+            ctx.arc(x + w - r, y + r, r, -Math.PI / 2, Math.PI / 2);
+            ctx.lineTo(x + r, y + h);
+            ctx.arc(x + r, y + r, r, Math.PI / 2, Math.PI * 1.5);
+            ctx.closePath();
+        }
+
         function drawHud(frame, state, wall) {
             if (!hctx) return;
             const ctx = hctx;
@@ -1062,6 +1316,43 @@
             ctx.font = `600 ${13 * scale}px ${FONT}`;
             ctx.fillStyle = '#c3cbe6';
             ctx.fillText('Accuracy ' + m.accuracy + '   ' + m.hitsText, lx, starY + 30 * scale);
+
+            // difficulty badge (screen.js puts a clickable button over diffRect)
+            diffRect = null;
+            const d = frame.difficulty;
+            if (d && d.text) {
+                ctx.shadowBlur = 0;
+                const fs = 12 * scale, subFs = 9 * scale, padX = 9 * scale, gap = 6 * scale;
+                ctx.font = `italic 800 ${fs}px ${FONT}`;
+                const tw = ctx.measureText(d.text).width;
+                ctx.font = `800 ${subFs}px ${FONT}`;
+                const sw = d.sub ? ctx.measureText(d.sub).width + gap : 0;
+                const pw = tw + sw + padX * 2, ph = 21 * scale;
+                const px = align === 'right' ? lx - pw : lx;
+                const py = starY + 44 * scale;
+                const col = d.color || '#c8ccd8';
+                ctx.fillStyle = 'rgba(10,13,28,0.88)';
+                _pill(ctx, px, py, pw, ph);
+                ctx.fill();
+                ctx.lineWidth = 1.5;
+                ctx.strokeStyle = col;
+                ctx.globalAlpha = d.fallback ? 0.55 : 1;
+                ctx.stroke();
+                ctx.globalAlpha = 1;
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'middle';
+                ctx.font = `italic 800 ${fs}px ${FONT}`;
+                ctx.fillStyle = col;
+                ctx.fillText(d.text, px + padX, py + ph / 2 + 0.5);
+                if (d.sub) {
+                    ctx.font = `800 ${subFs}px ${FONT}`;
+                    ctx.fillStyle = '#9aa4c4';
+                    ctx.fillText(d.sub, px + padX + tw + gap, py + ph / 2 + 0.5);
+                }
+                ctx.textBaseline = 'alphabetic';
+                ctx.textAlign = align;
+                diffRect = { x: px, y: py, w: pw, h: ph };
+            }
 
             // Right column: multiplier badge + streak.
             const rx = narrow ? Wc - 16 - 40 * scale : right.x + 28 * scale + 40 * scale;
@@ -1354,6 +1645,7 @@
             get hudContext() { return hctx; },
             get size() { return { w: cssW, h: cssH, dpr }; },
             get lastWall() { return wallLast; },
+            get difficultyRect() { return diffRect; },
         };
     }
 
@@ -1361,6 +1653,9 @@
         PAD, LANE_NAMES, LANE_COLORS, COLORS, TRACK, PAD_SYNTH_MIDI, LANE_ID_TO_PAD, SEEK_BACK, SEEK_FORWARD,
         collectWireNotes, classifyNote, buildGems, visibleRange, normalizeBeats,
         parseDrumsMeta, drumsMetaUrl,
+        DIFFICULTIES, DEFAULT_DIFFICULTY, DIFFICULTY_LABELS, DIFFICULTY_NAMES, DIFFICULTY_COLORS,
+        normalizeDifficulty, parseLevels, levelToWireNotes, hasKick2x, stripKick2x, difficultyOptions,
+        resolveDifficulty, nextDifficulty, difficultyLabel, difficultyBadge, difficultyChart, isDifficultyKey,
         keyToPad, midiToPad, synthMidiForPad, isTypingTarget, estimateTime, isSeek,
         formatScore, formatAccuracy, multiplierColor, starProgress, hudModel,
         createSession, createView,

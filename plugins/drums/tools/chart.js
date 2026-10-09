@@ -47,12 +47,43 @@ export function makeChart() {
     notes.sort((a, b) => a.t - b.t || (a.s * 24 + a.f) - (b.s * 24 + b.f));   // wire notes arrive time-sorted
     const starPower = [[at(2), at(4)], [at(5), at(7)], [at(10), at(11)], [at(17), at(19)]];
     const fills = [[at(15, 2), at(16)], [at(23, 2), at(24)]];
+    const levels = makeLevels(notes);
     return {
         notes,
         beats,
         starPower,
         fills,
+        levels,
         // the arrangement JSON's top-level `drums` block, as the converters write it
-        drums: { version: 1, pro: true, kick2x: true, star_power: starPower, fills },
+        drums: { version: 1, pro: true, kick2x: true, star_power: starPower, fills,
+            levels, levels_generated: ['easy', 'medium'] },
     };
+}
+
+// Lower difficulties as the converters store them ([t, gm, flag], flag 1 accent / 2 ghost), reduced from
+// Expert: Hard drops ghost notes and 2x kick; Medium also keeps cymbals and kicks on beats only and halves
+// the fills; Easy keeps snare / kick on beats plus crashes, and quarter-note toms in fills.
+function makeLevels(notes) {
+    const midi = (n) => n.s * 24 + n.f;
+    const beatPos = (t) => (t - START) / BEAT;
+    const onGrid = (t, step) => { const p = beatPos(t) / step; return Math.abs(p - Math.round(p)) < 1e-3; };
+    const entry = (n) => [n.t, midi(n), n.ac ? 1 : (n.mt ? 2 : 0)];
+    const cym = new Set([42, 46, 51, 53, 49, 57]);
+    const toms = new Set([48, 45, 41]);
+    const hard = notes.filter(n => !n.mt && midi(n) !== 35);
+    const medium = hard.filter((n) => {
+        const m = midi(n);
+        if (m === 49) return true;
+        if (cym.has(m) || m === 36) return onGrid(n.t, 1);
+        if (toms.has(m)) return onGrid(n.t, 0.5);
+        return true;
+    });
+    const easy = medium.filter((n) => {
+        const m = midi(n);
+        if (m === 49) return onGrid(n.t, 1);
+        if (cym.has(m)) return false;
+        if (toms.has(m)) return onGrid(n.t, 1);
+        return onGrid(n.t, 1);
+    });
+    return { easy: easy.map(entry), medium: medium.map(entry), hard: hard.map(entry) };
 }
