@@ -308,3 +308,24 @@ def test_tab_check_skips_drum_arrangements():
         assert tab_check.DRUMS_ARR.search("Drums drums") and not tab_check.DRUMS_ARR.search("Lead lead")
     finally:
         logging.disable(logging.NOTSET)
+
+
+def test_pad_check_catches_a_chart_one_eighth_off(tmp_path):
+    # hats on every 8th, kick on 1 and 3: shifting the whole chart by an 8th still puts
+    # every note on *some* onset, but the kicks land on hat-only slots
+    hits = []
+    for i in range(240):
+        t = 1.0 + 0.25 * i
+        hits.append((t, "yellow", True))
+        if i % 4 == 0:
+            hits.append((t, "kick", False))
+        if i % 4 == 2:
+            hits.append((t, "red", False))
+    y = drum_audio(hits, 64, seed=3, noise=0.003)
+    on, bands = drumalign.detect_onsets(y), drumalign.band_onsets(y)
+    good = drumalign.validate([h[0] for h in hits], on, pad_hits=hits, bands=bands)
+    assert good.ok and good.pads["kick"] > 0.9 and good.pads["cymbal"] > 0.9
+    off = [(t + 0.25, p, c) for t, p, c in hits]
+    bad = drumalign.validate([h[0] for h in off], on, pad_hits=off, bands=bands)
+    assert bad.within_30ms > 0.9            # the plain onset check is fooled...
+    assert not bad.ok and bad.pads["kick"] < 0.35 and any("kick" in r for r in bad.reasons)   # ...this isn't
