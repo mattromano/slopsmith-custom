@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.11.0' };
+    window.__highwayTweaks = { version: '1.12.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -469,6 +469,34 @@
                 return "            + ':' + firstT + ':' + lastT + ':' + Math.round(" + OFF + ");";
             });
             if (ph.length === 3) { code = pc; hits.push(...ph); }
+            // Fast chord runs. While chord N still rings, chord N+1 (often the
+            // same shape) is already "present" when its window opens, so its
+            // time stamp sits at the early edge of the window, where the 50 ms
+            // verdict poll flips it between OK and an EARLY miss at random.
+            //  - engine verifier: stamp the chord with the string time closest
+            //    to the chart time (stock: the first string listed), and treat
+            //    a chord the engine verified inside its window as on time
+            //    instead of EARLY by a poll's jitter;
+            //  - browser detector: an EARLY strummed frame no longer locks the
+            //    chord as a miss; later frames in the window can still hit
+            //    (checkMisses retires it as before if none do).
+            const cr = [];
+            let rc = code;
+            rc = rc.replace('if (detectedTime === null) detectedTime = v.detectedSongTime;', () => {
+                cr.push('chord-closest-time');
+                return 'if (detectedTime === null || Math.abs(v.detectedSongTime - grp.t) < Math.abs(detectedTime - grp.t))' +
+                    ' detectedTime = v.detectedSongTime;';
+            });
+            rc = rc.replace('const chordIsHit = score >= chordHitRatio && detectedTime !== null;', (m) => {
+                cr.push('chord-early-edge');
+                return 'if (detectedTime !== null && detectedTime < grp.t - chordTimingHitThreshold' +
+                    ' && detectedTime >= grp.t - timingTolerance - 0.1) detectedTime = grp.t - chordTimingHitThreshold;\n        ' + m;
+            });
+            rc = rc.replace('recordJudgment(chordKey, chordJudgment, { count: true, emit: true });', (m) => {
+                cr.push('chord-no-early-lock');
+                return "if (!chordJudgment.hit && chordJudgment.timingState === 'EARLY') continue;\n                " + m;
+            });
+            if (cr.length === 3) { code = rc; hits.push(...cr); }
             // Timing gauge (section 4): forward every counted judgment and
             // expose the live latency offset. Independent of the pitch patch.
             code = code.replace(/( {12})_recordDiagnostic\(judgment\);\r?\n/, (m, ind) => {
@@ -759,7 +787,7 @@
 // you're consistently ahead or behind — which is what you need to set the
 // Audio Latency Offset. This adds a gauge under note_detect's score HUD:
 // the last N timed notes (hits and timing misses) as ticks, their median,
-// and the latency value that would centre them.
+// and the latency value that would centre them (with an Apply button).
 //
 // Sign: timingError = (detect time - latencyOffset) - note time, so + is
 // late and raising the offset by the median centres it. Samples are stored
@@ -768,19 +796,36 @@
 // orange (late) — safe for red-green colour blindness.
 // Notes off by more than the Timing Tolerance can't be matched at all and
 // never reach the gauge (they count as plain misses).
+//
+// A/V offset. note_detect judges against the highway's (visual) clock, so
+// when you play by watching the highway a wrong A/V offset cancels out and
+// never shows in these numbers; judgments alone can't tell input latency
+// from A/V offset. The "A/V check" button measures the difference: keep
+// playing normally (that median is the reference), press it, then play
+// ~12 notes by ear without looking at the highway. If you land later or
+// earlier by ear than by eye, the audio and visuals disagree, and the
+// gauge suggests the A/V offset that lines them up (Apply sets it). The
+// sample window resets whenever the A/V offset changes.
 (function timingGauge() {
-    const N = 24, RANGE = 150, MIN_N = 6, DEAD = 12;
+    const N = 24, RANGE = 150, MIN_N = 6, DEAD = 12, EAR_N = 12, AV_DEAD = 15;
     const EARLY = '#66c7ff', LATE = '#ff9a40', OK = '#e5e7eb';
     let raw = [], lastTotal = 0, lastMiss = null, el = null;
+    let check = null;          // A/V check: { base: eye median (latency-free), ear: [], done: { delta } }
+    let lastAv = null;
 
     const latMs = () => {
         try { return Math.round(window.__hwtNdLatency() * 1000); } catch (_) { return null; }
+    };
+    const avMs = () => {
+        try { return Math.round(window.highway.getAvOffset()); } catch (_) { return null; }
     };
     const median = (a) => {
         const s = a.slice().sort((x, y) => x - y), m = s.length >> 1;
         return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
     };
     const fmt = (ms) => (ms > 0 ? '+' : '') + Math.round(ms) + ' ms';
+    const BTN = 'pointer-events:auto;cursor:pointer;margin-left:6px;padding:1px 7px;border-radius:4px;' +
+        'border:1px solid #4b5563;background:#1f2937;color:#e5e7eb;font:12px system-ui,sans-serif;';
 
     function ensureEl() {
         const hud = document.querySelector('.nd-hud');
@@ -800,26 +845,78 @@
             '<div style="width:240px;margin-left:auto;display:flex;justify-content:space-between;color:#6b7280">' +
                 '<span style="color:' + EARLY + '">early</span><span>' + RANGE + 'ms</span><span style="color:' + LATE + '">late</span></div>' +
             '<div class="hwt-t-hint" style="margin-top:2px"></div>' +
+            '<div class="hwt-t-av" style="margin-top:4px"></div>' +
             '<div class="hwt-t-miss" style="margin-top:2px;font-weight:bold"></div>';
+        el.addEventListener('click', onClick);
         hud.appendChild(el);
         return el;
+    }
+
+    function onClick(ev) {
+        const b = ev.target.closest && ev.target.closest('button[data-act]');
+        if (!b) return;
+        ev.stopPropagation();
+        const act = b.dataset.act, v = Number(b.dataset.v);
+        if (act === 'lat' && Number.isFinite(v)) {
+            try { window.noteDetect.applySettings({ latencyOffset: v / 1000 }); } catch (e) { console.warn('[highway_tweaks] latency apply failed', e); }
+        } else if (act === 'av' && Number.isFinite(v)) {
+            try { window.setAvOffsetMs(v); } catch (e) { console.warn('[highway_tweaks] A/V apply failed', e); }
+            check = null;
+        } else if (act === 'check') {
+            if (raw.length >= MIN_N) check = { base: median(raw), ear: [], done: null };
+        } else if (act === 'cancel') {
+            check = null;
+        }
+        render();
+    }
+
+    function renderAv(box) {
+        const av = avMs();
+        const avTxt = 'A/V offset <b style="color:' + OK + '">' + (av == null ? '?' : av + ' ms') + '</b>';
+        if (!check) {
+            box.innerHTML = avTxt + (raw.length >= MIN_N
+                ? '<button data-act="check" style="' + BTN + '" title="Compare playing by ear with playing by eye">A/V check</button>'
+                : ' <span style="color:#6b7280">(A/V check after ' + MIN_N + ' notes)</span>');
+            return;
+        }
+        if (!check.done) {
+            box.innerHTML = '<b style="color:' + LATE + '">A/V check:</b> play by ear, eyes off the highway ' +
+                check.ear.length + '/' + EAR_N + '<button data-act="cancel" style="' + BTN + '">cancel</button>';
+            return;
+        }
+        const d = check.done.delta;
+        if (av == null || Math.abs(d) < AV_DEAD) {
+            box.innerHTML = avTxt + ' <span style="color:#6b7280">ear vs eye ' + fmt(d) + ': A/V looks right</span>' +
+                '<button data-act="cancel" style="' + BTN + '">ok</button>';
+        } else {
+            const want = Math.max(-1000, Math.min(1000, Math.round(av - d)));
+            box.innerHTML = 'by ear you play ' + fmt(d) + (d > 0 ? ' later' : ' earlier') + ' than by eye<br>' +
+                (want > av ? '▲ raise' : '▼ lower') + ' A/V offset ' + av + ' → <b style="color:' + OK + '">' + want + ' ms</b>' +
+                '<button data-act="av" data-v="' + want + '" style="' + BTN + '">Apply</button>' +
+                '<button data-act="cancel" style="' + BTN + '">skip</button>';
+        }
     }
 
     function render() {
         const e = ensureEl();
         if (!e) return;
         const L = latMs();
+        const av = avMs();
+        if (av != null && lastAv != null && av !== lastAv) { raw = []; check = null; }   // offset moved: old samples are stale
+        lastAv = av;
         const head = e.querySelector('.hwt-t-head'), hint = e.querySelector('.hwt-t-hint');
         const ticks = e.querySelector('.hwt-t-ticks'), med = e.querySelector('.hwt-t-med');
         const missEl = e.querySelector('.hwt-t-miss');
         const pos = (ms) => (50 + 50 * Math.max(-1, Math.min(1, ms / RANGE))) + '%';
         const col = (ms) => (Math.abs(ms) < DEAD ? OK : ms < 0 ? EARLY : LATE);
+        const byEar = !!(check && !check.done);
 
-        if (!raw.length || L == null) {
-            head.textContent = 'timing: waiting for notes';
+        const shown = byEar ? check.ear : raw;
+        if (!shown.length || L == null) {
+            head.textContent = byEar ? 'timing (by ear): waiting for notes' : 'timing: waiting for notes';
             ticks.innerHTML = ''; med.style.display = 'none'; hint.textContent = '';
         } else {
-            const errs = raw.map((r) => r - L);
+            const errs = shown.map((r) => r - L);
             ticks.innerHTML = errs.map((ms, i) =>
                 '<div style="position:absolute;top:3px;bottom:3px;width:2px;margin-left:-1px;left:' + pos(ms) +
                 ';background:' + col(ms) + ';opacity:' + (0.25 + 0.75 * (i + 1) / errs.length).toFixed(2) + '"></div>').join('');
@@ -829,18 +926,20 @@
             med.style.background = col(m);
             med.style.boxShadow = '0 0 6px ' + col(m);
             const word = Math.abs(m) < DEAD ? 'on time' : m < 0 ? 'EARLY' : 'LATE';
-            head.innerHTML = 'timing <span style="color:' + col(m) + ';font-weight:bold;font-size:17px">' +
+            head.innerHTML = (byEar ? 'by ear ' : 'timing ') + '<span style="color:' + col(m) + ';font-weight:bold;font-size:17px">' +
                 (Math.abs(m) < DEAD ? '' : fmt(m) + ' ') + word + '</span> <span style="color:#6b7280">(median of ' + errs.length + ')</span>';
-            if (errs.length < MIN_N) {
+            if (byEar || errs.length < MIN_N) {
                 hint.textContent = '';
             } else if (Math.abs(m) < DEAD) {
                 hint.innerHTML = '<span style="color:#6b7280">latency offset ' + L + ' ms looks right</span>';
             } else {
                 const want = Math.round(L + m), clamped = Math.max(0, Math.min(250, want));
                 hint.innerHTML = (m > 0 ? '▲ raise' : '▼ lower') + ' Audio Latency Offset ' + L + ' → <b style="color:' + OK + '">' +
-                    clamped + ' ms</b>' + (clamped !== want ? ' (slider limit)' : '');
+                    clamped + ' ms</b>' + (clamped !== want ? ' (slider limit)' : '') +
+                    (clamped !== L ? '<button data-act="lat" data-v="' + clamped + '" style="' + BTN + '">Apply</button>' : '');
             }
         }
+        renderAv(e.querySelector('.hwt-t-av'));
         if (lastMiss && performance.now() - lastMiss.at < 1500) {
             missEl.style.color = lastMiss.ms < 0 ? EARLY : LATE;
             missEl.style.opacity = String(1 - (performance.now() - lastMiss.at) / 1500);
@@ -856,13 +955,19 @@
         try {
             const st = window.noteDetect && window.noteDetect.getStats && window.noteDetect.getStats();
             const total = st ? st.hits + st.misses : 0;
-            if (st && total < lastTotal) { raw = []; lastMiss = null; }
+            if (st && total < lastTotal) { raw = []; lastMiss = null; check = null; }
             lastTotal = total;
         } catch (_) { /* ignore */ }
         const L = latMs();
         if (!Number.isFinite(j.timingError) || L == null) return;
-        raw.push(j.timingError + L);
-        if (raw.length > N) raw.shift();
+        if (check && !check.done) {
+            // The A/V check uses hits only: their timing is the trustworthy part.
+            if (j.hit) check.ear.push(j.timingError + L);
+            if (check.ear.length >= EAR_N) check.done = { delta: median(check.ear) - check.base };
+        } else {
+            raw.push(j.timingError + L);
+            if (raw.length > N) raw.shift();
+        }
         if (!j.hit && (j.timingState === 'EARLY' || j.timingState === 'LATE')) {
             lastMiss = { ms: j.timingError, at: performance.now() };
         }
@@ -870,8 +975,58 @@
     };
     // Repaint for slider moves and the fading miss label; cheap, and a no-op
     // while note_detect's HUD isn't on screen.
-    setInterval(() => { if (raw.length && document.querySelector('.nd-hud')) render(); }, 200);
-    window.highwayTweaksTimingReset = () => { raw = []; lastMiss = null; render(); };
+    setInterval(() => { if (document.querySelector('.nd-hud')) render(); }, 200);
+    window.highwayTweaksTimingReset = () => { raw = []; lastMiss = null; check = null; render(); };
+})();
+
+// ── 4b. Judgment log ────────────────────────────────────────────────────
+// Every counted note_detect judgment of a song (time, chord, hit, early /
+// late, timing error, strings heard) is posted to the plugin's log
+// (jank_log.jsonl, kind "judgments") when the song ends or changes, so
+// missed notes can be analysed afterwards. Off: localStorage
+// highwayTweaksNoJudgmentLog = '1'.
+(function judgmentLog() {
+    let off = false;
+    try { off = localStorage.getItem('highwayTweaksNoJudgmentLog') === '1'; } catch (_) { /* ignore */ }
+    if (off) return;
+    let buf = [], song = null;
+    const r = (x, k) => (Number.isFinite(x) ? Math.round(x * k) / k : null);
+    function flush(reason) {
+        if (!buf.length) return;
+        let nd = null;
+        try { nd = JSON.parse(localStorage.getItem('slopsmith_notedetect') || 'null'); } catch (_) { /* ignore */ }
+        let av = null;
+        try { av = window.highway.getAvOffset(); } catch (_) { /* ignore */ }
+        const entry = { kind: 'judgments', reason, song, av_offset_ms: av, settings: nd && {
+            latencyOffset: nd.latencyOffset, timingTolerance: nd.timingTolerance, timingHitThreshold: nd.timingHitThreshold,
+            chordTimingHitThreshold: nd.chordTimingHitThreshold, pitchTolerance: nd.pitchTolerance, chordHitRatio: nd.chordHitRatio },
+            events: buf };
+        buf = [];
+        try {
+            fetch('/api/plugins/highway_tweaks/log', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(entry), keepalive: true }).catch(() => {});
+        } catch (_) { /* ignore */ }
+    }
+    const prev = window.__hwtOnJudgment;
+    window.__hwtOnJudgment = (j, section) => {
+        if (prev) { try { prev(j, section); } catch (_) { /* ignore */ } }
+        if (!j) return;
+        if (!song) {
+            const cs = window.slopsmith && window.slopsmith.currentSong;
+            song = cs ? { filename: cs.filename, arrangement: cs.arrangement, title: cs.title } : null;
+        }
+        buf.push({ t: r(j.noteTime, 1000), c: j.chord ? 1 : 0, h: j.hit ? 1 : 0, ts: j.timingState || null,
+            te: Number.isFinite(j.timingError) ? j.timingError : null, hs: j.hitStrings, tt: j.totalStrings,
+            sc: r(j.score, 100), pe: r(j.pitchError, 1) });
+        if (buf.length >= 2000) flush('full');
+    };
+    const bus = window.slopsmith;
+    if (bus && bus.on) {
+        bus.on('song:ended', () => flush('ended'));
+        bus.on('song:loading', () => { flush('next-song'); song = null; });
+        bus.on('song:stop', () => flush('stop'));
+    }
+    window.addEventListener('beforeunload', () => flush('unload'));
 })();
 
 // ── 5. Performance HUD + streak effects ─────────────────────────────────

@@ -1,0 +1,8 @@
+{
+  "id": "play_queue",
+  "name": "Count-in & Play Queue",
+  "version": "1.0.1",
+  "private": true,
+  "script": "screen.js",
+  "routes": "routes.py"
+}
