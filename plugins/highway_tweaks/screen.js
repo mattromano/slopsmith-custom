@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.12.0' };
+    window.__highwayTweaks = { version: '1.12.1' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -497,6 +497,13 @@
                 return "if (!chordJudgment.hit && chordJudgment.timingState === 'EARLY') continue;\n                " + m;
             });
             if (cr.length === 3) { code = rc; hits.push(...cr); }
+            // Judgment log (section 4b): the engine verifier's raw per-string
+            // verdict (heard?, cents off, SNR), so a note "not heard" can be
+            // told apart as out of tune vs too weak.
+            code = code.replace('const chordKey = _ndVerifierChordKeyOf.get(v.id);', (m) => {
+                hits.push('verdict-hook');
+                return 'try { if (window.__hwtOnVerdict) window.__hwtOnVerdict(v, cn); } catch (_) {}\n            ' + m;
+            });
             // Timing gauge (section 4): forward every counted judgment and
             // expose the live latency offset. Independent of the pitch patch.
             code = code.replace(/( {12})_recordDiagnostic\(judgment\);\r?\n/, (m, ind) => {
@@ -989,10 +996,15 @@
     let off = false;
     try { off = localStorage.getItem('highwayTweaksNoJudgmentLog') === '1'; } catch (_) { /* ignore */ }
     if (off) return;
-    let buf = [], song = null;
+    let buf = [], verdicts = [], song = null;
     const r = (x, k) => (Number.isFinite(x) ? Math.round(x * k) / k : null);
+    window.__hwtOnVerdict = (v, cn) => {
+        if (!v || !cn || verdicts.length >= 6000) return;
+        verdicts.push({ t: r(cn.t, 1000), s: cn.s, f: cn.f, d: v.detected ? 1 : 0, dt: r(v.detectedSongTime, 1000),
+            ce: r(v.centsError, 1), snr: r(v.snr, 10) });
+    };
     function flush(reason) {
-        if (!buf.length) return;
+        if (!buf.length) { verdicts = []; return; }
         let nd = null;
         try { nd = JSON.parse(localStorage.getItem('slopsmith_notedetect') || 'null'); } catch (_) { /* ignore */ }
         let av = null;
@@ -1000,8 +1012,8 @@
         const entry = { kind: 'judgments', reason, song, av_offset_ms: av, settings: nd && {
             latencyOffset: nd.latencyOffset, timingTolerance: nd.timingTolerance, timingHitThreshold: nd.timingHitThreshold,
             chordTimingHitThreshold: nd.chordTimingHitThreshold, pitchTolerance: nd.pitchTolerance, chordHitRatio: nd.chordHitRatio },
-            events: buf };
-        buf = [];
+            events: buf, verdicts };
+        buf = []; verdicts = [];
         try {
             fetch('/api/plugins/highway_tweaks/log', { method: 'POST', headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(entry), keepalive: true }).catch(() => {});
