@@ -12,7 +12,7 @@ Python env for tests: `~/drums-work/.venv` (uv; slopsmith requirements + numpy/s
 | 2 | Multiplayer arrangement dropdown from the song's real arrangements | done — 11 node + 2 pytest + 1 core |
 | 3 | Drum-chart joiner (`scripts/drums_join.py`, `song_builder.py drums`) | done — 17 tests (+3 server) |
 | 4 | JS drum engine ported from YARG.Core (`plugins/drums/engine.js`) | done — 44 node tests |
-| 5 | 3D Rock Band–style renderer | in progress |
+| 5 | Rock Band–style 3D drum highway (`plugins/drums/highway3d.js`) | done — 27 node + 2 pytest + headless app check |
 | 6 | Exporter sloppak → YARG/CH folder (`scripts/sloppak_to_ch.py`) | done — 3 tests incl. round trip |
 
 ## How to run things
@@ -27,7 +27,7 @@ python scripts/drums_join.py SONG.sloppak --chart-dir "D:/Clone Hero/Songs" [--g
 # 6. export a sloppak as a YARG / Clone Hero song folder
 python scripts/sloppak_to_ch.py SONG.sloppak "Songs/Band - Song" [--no-guitar] [--no-pro]
 ```
-Tests: `pytest` in `slopsmith/` (874 pass); `node --test plugins/drums/tests/<file>.test.js` per file
+Tests: `pytest` in `slopsmith/` (879 pass); `node --test plugins/drums/tests/<file>.test.js` per file
 (Node 25 won't take a directory); multiplayer: `node --test plugins/multiplayer/tests/arrangements.test.js`.
 The multiplayer pytest suite needs pytest-asyncio + pytest-timeout (see M2 notes).
 
@@ -143,6 +143,25 @@ Synthetic alignment benchmark (2-min charts, 2 seeds, % of notes within 30 ms af
 - Hi-hat + hi-tom at the same instant (possible from GP tabs) collapse to one yellow gem (MIDI can't
   hold both on one pad).
 
+### M5 3D renderer (sub-agent; reviewed, one change, merged)
+- Screenshots (headless Chromium, software WebGL): `plugins/drums/docs/highway3d.png` (normal play, x4),
+  `highway3d-fill.png` (star power ready + fill/activator), `highway3d-sp.png` (star power active, x8).
+- One viz entry ("Drum Highway", `slopsmithViz_drums`) — the picker/Auto find one factory per plugin id —
+  that builds 3D or 2D from a new **View** setting in the gear panel: Auto (3D when WebGL2 exists) / 3D /
+  2D. Auto mode still routes Drums arrangements here, so each multiplayer player's own highway decides.
+- The plugin gained a `routes.py` (`/api/plugins/drums/static/{engine.js,highway3d.js}`) because core has
+  no route for plugin files; three.js is core's vendored copy. **Restart the server once** to load it.
+- MIDI: same device/channel/synth as the 2D view; a Learn/custom mapping entry wins, else the GM map;
+  hi-hat pedal (44) ignored; velocity passed to the engine (dynamics bonus). New **Offset (ms)** setting.
+- Keyboard fallback (on by default): B kick, F red, J/K/L toms, Shift+J/K/L or U/I/O cymbals, Enter =
+  star power. **Changed after review:** the agent mapped Space to kick, which would have broken
+  play/pause on every Drums song; Space stays play/pause.
+- Star power/fills are fetched from `arrangements/drums.json`; without it, no SP. Seeks/loops restart
+  scoring from the new position.
+- Not published as a note-state provider (one slot per page; note_detect uses it on guitar charts).
+- Headless end-to-end check of the real `screen.js` (`plugins/drums/tools/app-check.mjs` with
+  `dev_server.py`): perfect simulated MIDI play → 213 hits, 0 misses, zero page errors.
+
 ## Open issues
 - ~~Beat-ambiguous alignments pass validation~~ → mitigated: validation now also checks kick notes against
   kick-band (<150 Hz) onsets and cymbal notes against cymbal-band (>5 kHz) onsets of the drum stem
@@ -185,4 +204,14 @@ Hook: `drumjoin.register_transcriber(name, fn)`, `fn(drums_wav_path, sr) -> [Dru
 - **GP drums:** a song with a Songsterr drum track and no chart → check the joiner's validation numbers.
 - Multiplayer with two browsers (from M2): Drums appears in the dropdown only for songs with drums; each
   player loads only their own pick; mid-song switching; pick Drums then a song without drums.
-- MIDI kit, latency feel, mapping: see M5 once it lands.
+- **Real kit (M5):** latency feel and the right Offset value; whether your kit's notes match the GM map
+  (some kits send other numbers for toms / 2nd crash — use Learn); hi-hat open/closed/pedal; accent/ghost
+  velocity thresholds; 2x-kick charts with one pedal; activating star power from the kit when a chart has
+  star power but no fills (only Enter works today — charts from ch_to_sloppak/joiner get fills generated).
+- **Real app (M5):** restart the server (new `routes.py`); Auto picks 3D for a Drums song; the
+  `drums.json` fetch (song_info has no filename, it falls back to `window.slopsmith.currentSong.filename`);
+  HUD overlay position in the player and splitscreen; swapping 2D ↔ 3D ↔ the 3D guitar highway between
+  songs; performance on your GPU; other plugins' keyboard shortcuts vs B/F/J/K/L/U/I/O/Enter.
+- **Multiplayer:** one drummer + one guitarist in the same room.
+- Play an exported folder (`sloppak_to_ch.py`) in YARG / Clone Hero: drums, 5-fret guitar reduction, pro
+  guitar/bass tracks, and the delay/pickup tempo map.
