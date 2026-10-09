@@ -54,3 +54,11 @@ IR normalisation) against Main Lead with a synthetic guitar DI:
 Settings → Tone Pack: per-category volume trims (-12..+12 dB) and the preset to load after a song
 (default Main Lead; "Keep the last tone" turns it off). The return happens on `song:ended` and
 `song:stop` (leaving the player), not while the next song is starting.
+
+## Your own presets per category (v1.3)
+
+Per request: OD (crunch) and Dist play **Main Lead**, Solo (leads) plays **Metal Tone**, Clean keeps the
+Auto Clean. Songs by artists on the metal list (Settings → Tone Pack; MCR, Metallica, Trivium, Linkin Park…)
+play **Metal Tone** for every crunch / distortion tone (name- or gear-classified), via the same per-song
+overrides. The target change is applied once (`tone-pack-targets-v`); later changes in the Audio settings
+are kept.

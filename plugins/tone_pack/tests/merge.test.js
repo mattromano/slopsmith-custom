@@ -76,3 +76,31 @@ test('homePresetName: Main Lead, else the Idle target', () => {
     assert.equal(homePresetName({ X: {} }, { targets: { idle: 'X' } }), 'X');
     assert.equal(homePresetName({}, {}), null);
 });
+
+const { isMetalArtist, _norm } = require('../screen.js');
+
+test('isMetalArtist: normalised names and multi-artist credits', () => {
+    const set = new Set(['my chemical romance', 'babymetal', 'motorhead'].map(_norm));
+    assert.equal(isMetalArtist('My Chemical Romance', set), true);
+    assert.equal(isMetalArtist('Motörhead', set), true);
+    assert.equal(isMetalArtist('Lil Uzi Vert, BABYMETAL', set), true);
+    assert.equal(isMetalArtist('Sum 41', set), false);
+});
+
+test('metal song: crunch / distortion tones (by name or gear) go to the metal preset; clean and lead stay', () => {
+    const t = { clean: 'C', dist: 'Main Lead', od: 'Main Lead', solo: 'Metal Tone', idle: 'Main Lead' };
+    const cls = (n) => (/clean/i.test(n) ? 'clean' : /dist/i.test(n) ? 'dist' : /lead/i.test(n) ? 'solo' : null);
+    const ov = songOverrides({ 'x_clean': 'clean', 'x_dist': 'dist', 'Tone 1': 'od', 'x_lead': 'solo', 'Tone 2': null },
+        cls, t, { metalPreset: 'Metal Tone' });
+    assert.deepEqual(ov, { 'x_dist': 'Metal Tone', 'Tone 1': 'Metal Tone' });
+});
+
+test('preferred targets replace the category targets once', () => {
+    const presets = { 'Main Lead': {}, 'Metal Tone': {}, 'Auto · Crunch': { generatedBy: 'tone_pack' } };
+    const r = mergePack({ presets: {}, targets: {} }, presets, { targets: { od: 'Auto · Crunch', solo: 'Auto · Lead' } }, [], {},
+        { preferred: { od: 'Main Lead', dist: 'Main Lead', solo: 'Metal Tone', bogus: 'Nope' } });
+    assert.equal(r.ta.targets.od, 'Main Lead');
+    assert.equal(r.ta.targets.dist, 'Main Lead');
+    assert.equal(r.ta.targets.solo, 'Metal Tone');
+    assert.equal(r.ta.targets.bogus, undefined);
+});

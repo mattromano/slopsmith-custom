@@ -13,6 +13,46 @@
     const STATE_KEY = 'tone-pack-state';      // {version, kilohearts}
     const TRIM_KEY = 'tone-pack-trims';       // {category: dB} volume trims from the settings page
     const HOME_KEY = 'tone-pack-home';        // preset to go back to after a song ('' = off)
+    const METAL_KEY = 'tone-pack-metal-artists';  // newline list; songs by these use the metal preset
+    const MIGRATE_KEY = 'tone-pack-targets-v';
+
+    // The user's own presets for the categories (asked for 2026-10-09): crunch and distortion play
+    // Main Lead, leads play Metal Tone; songs by metal / MCR-style artists play Metal Tone for all
+    // their crunch / distortion. Applied once (MIGRATE_KEY); later target changes are the user's.
+    const PREFERRED_TARGETS = { od: 'Main Lead', dist: 'Main Lead', solo: 'Metal Tone' };
+    const METAL_PRESET = 'Metal Tone';
+    const DEFAULT_METAL_ARTISTS = [
+        'My Chemical Romance', 'Metallica', 'Megadeth', 'Slayer', 'Anthrax', 'Testament', 'Annihilator',
+        'Pantera', 'Sepultura', 'Death', 'Morbid Angel', 'Darkthrone', 'Opeth', 'Mastodon', 'Lamb of God',
+        'Machine Head', 'Killswitch Engage', 'All That Remains', 'Trivium', 'Bullet for My Valentine',
+        'Avenged Sevenfold', 'Hail To The King', 'Children of Bodom', 'Arch Enemy', 'Amon Amarth', 'Amaranthe',
+        'DragonForce', 'Dream Theater', 'Between the Buried and Me', 'Bring Me the Horizon', 'Knocked Loose',
+        'Deafheaven', 'Dethklok', 'Five Finger Death Punch', 'Disturbed', 'Godsmack', 'System of a Down',
+        'Black Label Society', 'Iron Maiden', 'Judas Priest', 'Black Sabbath', 'Black Sabath', 'Ozzy Osbourne',
+        'ozzy', 'Dio', 'Motorhead', 'Sabaton', 'Nightwish', 'BABYMETAL', 'Ghost', 'Ghost B.C.', 'Volbeat',
+        'Type O Negative', 'White Zombie', 'Rob Zombie', 'Marilyn Manson', 'Tool', 'Deftones', 'Sevendust',
+        'Drowning Pool', 'Black Veil Brides', 'Escape The Fate', 'The Used', 'Accept', 'Queensryche', 'Helmet',
+        'Red Fang', 'Spinal Tap', 'Steel Panther', 'Limp Bizkit', 'P.O.D.', 'Papa Roach', 'Linkin Park',
+        'Powerman 5000', 'Slipknot', 'Korn', 'Evanescence', 'Gojira',
+    ];
+
+    const _norm = (a) => String(a || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+        .replace(/[^a-z0-9]+/g, ' ').trim();
+
+    function metalArtists() {
+        let raw = null;
+        try { raw = localStorage.getItem(METAL_KEY); } catch (_) { /* ignore */ }
+        const list = raw === null ? DEFAULT_METAL_ARTISTS : raw.split(/\n+/);
+        return new Set(list.map(_norm).filter(Boolean));
+    }
+
+    // "Lil Uzi Vert, BABYMETAL" / "Slash featuring ..." count when any credited artist is on the list.
+    function isMetalArtist(artist, set) {
+        const n = _norm(artist);
+        if (!n) return false;
+        if (set.has(n)) return true;
+        return String(artist).split(/,|&| feat\.? | featuring | and | with /i).some(a => set.has(_norm(a)));
+    }
 
     function readJson(key, fallback) {
         try {
@@ -36,7 +76,7 @@
             packLevels: Object.assign({}, p.packLevels || {}, { outputGain: g }) });
     }
 
-    function mergePack(pack, presets, ta, seen, trims) {
+    function mergePack(pack, presets, ta, seen, trims, opts) {
         presets = Object.assign({}, presets || {});
         ta = Object.assign({ enabled: false, customKeywords: {}, targets: {} }, ta || {});
         ta.targets = Object.assign({}, ta.targets || {});
@@ -72,6 +112,12 @@
             const stale = cur && !presets[cur] && seen.includes(cur);
             if ((!cur || stale) && presets[name]) ta.targets[cat] = name;
         }
+        // The user's preferred presets per category (once).
+        if (opts && opts.preferred) {
+            for (const [cat, name] of Object.entries(opts.preferred)) {
+                if (presets[name]) ta.targets[cat] = name;
+            }
+        }
         // Idle fallback: the user's own default lead if there is one, else Crunch.
         if (!ta.targets.idle) {
             const own = Object.keys(presets).find(n => presets[n].generatedBy !== 'tone_pack');
@@ -89,14 +135,17 @@
             pack = await r.json();
         } catch (_) { return; }
         const firstRun = localStorage.getItem(TA_KEY) === null;
+        let migrated = 0;
+        try { migrated = Number(localStorage.getItem(MIGRATE_KEY)) || 0; } catch (_) { /* ignore */ }
         const res = mergePack(pack, readJson(PRESETS_KEY, {}), readJson(TA_KEY, null), readJson(SEEN_KEY, []),
-            readJson(TRIM_KEY, {}));
+            readJson(TRIM_KEY, {}), { preferred: migrated < 2 ? PREFERRED_TARGETS : null });
+        try { localStorage.setItem(MIGRATE_KEY, '2'); } catch (_) { /* ignore */ }
         if (firstRun) res.ta.enabled = true;            // never configured: turn Tone Automation on
         writeJson(PRESETS_KEY, res.presets);
         writeJson(TA_KEY, res.ta);
         writeJson(SEEN_KEY, res.seen);
         writeJson(STATE_KEY, { version: pack.version, kilohearts: !!pack.kilohearts, missing: pack.missing || [] });
-        if (res.added.length || res.updated.length) {
+        if (res.added.length || res.updated.length || migrated < 2) {
             console.log('[tone-pack] added', res.added, 'updated', res.updated);
             const ta = window._aeToneAutomation;
             try { if (ta && ta.renderSettings) ta.renderSettings(); } catch (_) { /* audio plugin UI not ready */ }
@@ -119,6 +168,13 @@
             const key = name === '$song' ? opts.songKey : name;
             if (!key) continue;
             const byName = name === '$song' ? null : classify(name);
+            // metal song: every crunch / distortion tone plays the metal preset
+            const eff = opts.bass ? 'bass' : (byName || cat);
+            if (opts.metalPreset && (eff === 'dist' || eff === 'od')) {
+                if (targets[eff] !== opts.metalPreset) out[key] = opts.metalPreset;
+                continue;
+            }
+            if (!cat) continue;
             // keep what the name says, except on a bass part, where everything is Bass
             if (byName && !(opts.bass && byName !== 'bass')) continue;
             const preset = targets[cat];
@@ -140,19 +196,31 @@
             const a = si.arrangements.find(x => x && x.index === si.arrangement_index);
             if (a) arrangement = a.name || '';
         }
-        if (!/\.sloppak\/?$/i.test(filename) || !arrangement) return;
+        if (!arrangement) return;
         const seq = ++_songSeq;
         let cats = {};
-        try {
-            const r = await fetch('/api/plugins/tone_pack/song_tones?filename=' + encodeURIComponent(filename)
-                + '&arrangement=' + encodeURIComponent(arrangement));
-            if (!r.ok) return;
-            cats = (await r.json()).tones || {};
-        } catch (_) { return; }
+        if (/\.sloppak\/?$/i.test(filename)) {
+            try {
+                const r = await fetch('/api/plugins/tone_pack/song_tones?filename=' + encodeURIComponent(filename)
+                    + '&arrangement=' + encodeURIComponent(arrangement));
+                if (r.ok) cats = (await r.json()).tones || {};
+            } catch (_) { /* name-only below */ }
+        }
         if (seq !== _songSeq) return;
+        // PSARCs / no gear data: the names the highway has (classified by name only)
+        try {
+            const names = [hw && hw.getToneBase && hw.getToneBase()]
+                .concat(((hw && hw.getToneChanges && hw.getToneChanges()) || []).map(c => c && c.name));
+            for (const n of names) if (n && !(n in cats)) cats[n] = null;
+        } catch (_) { /* ignore */ }
+        if (!Object.keys(cats).length) cats.$song = null;
+        const artist = si.artist || cs.artist || '';
+        const presetsNow = readJson(PRESETS_KEY, {});
+        const metal = isMetalArtist(artist, metalArtists()) && presetsNow[METAL_PRESET] ? METAL_PRESET : null;
         const cfg = ta.getConfig ? ta.getConfig() : {};
         const ov = songOverrides(cats, (n) => ta.classify(n, cfg), cfg.targets || {},
-            { songKey: window._currentSongFile || filename, bass: /\bbass\b/i.test(arrangement) });
+            { songKey: window._currentSongFile || filename, bass: /\bbass\b/i.test(arrangement),
+                metalPreset: metal });
         if (!Object.keys(ov).length) return;
         const cur = window._aeTaSessionOverrides || {};
         for (const [k, v] of Object.entries(ov)) {
@@ -202,9 +270,10 @@
     }
 
     if (typeof window !== 'undefined') window._tonePackReinstall = install;   // settings page re-merge
+    if (typeof window !== 'undefined') window._tonePackDefaultMetal = DEFAULT_METAL_ARTISTS.slice();
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { mergePack, songOverrides, withTrim, homePresetName };
+        module.exports = { mergePack, songOverrides, withTrim, homePresetName, isMetalArtist, _norm };
         return;
     }
     try {
