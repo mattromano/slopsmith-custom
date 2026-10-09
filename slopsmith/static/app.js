@@ -3817,6 +3817,7 @@ if (window.slopsmith) {
         // fallthroughs to 'auto' even when writes failed.
         const sel = document.getElementById('viz-picker');
         if (sel && sel.value === 'auto') _autoMatchViz();
+        else if (sel) _instrumentVizOverride(sel.value);
     });
     // Highway signals when it's auto-reverted to the default renderer
     // after a broken plugin (init failure or repeated draw failures).
@@ -4119,6 +4120,7 @@ async function _populateVizPicker(plugins) {
 }
 
 function setViz(id) {
+    _instrumentOverrideId = null;   // an explicit pick (or the restore below) ends any instrument override
     // Helper: reset the UI and persisted selection to the built-in
     // "default" entry. Called whenever the requested viz can't be
     // applied (missing factory, factory threw, factory returned a
@@ -4217,6 +4219,45 @@ function _setAutoVizLabel(resolvedText) {
 // registered by _autoMatchViz(). Called at the start of each new evaluation
 // to remove any listener left over from the previous match cycle.
 let _cancelPendingAutoLabel = null;
+
+// Guitar views (the picker's explicit 3D Highway / Classic 2D choice) can't show a
+// non-guitar instrument: a Drums arrangement through the 3D guitar highway draws GM drum
+// numbers as fret gems.  When the user picked a guitar view and the loaded arrangement is
+// claimed by an instrument viz (drums, piano, ...), that viz takes over for this song
+// only; the picker and the saved choice stay as they are, and the next guitar song gets
+// the picked view back.
+const _GUITAR_VIZ = new Set(['default', 'highway_3d']);
+let _instrumentOverrideId = null;
+function _instrumentVizOverride(picked) {
+    if (!_GUITAR_VIZ.has(picked)) { _instrumentOverrideId = null; return; }
+    const sel = document.getElementById('viz-picker');
+    const songInfo = (typeof highway !== 'undefined' && typeof highway.getSongInfo === 'function')
+        ? (highway.getSongInfo() || {}) : {};
+    let match = null;
+    if (sel && Object.keys(songInfo).length) {
+        for (const o of Array.from(sel.options)) {
+            const id = o.value;
+            if (id === 'auto' || _GUITAR_VIZ.has(id)) continue;
+            const f = window['slopsmithViz_' + id];
+            if (typeof f !== 'function' || typeof f.matchesArrangement !== 'function') continue;
+            if (f.contextType === 'webgl2' && !_canRun3D()) continue;
+            let ok = false;
+            try { ok = !!f.matchesArrangement(songInfo); } catch (_) { ok = false; }
+            if (ok) { match = id; break; }
+        }
+    }
+    if (match) {
+        if (_instrumentOverrideId === match) return;
+        let r = null;
+        try { r = window['slopsmithViz_' + match](); } catch (e) { console.error('instrument viz override failed', e); }
+        if (!r || typeof r.draw !== 'function') return;
+        _instrumentOverrideId = match;
+        highway.setRenderer(r);
+    } else if (_instrumentOverrideId) {
+        _instrumentOverrideId = null;
+        setViz(picked);          // back to the user's guitar view (same value it already saved)
+    }
+}
 
 function _autoMatchViz() {
     const sel = document.getElementById('viz-picker');

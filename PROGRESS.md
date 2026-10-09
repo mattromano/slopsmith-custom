@@ -182,10 +182,22 @@ Synthetic alignment benchmark (2-min charts, 2 seeds, % of notes within 30 ms af
       --local ~/Desktop/clone_hero_songs --local "~/Clone Hero/Songs" --write --workers 6
   # later passes: --retry no-chart,flagged  (new charts appear on Chorus all the time)
   ```
-- Rock Band look in the desktop app: the branch's `plugins/drums` + `plugins/multiplayer` are installed in
-  `~/Library/Application Support/feedback-desktop/plugins/` (user plugins override the app's copies;
-  verified with the app's own loader). **Restart the feedBack app** to pick them up; delete those two
-  folders to go back to the app's versions.
+- **Run your custom Slopsmith on this Mac:** `./run-mac.sh` (repo root) → http://localhost:8000. Native
+  Python (venv `~/drums-work/.venv`), `DLC_DIR=~/Desktop/rocksmith/dlc` (PSARCs + the sloppak library),
+  config in `~/.local/share/slopsmith-custom`, and the repo's `plugins/` (drums, multiplayer, note_detect,
+  nam_tone, autotune) as user plugins. Verified headlessly in the real app
+  (`plugins/drums/tools/real-app-check.mjs`): 1979 on Drums renders the Rock Band view, Lead right after
+  gets the 3D guitar highway back.
+- (I had first installed the plugins into the feedBack desktop app by mistake; that's been removed — the
+  desktop app is back to its own plugins.)
+- **Instrument override (core change, `static/app.js`):** this core's fresh-install picker default is the
+  3D *guitar* highway (not Auto), which drew Drums as fret gems. Now, when the picked view is a guitar
+  view (3D Highway / Classic 2D) and an instrument viz claims the arrangement (`matchesArrangement`:
+  drums, piano…), that viz takes over for that song only; the picker and saved choice don't change, and
+  an explicit pick during the song wins.
+- **Windows PC:** `git fetch && git checkout drums-rockband` in the repo, then sync `slopsmith/` and the
+  `plugins/drums` + `plugins/multiplayer` folders into the live checkout (`C:\Users\mattr\Desktop\slopsmith`)
+  the way `sync_from_local.ps1` works in reverse; the sloppak library changes are in the files themselves.
 
 ## Difficulty levels (Easy / Medium / Hard / Expert / Expert+)
 
