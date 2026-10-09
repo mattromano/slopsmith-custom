@@ -285,6 +285,7 @@
             kick2x: !!d.kick2x,
             starPower: _ranges(d.star_power),
             activation: _ranges(d.fills),
+            solos: _ranges(d.solos),      // drum solos (Rock Band MIDI 103 markers)
             levels,                       // {easy?, medium?, hard?}: [[t, gm, flag], ...] or null
             levelsGenerated: generated,   // lower levels reduced by software rather than hand-charted
         };
@@ -714,7 +715,86 @@
             proWanted: opts.proDrums !== false,   // the player's "Pro cymbals" setting
             auto: normalizeAuto(opts.auto),       // {kick, cymbals}: lanes played for the player
             params: opts.params || null,          // engine params override (hit window)
+            bonus: null,                          // Rock Band-style extras on top of the engine score
         };
+
+        // ── Bonus score (on top of the engine's score) ──
+        //  - timing: +10 x multiplier for a hit within 25 ms of the note;
+        //  - rolls: snare/tom notes in a fast run (>= 4 within +-0.25 s, i.e. 8 per
+        //    second) earn +25 x multiplier; a run of >= 8 pops "ROLL h/n +pts";
+        //  - solos (meta.solos): live % of the solo's notes hit, and at the end
+        //    100 per note hit (x2 when perfect) with a Rock Band-style rating.
+        // The engine already scores dynamics (accent/ghost) and star power.
+        const ROLL_WIN = 0.25, ROLL_N = 4, ROLL_MIN = 8, ROLL_GAP = 0.6;
+        const noteKey = (t, pad) => Math.round(t * 1000) * 8 + (pad | 0);
+        function newBonus() {
+            const rolls = new Set();
+            if (s.decoded) {
+                const toms = s.decoded.notes.filter(n => n.pad >= 1 && n.pad <= 4 && !n.cymbal)
+                    .map(n => ({ t: s.decoded.chords[n.chord].t, pad: n.pad })).sort((a, b) => a.t - b.t);
+                for (let i = 0, lo = 0, hi = 0; i < toms.length; i++) {
+                    while (toms[lo].t < toms[i].t - ROLL_WIN) lo++;
+                    while (hi + 1 < toms.length && toms[hi + 1].t <= toms[i].t + ROLL_WIN) hi++;
+                    if (hi - lo + 1 >= ROLL_N) rolls.add(noteKey(toms[i].t, toms[i].pad));
+                }
+            }
+            const solos = ((s.meta && s.meta.solos) || []).map(r => ({ start: r.start, end: r.end, h: 0, n: 0, done: false }));
+            return { total: 0, timing: 0, rolls: 0, solo: 0, perfect: 0, dynamics: 0, rollSet: rolls, run: null,
+                runs: [], solos, soloDone: [], feed: [] };
+        }
+        function bonusFeed(text, color) {
+            const b = s.bonus;
+            b.feed.push({ text, color, wall: now() });
+            if (b.feed.length > 4) b.feed.shift();
+        }
+        function soloOf(t) { return s.bonus.solos.find(x => t >= x.start - 0.05 && t < x.end); }
+        function bonusHit(e) {
+            const b = s.bonus;
+            const mult = e.multiplier || 1;
+            const nt = Number.isFinite(e.noteTime) ? e.noteTime : e.time;
+            let pts = 0;
+            if (Math.abs(e.time - nt) <= 0.025) { pts += 10 * mult; b.timing += 10 * mult; b.perfect++; }
+            if (b.rollSet.has(noteKey(nt, e.pad))) {
+                const r = 25 * mult;
+                pts += r; b.rolls += r;
+                if (!b.run || nt - b.run.last > ROLL_GAP) b.run = { h: 0, n: 0, pts: 0, last: nt };
+                b.run.h++; b.run.n++; b.run.pts += r; b.run.last = nt;
+            }
+            if (e.bonus) { b.dynamics++; bonusFeed('+' + (e.velocityBonus || 25) * mult + ' dynamics', '#b77bff'); }
+            const so = soloOf(nt);
+            if (so && !so.done) { so.h++; so.n++; }
+            b.total += pts;
+        }
+        function bonusMiss(e) {
+            const b = s.bonus;
+            const nt = Number.isFinite(e.noteTime) ? e.noteTime : e.time;
+            if (b.rollSet.has(noteKey(nt, e.pad)) && b.run && nt - b.run.last <= ROLL_GAP) { b.run.n++; b.run.last = nt; }
+            const so = soloOf(nt);
+            if (so && !so.done) so.n++;
+        }
+        function bonusTick(time) {
+            const b = s.bonus;
+            if (!b) return;
+            if (b.run && time - b.run.last > ROLL_GAP + 0.2) {
+                const r = b.run; b.run = null;
+                if (r.n >= ROLL_MIN) {
+                    b.runs.push({ h: r.h, n: r.n, pts: r.pts });
+                    push({ type: 'bonus-pop', text: 'ROLL ' + r.h + '/' + r.n + '  +' + formatScore(r.pts), color: r.h === r.n ? '#ffc531' : '#ff9a40' });
+                }
+            }
+            for (const so of b.solos) {
+                if (so.done || time < so.end + 0.3) continue;
+                so.done = true;
+                if (!so.n) continue;
+                const pct = 100 * so.h / so.n, perfect = so.h === so.n;
+                const pts = so.h * 100 * (perfect ? 2 : 1);
+                b.solo += pts; b.total += pts;
+                const rating = perfect ? 'PERFECT SOLO!' : pct >= 95 ? 'AWESOME SOLO!' : pct >= 90 ? 'GREAT SOLO!' : pct >= 80 ? 'GOOD SOLO!'
+                    : pct >= 70 ? 'SOLID SOLO' : pct >= 60 ? 'OKAY SOLO' : 'MESSY SOLO';
+                b.soloDone.push({ h: so.h, n: so.n, pct: Math.round(pct * 100) / 100, bonus: pts, rating });
+                push({ type: 'solo-end', text: rating, sub: pct.toFixed(2) + '%  ·  solo bonus +' + formatScore(pts), perfect });
+            }
+        }
 
         function gemsFor() {
             return buildGems(s.decoded, { pro: effectivePro(), auto: s.auto });
@@ -754,9 +834,15 @@
                 eopts.activation = m.activation;
             }
             const eng = Engine.create(chart, eopts);
-            eng.on('hit', e => push({ type: 'hit', pad: e.pad, cymbal: e.cymbal, id: e.id,
-                sp: eng.isStarPowerNote(e.id), bonus: !!e.bonus, time: e.time }));
-            eng.on('miss', e => push({ type: 'miss', pad: e.pad, cymbal: e.cymbal, id: e.id, time: e.time }));
+            s.bonus = newBonus();   // a new engine starts its score over, and so do the bonuses
+            eng.on('hit', e => {
+                push({ type: 'hit', pad: e.pad, cymbal: e.cymbal, id: e.id, sp: eng.isStarPowerNote(e.id), bonus: !!e.bonus, time: e.time });
+                bonusHit(e);
+            });
+            eng.on('miss', e => {
+                push({ type: 'miss', pad: e.pad, cymbal: e.cymbal, id: e.id, time: e.time });
+                bonusMiss(e);
+            });
             eng.on('overhit', e => push({ type: 'overhit', pad: e.pad, cymbal: e.cymbal, time: e.time }));
             eng.on('sp-phrase', e => push({ type: 'sp-phrase', time: e.time }));
             eng.on('sp-phrase-fail', e => push({ type: 'sp-phrase-fail', time: e.time }));
@@ -838,6 +924,7 @@
                 // renderer installed late): score from here instead of missing everything before.
                 else if (s.gems.length && time > s.gems[0].t - SEEK_BACK) build(time);
                 s.engine.update(time);
+                bonusTick(time);
                 s.lastTime = time;
             },
             hit(time, pad, o) {
@@ -860,6 +947,16 @@
                 return out;
             },
             getState() { return s.engine ? s.engine.getState() : null; },
+            /** Bonus score on top of the engine's: totals, recent feed, the live solo. */
+            getBonus() {
+                const b = s.bonus;
+                if (!b) return null;
+                const t = s.lastTime;
+                const live = t == null ? null : b.solos.find(x => t >= x.start - 0.5 && t < x.end + 0.3);
+                return { total: b.total, timing: b.timing, rolls: b.rolls, solo: b.solo, perfect: b.perfect, dynamics: b.dynamics,
+                    feed: b.feed.slice(), rollActive: !!(b.run && b.run.n >= 3), runs: b.runs.slice(), solos: b.soloDone.slice(),
+                    soloLive: live ? { h: live.h, n: live.n, active: t >= live.start && t < live.end } : null };
+            },
             get engine() { return s.engine; },
             get gems() { return s.gems; },
             get beats() { return s.beats; },
@@ -1022,6 +1119,14 @@
         spWash.rotation.x = -Math.PI / 2;
         spWash.position.set(0, 0.001, zMid);
         scene.add(spWash);
+        // Drum solo: a violet wash over the track (star power keeps its blue).
+        const soloWashMat = own(new T.MeshBasicMaterial({ color: 0x8a5cff, transparent: true, opacity: 0,
+            blending: T.AdditiveBlending, depthWrite: false }));
+        const soloWash = new T.Mesh(trackGeo, soloWashMat);
+        soloWash.rotation.x = -Math.PI / 2;
+        soloWash.position.set(0, 0.0015, zMid);
+        scene.add(soloWash);
+        let soloIn = 0;
 
         // Lane dividers + side rails.
         const dividerMat = own(new T.MeshBasicMaterial({ color: 0x2a3456 }));
@@ -1338,6 +1443,12 @@
                     case 'sp-ready':
                         toast = { text: 'STAR POWER READY', color: '#8fe6ff', born: w };
                         break;
+                    case 'solo-end':
+                        toast = { text: ev.text, sub: ev.sub, color: ev.perfect ? '#ffc531' : '#c9b6ff', born: w, long: true };
+                        break;
+                    case 'bonus-pop':
+                        toast = { text: ev.text, color: ev.color || '#ff9a40', born: w };
+                        break;
                     default:
                         break;
                 }
@@ -1404,6 +1515,8 @@
             ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
             const Wc = cssW, Hc = cssH;
             const m = hudModel(state);
+            const bonus = frame.session && frame.session.getBonus ? frame.session.getBonus() : null;
+            if (bonus && state) m.score = formatScore((state.score || 0) + bonus.total);
             const left = project(-W4 / 2 - 0.15, 0, 0);
             const right = project(W4 / 2 + 0.15, 0, 0);
             const strikeY = clamp(left.y, Hc * 0.4, Hc - 20);
@@ -1552,12 +1665,56 @@
                 ctx.fillStyle = '#ffd23f';
                 ctx.fillText('FULL COMBO', rx, ry + br + 18 * scale);
             }
+            // Bonus feed + tags under the multiplier.
+            if (bonus) {
+                let fy = ry + br + 40 * scale;
+                const tags = [];
+                if (bonus.rollActive) tags.push(['ROLL', '#ff9a40']);
+                if (bonus.soloLive && bonus.soloLive.active) tags.push(['SOLO', '#c9b6ff']);
+                ctx.font = `800 ${11 * scale}px ${FONT}`;
+                for (const [txt, col] of tags) { ctx.fillStyle = col; ctx.fillText(txt, rx, fy); fy += 16 * scale; }
+                ctx.font = `700 ${12 * scale}px ${FONT}`;
+                for (const f of bonus.feed) {
+                    const age = wall - f.wall;
+                    if (age > 2500) continue;
+                    ctx.globalAlpha = clamp(1 - age / 2500, 0, 1);
+                    ctx.fillStyle = f.color;
+                    ctx.fillText(f.text, rx, fy);
+                    fy += 15 * scale;
+                }
+                ctx.globalAlpha = 1;
+            }
+            // Live drum-solo meter (top centre).
+            if (bonus && bonus.soloLive) {
+                const sl = bonus.soloLive;
+                const p = sl.n ? sl.h / sl.n : 1;
+                const cy = Math.max(70 * scale, Hc * 0.2);
+                ctx.textAlign = 'center';
+                ctx.shadowColor = 'rgba(0,0,0,0.85)';
+                ctx.shadowBlur = 10;
+                ctx.font = `800 ${12 * scale}px ${FONT}`;
+                ctx.fillStyle = '#c9b6ff';
+                ctx.fillText('DRUM SOLO', Wc / 2, cy - 44 * scale);
+                ctx.font = `900 ${46 * scale}px ${FONT}`;
+                ctx.fillStyle = p >= 1 ? '#ffc531' : p >= 0.9 ? '#dccfff' : '#ffffff';
+                ctx.fillText(Math.round(p * 100) + '%', Wc / 2, cy);
+                ctx.shadowBlur = 0;
+                const bw = 220 * scale, bh = 7 * scale;
+                ctx.fillStyle = 'rgba(255,255,255,0.12)';
+                ctx.fillRect(Wc / 2 - bw / 2, cy + 8 * scale, bw, bh);
+                ctx.fillStyle = '#9b7bff';
+                ctx.fillRect(Wc / 2 - bw / 2, cy + 8 * scale, bw * p, bh);
+                ctx.font = `600 ${11 * scale}px ${FONT}`;
+                ctx.fillStyle = '#b3a6d9';
+                ctx.fillText(sl.n ? sl.h + ' / ' + sl.n + ' notes' : 'get ready', Wc / 2, cy + 30 * scale);
+            }
 
             // Centre toasts.
             let msg = null;
             if (frame.message) msg = { text: frame.message, color: '#c8d0ee', alpha: 1 };
-            else if (toast && wall - toast.born < 1600) {
-                msg = { text: toast.text, color: toast.color, alpha: clamp(1 - (wall - toast.born - 1100) / 500, 0, 1) };
+            else if (toast && wall - toast.born < (toast.long ? 2800 : 1600)) {
+                const life = toast.long ? 2800 : 1600;
+                msg = { text: toast.text, sub: toast.sub, color: toast.color, alpha: clamp(1 - (wall - toast.born - (life - 500)) / 500, 0, 1) };
             } else if (m.spReady && !m.spActive && frame.hint) {
                 msg = { text: frame.hint, color: '#9fe9ff', alpha: 0.6 + 0.4 * Math.sin(wall / 200) };
             }
@@ -1568,7 +1725,13 @@
                 ctx.shadowColor = msg.color;
                 ctx.shadowBlur = 16;
                 ctx.fillStyle = msg.color;
-                ctx.fillText(msg.text, Wc / 2, narrow ? Math.max(150 * scale, Hc * 0.24) : Math.max(40 * scale, Hc * 0.12));
+                const my = narrow ? Math.max(150 * scale, Hc * 0.24) : Math.max(40 * scale, Hc * 0.12);
+                ctx.fillText(msg.text, Wc / 2, my);
+                if (msg.sub) {
+                    ctx.font = `700 ${15 * scale}px ${FONT}`;
+                    ctx.shadowBlur = 8;
+                    ctx.fillText(msg.sub, Wc / 2, my + 24 * scale);
+                }
                 ctx.globalAlpha = 1;
             }
             ctx.shadowBlur = 0;
@@ -1601,6 +1764,17 @@
             railGlowMat.opacity = spIn * (0.55 + 0.35 * spPulse) + (canActivate && !spActive ? 0.18 + 0.12 * spPulse : 0);
             railMat.color.setHex(COLORS.rail).lerp(tmpColor.setHex(COLORS.starPowerEdge), Math.max(spIn, canActivate ? 0.35 : 0));
             dividerMat.color.setHex(0x2a3456).lerp(tmpColor.setHex(COLORS.starPowerEdge), spIn * 0.6);
+            // Drum solo: violet wash + rails.
+            {
+                const bl = session && session.getBonus ? session.getBonus() : null;
+                const target = bl && bl.soloLive && bl.soloLive.active ? 1 : 0;
+                soloIn += (target - soloIn) * 0.08;
+                soloWashMat.opacity = 0.12 * soloIn;
+                if (soloIn > 0.02 && !spActive) {
+                    railMat.color.lerp(tmpColor.setHex(0x9b7bff), soloIn * 0.8);
+                    dividerMat.color.lerp(tmpColor.setHex(0x9b7bff), soloIn * 0.5);
+                }
+            }
 
             // Beat lines.
             const beats = session ? session.beats : [];

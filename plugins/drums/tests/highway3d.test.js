@@ -77,7 +77,7 @@ test('parseDrumsMeta reads the arrangement JSON drums block into engine option s
     const m = H.parseDrumsMeta(arr);
     assert.deepEqual(m, { version: 1, pro: true, kick2x: true,
         starPower: [{ start: 2, end: 4.5 }, { start: 10, end: 14 }], activation: [{ start: 20, end: 22 }],
-        levels: null, levelsGenerated: [] });
+        solos: [], levels: null, levelsGenerated: [] });
     // the block itself is accepted too
     assert.deepEqual(H.parseDrumsMeta(arr.drums), m);
 });
@@ -517,6 +517,33 @@ test('session: load builds the engine and render model; perfect play scores and 
     assert.equal(ev.filter(e => e.type === 'press').length, 18);
     assert.equal(s.drainEvents().length, 0, 'drain empties the queue');
     assert.ok(ev.every(e => e.wall === 0));
+});
+
+test('session bonus: perfect timing, snare roll, drum solo bonus and rating', () => {
+    let wall = 0;
+    const s = H.createSession(E, { now: () => wall });
+    // 16 snare notes 0.1 s apart from 1.0 s (the 14 with >= 4 neighbours within 0.25 s form the roll), inside a drum solo 0.9-3.0 s; a kick at 4 s.
+    const notes = [];
+    for (let i = 0; i < 16; i++) notes.push({ t: 1 + i * 0.1, s: 1, f: 14 });
+    notes.push({ t: 4, s: 1, f: 12 });
+    const beats = [];
+    for (let i = 0; i < 12; i++) beats.push({ time: i * 0.5, measure: i % 4 === 0 ? i / 4 : -1 });
+    s.load({ notes, chords: [], beats });
+    s.setMeta(H.parseDrumsMeta({ drums: { solos: [[0.9, 3.0]] } }));
+    playPerfect(s, 0, 3.5);
+    const b = s.getBonus();
+    assert.equal(b.perfect, 16, 'every hit within 25 ms');
+    assert.ok(b.rolls > 0, 'roll bonus');
+    assert.equal(b.solos.length, 1);
+    assert.equal(b.solos[0].rating, 'PERFECT SOLO!');
+    assert.equal(b.solos[0].bonus, 16 * 100 * 2);
+    assert.equal(b.total, b.timing + b.rolls + b.solo);
+    const ev = s.drainEvents();
+    assert.ok(ev.some(e => e.type === 'solo-end'));
+    assert.ok(ev.some(e => e.type === 'bonus-pop' && /^ROLL 14\/14 /.test(e.text)));
+    // a seek rebuilds the engine: score and bonuses start over
+    s.update(0.2);
+    assert.equal(s.getBonus().total, 0);
 });
 
 test('session: misses and overhits queue events for the view', () => {

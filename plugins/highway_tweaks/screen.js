@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.13.0' };
+    window.__highwayTweaks = { version: '1.14.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -1082,7 +1082,6 @@
             align-items: start; }
         .nd-hud > * { zoom: var(--hwt-scale, 1); width: 270px; grid-column: 1; }
         .nd-hud > .hwt-perf { grid-row: 1; }
-        .nd-hud > .hwt-score { grid-row: 2; }
         .nd-hud > .hwt-timing { grid-row: 3; }
         .nd-hud > .nd-hud-detected { grid-row: 4; }
         .nd-hud > .pc-score { grid-column: 2; grid-row: 1 / span 5; }
@@ -1297,7 +1296,7 @@
         const mult = Math.min(4, 1 + Math.floor(s / 10));
         const mc = MULT_COL[mult - 1];
         const fc = fireColor(s);
-        streakEl.style.opacity = s > 0 ? '1' : '0.45';
+        for (const el of streakEl.querySelectorAll(':scope > .num, :scope > .cap')) el.style.opacity = s > 0 ? '1' : '0.45';
         const num = streakEl.querySelector('.num');
         num.textContent = s;
         num.style.color = fc || (s >= 10 ? mc : '#f1f5f9');
@@ -1390,7 +1389,9 @@
     function chartInfo() {
         let notes = [], chords = [], sections = [];
         try { notes = hw().getNotes() || []; chords = hw().getChords() || []; sections = hw().getSections() || []; } catch (_) { /* ignore */ }
-        const key = notes.length + ':' + chords.length + ':' + (notes[0] ? notes[0].t : '') + ':' + sections.length;
+        let nBeats = 0;
+        try { nBeats = (hw().getBeats() || []).length; } catch (_) { /* ignore */ }
+        const key = notes.length + ':' + chords.length + ':' + (notes[0] ? notes[0].t : '') + ':' + sections.length + ':' + nBeats;
         if (chart && chart.key === key) return chart;
         const T = notes.map((n) => n.t).filter(Number.isFinite).sort((a, b) => a - b);
         const dense = new Set();
@@ -1401,13 +1402,14 @@
         }
         const secs = sections.filter((s) => s && Number.isFinite(s.time)).slice().sort((a, b) => a.time - b.time);
         const solos = [];
+        const auto = detectSolos(notes, chords, secs);
         secs.forEach((s, i) => {
-            if (!SOLO_RE.test(String(s.name || ''))) return;
+            if (!SOLO_RE.test(String(s.name || '')) && !auto.has(i)) return;
             const end = i + 1 < secs.length ? secs[i + 1].time : Infinity;
             // Adjacent solo sections (solo, solo) count as one solo.
             const prev = solos[solos.length - 1];
             if (prev && prev.end === s.time) { prev.end = end; return; }
-            solos.push({ id: solos.length, name: String(s.name), start: s.time, end });
+            solos.push({ id: solos.length, name: auto.has(i) ? 'Solo (' + String(s.name) + ')' : String(s.name), start: s.time, end });
         });
         const raw = new Map();
         for (const n of notes) if (n && Number.isFinite(n.t)) raw.set(rawKey(n.t, n.s), n);
@@ -1416,6 +1418,56 @@
         return chart;
     }
     const soloAt = (t) => (chart ? chart.solos.find((s) => t >= s.start && t < s.end) : null);
+
+    // Solos the chart doesn't name: official charts often call a solo "interlude",
+    // "bridge", "riff" or even "prechorus" (Don't Look Back in Anger, 3:17). A
+    // section counts as a solo on the part being played when, compared to the
+    // rest of the song, it is mostly single notes (>= 75 %), fast (>= 2.5 per
+    // second and >= 1.8x the song's median section), not repeated elsewhere
+    // (>= 60 % of its bars have pitch content found at most twice in the
+    // chart), up the neck (median fret >= 6) and >= 3 bars. Verses, choruses,
+    // intros and no-guitar sections never count. On songs that do name their
+    // solo, this flags a real "solo" section ~86 % of the time.
+    // Returns the set of section indexes.
+    function detectSolos(notes, chords, secs) {
+        const found = new Set();
+        let beats = [];
+        try { beats = (hw().getBeats() || []).filter((b) => b && b.measure >= 0 && Number.isFinite(b.time)); } catch (_) { /* ignore */ }
+        if (beats.length < 4 || !secs.length) return found;
+        const ev = [];
+        for (const n of notes) if (n && Number.isFinite(n.t) && !n.mt) ev.push({ t: n.t, single: true, p: [n.s + ':' + n.f], f: [n.f] });
+        for (const c of chords) if (c && Number.isFinite(c.t)) ev.push({ t: c.t, single: false, p: (c.notes || []).map((x) => x.s + ':' + x.f), f: [] });
+        ev.sort((x, y) => x.t - y.t);
+        const med = (a) => { if (!a.length) return 0; const q = a.slice().sort((x, y) => x - y), m = q.length >> 1; return q.length % 2 ? q[m] : (q[m - 1] + q[m]) / 2; };
+        const bars = [];
+        for (let i = 0, k = 0; i < beats.length; i++) {
+            const a = beats[i].time, b = i + 1 < beats.length ? beats[i + 1].time : a + (a - beats[i - 1].time);
+            while (k < ev.length && ev[k].t < a) k++;
+            const seg = [];
+            for (let j = k; j < ev.length && ev[j].t < b; j++) seg.push(ev[j]);
+            const frets = seg.filter((e) => e.single).map((e) => e.f[0]);
+            bars.push({ a, b, n: seg.length, singles: frets.length, fret: med(frets),
+                sig: [...new Set(seg.flatMap((e) => e.p))].sort().join(',') });
+        }
+        const counts = new Map();
+        for (const x of bars) if (x.n) counts.set(x.sig, (counts.get(x.sig) || 0) + 1);
+        const songEnd = bars[bars.length - 1].b;
+        const rows = secs.map((s, i) => {
+            const end = i + 1 < secs.length ? secs[i + 1].time : songEnd;
+            const bs = bars.filter((x) => x.a >= s.time - 0.01 && x.a < end - 0.01);
+            const n = bs.reduce((q, x) => q + x.n, 0), singles = bs.reduce((q, x) => q + x.singles, 0);
+            return { i, name: String(s.name || ''), bars: bs.length, n, frac: n ? singles / n : 0,
+                uniq: bs.length ? bs.filter((x) => x.n && counts.get(x.sig) <= 2).length / bs.length : 0,
+                nps: singles / Math.max(1e-3, end - s.time), fret: med(bs.filter((x) => x.singles).map((x) => x.fret)) };
+        });
+        const songMed = med(rows.filter((r) => r.n).map((r) => r.nps));
+        const EXCL = /^(verse|chorus)\d*$|noguitar|silence|^intro/i;
+        for (const r of rows) {
+            if (!EXCL.test(r.name) && !SOLO_RE.test(r.name) && r.bars >= 3 && r.frac >= 0.75 && r.nps >= 2.5
+                && r.uniq >= 0.6 && r.fret >= 6 && r.nps >= 1.8 * Math.max(songMed, 0.5)) found.add(r.i);
+        }
+        return found;
+    }
 
     function feed(text, color) {
         SC.feed.push({ text, color, at: performance.now() });
@@ -1513,12 +1565,13 @@
     // ── DOM: score block in the stats card, solo meter + glow on the highway ──
     const css = document.createElement('style');
     css.textContent = `
-        .hwt-score { font: 15px system-ui, sans-serif; color: #cbd5e1; text-shadow: 0 1px 3px #000; margin-top: 6px; }
-        .hwt-score .pts { font: 800 34px/1.05 system-ui, sans-serif; color: ${WHITE}; letter-spacing: -0.5px; font-variant-numeric: tabular-nums; }
-        .hwt-score .pts small { font: 700 13px system-ui, sans-serif; color: ${DIM}; letter-spacing: 1px; margin-left: 6px; }
-        .hwt-score .tags { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 3px; min-height: 0; }
-        .hwt-score .tag { font: 800 11px system-ui, sans-serif; letter-spacing: 1px; padding: 1px 6px; border-radius: 4px; }
-        .hwt-score .feed { font: 13px system-ui, sans-serif; margin-top: 2px; }
+        .hwt-score { font: 15px system-ui, sans-serif; color: #cbd5e1; text-shadow: 0 2px 8px #000; margin-top: 16px;
+            text-align: center; min-width: 200px; }
+        .hwt-score .pts { font: 900 46px/1 system-ui, sans-serif; color: ${WHITE}; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
+        .hwt-score .cap2 { font: 700 13px system-ui, sans-serif; letter-spacing: 3px; color: ${DIM}; margin-top: 2px; }
+        .hwt-score .tags { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; margin-top: 8px; }
+        .hwt-score .tag { font: 800 12px system-ui, sans-serif; letter-spacing: 1px; padding: 2px 7px; border-radius: 4px; }
+        .hwt-score .feed { font: 700 15px system-ui, sans-serif; margin-top: 4px; }
         .hwt-solo-meter { position: absolute; left: 50%; top: 5%; transform: translateX(-50%); z-index: 22; pointer-events: none;
             text-align: center; font-family: system-ui, sans-serif; text-shadow: 0 2px 8px #000; transition: opacity .4s; opacity: 0; }
         .hwt-solo-meter.on { opacity: 1; }
@@ -1538,11 +1591,14 @@
     let box = null, meter = null, glow = null, lastHtml = '';
     function ensure(hud) {
         const root = hud.parentNode;
-        if (!box || box.parentNode !== hud) {
+        // Score + bonuses live in the streak box on the left (it stays visible in
+        // multiplayer, where the stats card is compact).
+        const streak = root.querySelector(':scope > .hwt-streak');
+        if (streak && (!box || box.parentNode !== streak)) {
+            if (box) box.remove();
             box = document.createElement('div');
             box.className = 'hwt-score';
-            const perf = hud.querySelector(':scope > .hwt-perf');
-            if (perf) perf.after(box); else hud.insertBefore(box, hud.firstChild);
+            streak.appendChild(box);
             lastHtml = '';
         }
         if (!meter || meter.parentNode !== root) {
@@ -1564,6 +1620,7 @@
             return;
         }
         ensure(hud);
+        if (!box) return;
         const info = chartInfo();
         let t = 0;
         try { t = hw().getTime(); } catch (_) { /* ignore */ }
@@ -1587,7 +1644,6 @@
         glow.classList.toggle('on', !!soloAt(t));
         closeRun(false);
 
-        const mult = Math.min(4, 1 + Math.floor(SC.streak / 10));
         const tags = [];
         if (SC.run && SC.run.n >= 3) tags.push(['TECHNICAL ×1.5', ORANGE]);
         if (soloAt(t)) tags.push(['SOLO', BLUE]);
@@ -1596,7 +1652,7 @@
         const now = performance.now();
         const feedHtml = SC.feed.filter((x) => now - x.at < 2500).map((x) =>
             '<div class="feed" style="color:' + x.color + ';opacity:' + (1 - (now - x.at) / 2500).toFixed(2) + '">' + x.text + '</div>').join('');
-        const html = '<div class="pts">' + fmt(SC.score) + '<small>SCORE · ' + mult + 'x</small></div>' +
+        const html = '<div class="pts">' + fmt(SC.score) + '</div><div class="cap2">SCORE</div>' +
             (tags.length ? '<div class="tags">' + tags.map(([s, c]) => '<span class="tag" style="color:' + c + ';border:1px solid ' + c + '66">' + s + '</span>').join('') + '</div>' : '') +
             feedHtml;
         if (html !== lastHtml) { lastHtml = html; box.innerHTML = html; }
@@ -1655,8 +1711,7 @@
         html.hwt-compact .hwt-perf .row { display: none !important; }
         html.hwt-compact .hwt-perf .head { margin-bottom: 0; }
         html.hwt-compact .hwt-perf .acc { font-size: 36px; }
-        html.hwt-compact .hwt-score .pts { font-size: 26px; }
-        html.hwt-compact .hwt-score .feed, html.hwt-compact .hwt-score .tags { display: none !important; }
+
         html.hwt-compact .hwt-timing { margin-top: 6px !important; padding-top: 6px; }
         html.hwt-compact .hwt-timing > div:nth-child(3) { display: none !important; }   /* early/150ms/late legend */
         html.hwt-compact .hwt-streak > * { zoom: calc(var(--hwt-scale, 1) * .55); }

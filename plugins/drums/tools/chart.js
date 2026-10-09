@@ -56,6 +56,7 @@ export function makeChart() {
         levels,
         // the arrangement JSON's top-level `drums` block, as the converters write it
         drums: { version: 1, pro: true, kick2x: true, star_power: starPower, fills,
+            solos: [[at(12), at(15)]],   // a drum solo, for the solo meter / bonus
             levels, levels_generated: ['easy', 'medium'] },
     };
 }
