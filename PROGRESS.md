@@ -199,6 +199,20 @@ Synthetic alignment benchmark (2-min charts, 2 seeds, % of notes within 30 ms af
   `plugins/drums` + `plugins/multiplayer` folders into the live checkout (`C:\Users\mattr\Desktop\slopsmith`)
   the way `sync_from_local.ps1` works in reverse; the sloppak library changes are in the files themselves.
 
+### Library run results (2026-10-09 01:42)
+- **856 songs joined** (+ 2 that already had drums), 310 flagged (a chart exists but didn't validate —
+  usually a live/alternate version or a different edit), 1,044 with no drum chart locally or on Chorus.
+  No errors; every song re-read OK and no original file inside any sloppak changed.
+- Joined songs: median 72% of notes within ±30 ms of a detected drum onset (10th percentile 56%), kicks
+  median 97%; 463 needed the beat-level warp (different master/intro), 393 a plain offset; 52 came from
+  local charts, the rest from Chorus Encore.
+- 856 have Easy/Medium/Hard; 125 have at least one software-generated level (charts without all four).
+- Per-song detail: `~/drums-work/library/drums_state.csv` (status, chart, method, offset, within_30ms,
+  kick; flagged rows show the best attempt and why it failed). The backup folder holds 2,334 files:
+  the originals plus dated copies of songs joined twice (first run, then the levels redo).
+- Next passes: `--retry no-chart` picks up charts added to Chorus later; flagged songs can be forced one
+  at a time after a listen (`drums_join.py SONG --chart … --force`).
+
 ## Difficulty levels (Easy / Medium / Hard / Expert / Expert+)
 
 - Data: Expert stays the arrangement's wire notes; `drums.levels = {easy|medium|hard: [[t, gm, flag]]}` in
