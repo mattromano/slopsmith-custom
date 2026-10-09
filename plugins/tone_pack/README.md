@@ -38,3 +38,19 @@ plugin's session overrides for tones the name classifier can't place (they'd fal
 tones of a Bass part, and for single-tone arrangements (keyed by the song file, which is what Tone
 Automation classifies when there's no tone base). Manual per-tone picks in the Chain panel win.
 PSARC songs keep name-only classification.
+
+## Levels and tone (v1.2)
+
+`tools/` renders the chains offline (a NAM WaveNet forward pass from the .nam weights + the engine's
+IR normalisation) against Main Lead with a synthetic guitar DI:
+- `build_irs.py` picks a cab/mic per category and bakes a smooth EQ (max +-8 dB; clean/mod halfway)
+  toward Main Lead's spectrum into `irs/<category>.wav` (Main Lead is far darker above 6 kHz; the
+  amp-only chains sounded thin and fizzy). Bass gets the bass cab/mic with the most low end.
+- `body_levels.py` sets each preset's make-up gain so its 150 Hz-4 kHz level matches Main Lead at a
+  -12 dBFS-peak DI (`levels.json`). Distortion / lead levels barely depend on input level; clean, bass
+  and acoustic do (`input_levels.py`), so those may need a trim for a very hot or quiet input.
+- Every preset uses Main Lead's noise gate (-60 dB) and Tone Polish.
+
+Settings → Tone Pack: per-category volume trims (-12..+12 dB) and the preset to load after a song
+(default Main Lead; "Keep the last tone" turns it off). The return happens on `song:ended` and
+`song:stop` (leaving the player), not while the next song is starting.

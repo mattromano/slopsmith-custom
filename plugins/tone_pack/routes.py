@@ -19,7 +19,7 @@ import math
 import os
 from pathlib import Path
 
-VERSION = 2
+VERSION = 3
 # Main Lead (an amp+cab capture, no IR stage) sits at about -19.3 dB NAM loudness; every preset is
 # matched to that.
 TARGET_LOUDNESS_DB = -19.3
@@ -38,25 +38,25 @@ RECIPES = [
     {"category": "clean", "name": "Auto · Clean (Twin Reverb)", "stages": [
         ("NAM", "amps/Tim R Fender Twin Reverb Ch1 BR G06.nam", ["amps/Tim R JC 120 CH 2 Hi.nam",
                                                                  "amps/1 Orange AD30 Ch2 Cleanest.nam"]),
-        ("IR", "rocksmith/cab_tw112c_03.wav", ["rocksmith/cab_ca112c_03.wav"]),
+        ("IR", "pack:clean.wav", ["rocksmith/cab_tw112c_03.wav", "rocksmith/cab_ca112c_03.wav"]),
     ]},
-    {"category": "od", "name": "Auto · Crunch (Marshall DSL40)", "gate": -62, "stages": [
+    {"category": "od", "name": "Auto · Crunch (Marshall DSL40)", "stages": [
         ("NAM", "amps/Marshall DSL 40 C Crunch.nam", ["amps/Fender_57CustomDeluxe_crunch_in2_1000epochs.nam",
                                                       "other/RC JCM900 ChA.nam"]),
-        ("IR", "rocksmith/cab_marshall1960a_03.wav", ["rocksmith/cab_marshall1960ax_03.wav"]),
+        ("IR", "pack:od.wav", ["rocksmith/cab_marshall1960a_03.wav"]),
     ]},
-    {"category": "dist", "name": "Auto · Distortion (5153)", "gate": -55, "stages": [
+    {"category": "dist", "name": "Auto · Distortion (5153)", "stages": [
         ("NAM", "other/5153.nam", ["other/RC JCM900 ChB.nam", "amps/OB1 JCM 900 Ch. A - 272 higher gain.nam"]),
-        ("IR", "rocksmith/cab_marshall1960ax_04.wav", ["rocksmith/cab_marshall1960a_04.wav"]),
+        ("IR", "pack:dist.wav", ["rocksmith/cab_marshall1960ax_04.wav"]),
     ]},
-    {"category": "solo", "name": "Auto · Lead (Mesa Mark V)", "gate": -58, "stages": [
+    {"category": "solo", "name": "Auto · Lead (Mesa Mark V)", "stages": [
         ("NAM", "amps/Mesa Boogie Mark V Lead V2.2 Amp Only.nam", ["amps/Hiwatt DR 103 Crancked.nam"]),
-        ("IR", "rocksmith/cab_marshall1960a_03.wav", ["rocksmith/cab_orangeppc412_03.wav"]),
+        ("IR", "pack:solo.wav", ["rocksmith/cab_marshall1960a_03.wav"]),
     ]},
     {"category": "bass", "name": "Auto · Bass (Ampeg SVT)", "stages": [
         ("NAM", "amps/SVT CLEAN.nam", ["amps/Standard SWR WorkingPro 700 G05.nam",
                                        "amps/Fender Bassman 100T Vintage Channel Vol 5 Flat EQ Master Vol 10.nam"]),
-        ("IR", "rocksmith/bass_cab_at810bc_03.wav", ["rocksmith/bass_cab_bt410bc_03.wav"]),
+        ("IR", "pack:bass.wav", ["rocksmith/bass_cab_at810bc_03.wav"]),
     ]},
     {"category": "acoustic", "name": "Auto · Acoustic (emulator)", "stages": [
         ("NAM", "pedals/tone3000_29201_m125801_Pedal_AcousticEmulator.nam", []),
@@ -64,7 +64,7 @@ RECIPES = [
     {"category": "mod", "name": "Auto · Clean Chorus (Twin)", "stages": [
         ("NAM", "pedals/tone3000_26327_m99790_Pedal_Chorus.nam", []),
         ("NAM", "amps/Tim R Fender Twin Reverb Ch1 BR G06.nam", ["amps/Tim R JC 120 CH 2 Hi.nam"]),
-        ("IR", "rocksmith/cab_tw112c_03.wav", ["rocksmith/cab_ca112c_03.wav"]),
+        ("IR", "pack:mod.wav", ["rocksmith/cab_tw112c_03.wav"]),
     ]},
 ]
 
@@ -99,13 +99,26 @@ def _loudness(path: Path) -> float | None:
         return None
 
 
+PLUGIN_DIR = Path(__file__).resolve().parent
+
+
 def _resolve(models: Path, irs: Path, kind: str, rel: str, alts) -> Path | None:
     base = models if kind == "NAM" else irs
     for r in [rel, *alts]:
-        p = base / r
+        # "pack:" = the IRs shipped with this plugin (tools/build_irs.py: cab + EQ toward Main Lead)
+        p = PLUGIN_DIR / "irs" / r[5:] if r.startswith("pack:") else base / r
         if p.is_file():
             return p
     return None
+
+
+def _levels() -> dict:
+    """tools/build_irs.py + body_levels.py: measured make-up per category for the default chain."""
+    try:
+        with open(PLUGIN_DIR / "levels.json", encoding="utf-8") as f:
+            return json.load(f).get("categories") or {}
+    except (OSError, ValueError):
+        return {}
 
 
 def _stage(kind: str, path: Path, sid: int) -> dict:
@@ -136,9 +149,10 @@ def build_presets(config_dir: Path) -> dict:
     presets, targets, missing = {}, {}, []
     kh = [_find_vst3(n) for n in KILOHEARTS_MOD]
     ir_gain = _ir_gains()
+    measured = _levels()
     have_kh = all(kh)
     for rec in RECIPES:
-        chain, level_db, amp_stage, ir_db = [], None, None, 0.0
+        chain, level_db, amp_stage, ir_db, defaults = [], None, None, 0.0, True
         stages = rec["stages"]
         if rec["category"] == "mod" and have_kh:
             # real modulation: clean amp + cab, then chorus / delay / reverb VSTs
@@ -147,7 +161,10 @@ def build_presets(config_dir: Path) -> dict:
             p = _resolve(models, irs, kind, rel, alts)
             if p is None:
                 missing.append(f"{rec['name']}: {rel}")
+                defaults = False
                 continue
+            if not (p == PLUGIN_DIR / "irs" / rel[5:] if rel.startswith("pack:") else p.name == Path(rel).name):
+                defaults = False      # a fallback file: the measured level doesn't apply
             chain.append(_stage(kind, p, len(chain) + 1))
             if kind == "IR":
                 ir_db += float(ir_gain.get(p.name, IR_GAIN_DEFAULT_DB))
@@ -166,7 +183,14 @@ def build_presets(config_dir: Path) -> dict:
             for p in kh:
                 chain.append(_stage("VST", p, len(chain) + 1))
         # chain loudness ~ amp capture loudness + the IRs' normalized gain; make up the rest on the amp
-        make_up_db = 0.0 if level_db is None else max(-24.0, min(30.0, TARGET_LOUDNESS_DB - (level_db + ir_db)))
+        m = measured.get(rec["category"]) if defaults else None
+        if m and m.get("makeup_db") is not None:
+            make_up_db = float(m["makeup_db"])                # rendered + measured against Main Lead
+        else:
+            make_up_db = 0.0 if level_db is None else TARGET_LOUDNESS_DB - (level_db + ir_db)
+        make_up_db = max(-24.0, min(30.0, make_up_db))
+        if amp_stage is None:       # e.g. acoustic: the only capture carries the gain
+            amp_stage = next((s for s in chain if s["type"] == _TYPES["NAM"]), None)
         if amp_stage is not None:
             amp_stage["state"] = _nam_state(Path(amp_stage["path"]), 10 ** (make_up_db / 20.0))
         native = {"version": 1, "chain": chain}
@@ -177,13 +201,16 @@ def build_presets(config_dir: Path) -> dict:
             "inputGain": 1.0,
             "outputGain": 1.0,
             "makeUpDb": round(make_up_db, 1),
-            "noiseGate": {"enabled": "gate" in rec, "thresholdDb": rec.get("gate", -60),
-                          "releaseMs": 120, "depthDb": -60},
+            # same gate + Tone Polish as Main Lead
+            "noiseGate": {"enabled": rec["category"] != "bass", "thresholdDb": -60, "releaseMs": 100, "depthDb": -60},
+            "tonePolish": {"enabled": True},
             "generatedBy": "tone_pack",
             # what the pack set, so a refresh can tell the user's own tweaks apart
             "packLevels": {"inputGain": 1.0, "outputGain": 1.0,
-                           "noiseGate": {"enabled": "gate" in rec, "thresholdDb": rec.get("gate", -60),
-                                         "releaseMs": 120, "depthDb": -60}},
+                           "noiseGate": {"enabled": rec["category"] != "bass", "thresholdDb": -60,
+                                         "releaseMs": 100, "depthDb": -60},
+                           "tonePolish": {"enabled": True}},
+            "category": rec["category"],
             "toneFormVersion": VERSION,
             "created": 0,
         }

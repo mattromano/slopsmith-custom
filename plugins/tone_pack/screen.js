@@ -11,6 +11,8 @@
     const TA_KEY = 'slopsmith-tone-automation';
     const SEEN_KEY = 'tone-pack-seen';        // names this pack has installed before
     const STATE_KEY = 'tone-pack-state';      // {version, kilohearts}
+    const TRIM_KEY = 'tone-pack-trims';       // {category: dB} volume trims from the settings page
+    const HOME_KEY = 'tone-pack-home';        // preset to go back to after a song ('' = off)
 
     function readJson(key, fallback) {
         try {
@@ -24,19 +26,31 @@
     }
 
     // Pure merge (tested): returns {presets, ta, seen, added, updated}.
-    function mergePack(pack, presets, ta, seen) {
+    // Pack preset with the user's category trim folded into its output gain (also recorded in
+    // packLevels, so a trim isn't mistaken for a manual tweak on the next refresh).
+    function withTrim(p, trims) {
+        const db = Number((trims || {})[p.category]);
+        if (!Number.isFinite(db) || db === 0) return p;
+        const g = Math.round(Math.pow(10, db / 20) * 10000) / 10000;
+        return Object.assign({}, p, { outputGain: g, trimDb: db,
+            packLevels: Object.assign({}, p.packLevels || {}, { outputGain: g }) });
+    }
+
+    function mergePack(pack, presets, ta, seen, trims) {
         presets = Object.assign({}, presets || {});
         ta = Object.assign({ enabled: false, customKeywords: {}, targets: {} }, ta || {});
         ta.targets = Object.assign({}, ta.targets || {});
         seen = Array.isArray(seen) ? seen.slice() : [];
         const added = [], updated = [];
-        for (const [name, p] of Object.entries(pack.presets || {})) {
+        for (const [name, p0] of Object.entries(pack.presets || {})) {
+            const p = withTrim(p0, trims);
             const cur = presets[name];
             if (!cur) {
                 if (seen.includes(name)) continue;           // the user deleted it: leave it gone
                 presets[name] = Object.assign({}, p, { created: Date.now() });
                 added.push(name);
-            } else if (cur.generatedBy === 'tone_pack' && cur.nativePreset !== p.nativePreset) {
+            } else if (cur.generatedBy === 'tone_pack' && (cur.nativePreset !== p.nativePreset
+                       || (cur.trimDb || 0) !== (p.trimDb || 0))) {
                 // ours and the pack changed (new gear, level fix, Kilohearts installed): refresh.
                 // Keep level / gate settings only where the user changed them from what the pack
                 // set (packLevels); older pack presets have no record, so they take the new values.
@@ -75,7 +89,8 @@
             pack = await r.json();
         } catch (_) { return; }
         const firstRun = localStorage.getItem(TA_KEY) === null;
-        const res = mergePack(pack, readJson(PRESETS_KEY, {}), readJson(TA_KEY, null), readJson(SEEN_KEY, []));
+        const res = mergePack(pack, readJson(PRESETS_KEY, {}), readJson(TA_KEY, null), readJson(SEEN_KEY, []),
+            readJson(TRIM_KEY, {}));
         if (firstRun) res.ta.enabled = true;            // never configured: turn Tone Automation on
         writeJson(PRESETS_KEY, res.presets);
         writeJson(TA_KEY, res.ta);
@@ -152,10 +167,52 @@
         }
     }
 
+    // ── Back to Main Lead after a song ─────────────────────────────────────
+    // Tone Automation leaves the last song tone loaded. When a song ends or the player is left,
+    // load the home preset (setting; default Main Lead, else the Audio plugin's Default, else the
+    // Idle target). Skipped while the next song is starting (the Audio plugin's transition flag).
+    function homePresetName(presets, ta) {
+        let pick = null;
+        try { pick = localStorage.getItem(HOME_KEY); } catch (_) { /* storage blocked */ }
+        if (pick === '') return null;                                   // turned off
+        if (pick && presets[pick]) return pick;
+        if (presets['Main Lead']) return 'Main Lead';
+        let def = null;
+        try { def = localStorage.getItem('slopsmith-default-preset-name'); } catch (_) { /* ignore */ }
+        if (def && presets[def]) return def;
+        const idle = ta && ta.targets && ta.targets.idle;
+        return idle && presets[idle] ? idle : null;
+    }
+
+    let _homeTimer = null;
+    function goHome(reason) {
+        clearTimeout(_homeTimer);
+        _homeTimer = setTimeout(async () => {
+            if (Date.now() < (window._aeSongTransitionUntil || 0)) return;   // next song loading
+            if (window.slopsmith && window.slopsmith.isPlaying) return;      // replayed already
+            const presets = readJson(PRESETS_KEY, {});
+            const name = homePresetName(presets, readJson(TA_KEY, {}));
+            if (!name || typeof window._aeReplaceChainWithPresetBlob !== 'function') return;
+            const ok = await window._aeReplaceChainWithPresetBlob(presets[name], 'tone-pack:home', { snapshot: false });
+            if (!ok) return;
+            const sw = window._toneSwitcher;
+            if (sw && sw.taSwitcher) sw.activePreset = name;   // a replay's first tone change loads again
+            console.log('[tone-pack] back to', name, '(' + reason + ')');
+        }, 600);
+    }
+
+    if (typeof window !== 'undefined') window._tonePackReinstall = install;   // settings page re-merge
+
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { mergePack, songOverrides };
+        module.exports = { mergePack, songOverrides, withTrim, homePresetName };
         return;
     }
+    try {
+        if (window.slopsmith && typeof window.slopsmith.on === 'function') {
+            window.slopsmith.on('song:ended', () => goHome('song ended'));
+            window.slopsmith.on('song:stop', () => goHome('song stopped'));
+        }
+    } catch (_) { /* no host */ }
     try {
         if (window.slopsmith && typeof window.slopsmith.on === 'function') {
             // song:ready, then once more after the Audio plugin's own (debounced) tone setup
