@@ -13,7 +13,10 @@ tab_check.py and writes a quality report.
   python scripts/song_builder.py drums ALBUM.yaml [--chart-dir PATH] # add Drums: a Clone Hero chart (local, then
                                                                     #   Chorus Encore online), else the GP drums
 
-build and tune end with the drums step for the songs they built (--no-drums skips it).
+  python scripts/song_builder.py solos ALBUM.yaml             # mark guitar solos as "Solo" sections (solo_sections.py)
+
+build and tune end with the drums step for the songs they built (--no-drums skips it), then the
+solos step: songs whose tab marks no solo get one "Solo" section where the chart shows one.
 
 Run with _build/.mirvenv/Scripts/python.exe (has basic-pitch + refiner + the host packages).
 
@@ -406,9 +409,27 @@ def drums(cfg_path: Path, jobs, a):
     print(f"\nreport: {out}")
 
 
+def solos(jobs):
+    """Mark a solo in every built song whose sections don't name one (see solo_sections.py)."""
+    import solo_sections
+    for j in jobs:
+        if not j["out"].exists():
+            continue
+        manifest, arrs = solo_sections.load(j["out"])
+        if not arrs or solo_sections.has_solo(arrs):
+            print(f"{j['title'][:40]:<41} {'solo marked in the tab' if arrs else 'no guitar part'}")
+            continue
+        regions, _ = solo_sections.find_solos(arrs)
+        found = [r for r in regions if r["solo"]]
+        if found:
+            solo_sections.write(j["out"], arrs, found, ROOT / "_build" / "backup")
+        print(f"{j['title'][:40]:<41} " + (", ".join(f"Solo {solo_sections.fmt(r['start'])}-{solo_sections.fmt(r['end'])}"
+                                                   for r in found) or "no solo found"))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["plan", "build", "check", "tune", "survey", "drums"])
+    ap.add_argument("cmd", choices=["plan", "build", "check", "tune", "survey", "drums", "solos"])
     ap.add_argument("target", help="album YAML (or a tab file for survey)")
     ap.add_argument("--only", help='comma-separated titles ("Hollow, As You Figured" works)')
     ap.add_argument("--refine-beats", action="store_true")
@@ -444,6 +465,9 @@ def main():
     if a.cmd == "drums":
         drums(cfg, jobs, a)
         return
+    if a.cmd == "solos":
+        solos(jobs)
+        return
     results = {}
     if a.cmd == "tune":
         tune(cfg, jobs)
@@ -466,6 +490,9 @@ def main():
         # --notation-only keeps the existing Drums arrangement, but re-running is harmless.
         print("\n== drums", flush=True)
         drums(cfg, jobs, a)
+    if a.cmd in ("build", "tune"):
+        print("\n== solos", flush=True)
+        solos(jobs)
 
 
 if __name__ == "__main__":
