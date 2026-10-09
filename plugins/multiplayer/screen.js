@@ -1761,6 +1761,18 @@ function _showLobbyView() {
     if (lobby) lobby.classList.remove('hidden');
     if (room) room.classList.add('hidden');
     if (mixer) mixer.classList.add('hidden');
+    _setInRoomFlag(false);
+}
+
+// <html data-mp-room="CODE"> while in a room, so other plugins (e.g. a
+// stats HUD that goes compact in multiplayer) can react without reaching
+// into this module.
+function _setInRoomFlag(on) {
+    try {
+        if (on && _roomCode) document.documentElement.dataset.mpRoom = _roomCode;
+        else delete document.documentElement.dataset.mpRoom;
+        window.dispatchEvent(new CustomEvent('multiplayer:room', { detail: { room: on ? _roomCode : null } }));
+    } catch (e) { /* no DOM */ }
 }
 
 function _showRoomView() {
@@ -1772,6 +1784,7 @@ function _showRoomView() {
     const codeEl = document.getElementById('mp-room-code');
     if (codeEl) codeEl.textContent = _roomCode || '';
     _renderJoinHelp();
+    _setInRoomFlag(true);
 
     _renderPlayers();
     _renderQueue();
@@ -1785,17 +1798,93 @@ function _isLoopbackHost(hostname) {
     return h === 'localhost' || h === '::1' || h.endsWith('.localhost') || /^127\./.test(h);
 }
 
+// Join link: this page's address + ?mp=CODE (handled by _autoJoinFromUrl).
+function _joinLink(origin, code) {
+    return String(origin).replace(/\/+$/, '') + '/?mp=' + encodeURIComponent(code || '');
+}
+
+let _lanStatus = null;      // GET /api/plugins/multiplayer/lan
+
 function _renderJoinHelp() {
     const urlEl = document.getElementById('mp-joinhelp-url');
     const codeEl = document.getElementById('mp-joinhelp-code');
-    const noteEl = document.getElementById('mp-joinhelp-local-note');
-    if (urlEl) urlEl.textContent = location.origin;
+    if (urlEl) {
+        const link = _joinLink(location.origin, _roomCode);
+        urlEl.textContent = link;
+        urlEl.href = link;
+    }
     if (codeEl) codeEl.textContent = _roomCode || '';
-    if (noteEl) noteEl.classList.toggle('hidden', !_isLoopbackHost(location.hostname));
+    _renderLanHelp();
+    _refreshLanStatus();
 }
 
-window.mpCopyJoinUrl = function () {
-    if (navigator.clipboard) navigator.clipboard.writeText(location.origin).catch(() => {});
+function _renderLanHelp() {
+    const row = document.getElementById('mp-lan-toggle-row');
+    const box = document.getElementById('mp-lan-toggle');
+    const links = document.getElementById('mp-joinhelp-lan-links');
+    const note = document.getElementById('mp-joinhelp-lan-note');
+    if (!links || !note) return;
+    const local = _isLoopbackHost(location.hostname);
+    const st = _lanStatus;
+    // Only this computer can switch the relay; guests just see the links.
+    if (row) row.classList.toggle('hidden', !local);
+    if (box && st) box.checked = !!st.enabled;
+    links.innerHTML = '';
+    if (!local) {
+        note.textContent = 'You are connected over the network.';
+        return;
+    }
+    if (!st) { note.textContent = 'Checking…'; return; }
+    if (st.enabled && st.running) {
+        const addrs = st.addresses || [];
+        addrs.forEach((ip, i) => {
+            const link = _joinLink('http://' + ip + ':' + st.port, _roomCode);
+            const div = document.createElement('div');
+            div.className = 'flex items-center gap-2 flex-wrap';
+            div.innerHTML = '<span class="font-mono text-accent break-all"></span>'
+                + '<button class="px-2 py-0.5 bg-dark-600 hover:bg-dark-500 rounded text-xs text-gray-300">Copy</button>';
+            div.firstChild.textContent = link;
+            div.lastChild.onclick = () => _copyText(link);
+            links.appendChild(div);
+        });
+        note.textContent = addrs.length
+            ? 'Open that link on the other device. Windows may ask once to allow Slopsmith through the firewall: allow it on private networks.'
+            : 'On, but no home-network address was found for this computer.';
+    } else if (st.enabled && st.error) {
+        note.textContent = 'Could not open port ' + st.port + ': ' + st.error;
+    } else {
+        note.textContent = 'Off. Turn it on to let your Mac or another device join over your network.';
+    }
+}
+
+async function _refreshLanStatus() {
+    try {
+        _lanStatus = await (await fetch('/api/plugins/multiplayer/lan')).json();
+    } catch (e) {
+        _lanStatus = null;
+    }
+    _renderLanHelp();
+}
+
+window.mpSetLan = async function (on) {
+    try {
+        const r = await fetch('/api/plugins/multiplayer/lan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ enabled: !!on }),
+        });
+        const body = await r.json();
+        if (r.ok) _lanStatus = body;
+    } catch (e) { /* keep the old status */ }
+    _renderLanHelp();
+};
+
+function _copyText(text) {
+    if (navigator.clipboard) navigator.clipboard.writeText(text).catch(() => {});
+}
+
+window.mpCopyJoinLink = function () {
+    _copyText(_joinLink(location.origin, _roomCode));
 };
 
 // ── WebSocket ──────────────────────────────────────────────────────────
@@ -5312,6 +5401,48 @@ window.slopsmithMultiplayerDebug = {
             }
         }
     };
+})();
+
+// ── Join link: /?mp=CODE opens the Multiplayer screen and joins ─────────
+//
+// The room page shows these links (this computer and, with "Allow LAN
+// players", the LAN address). Joins with the saved player name; without one
+// it fills in the code and asks for a name. Already in that room (a reload)
+// just shows it. The ?mp= parameter is removed so a later reload doesn't
+// re-trigger a join after the player has left.
+(function _autoJoinFromUrl() {
+    let code = '';
+    try { code = (new URLSearchParams(location.search).get('mp') || '').trim().toUpperCase(); } catch (e) { return; }
+    if (!/^[A-Z0-9]{4,8}$/.test(code)) return;
+    try {
+        const u = new URL(location.href);
+        u.searchParams.delete('mp');
+        history.replaceState(history.state, '', u.pathname + u.search + u.hash);
+    } catch (e) { /* ignore */ }
+
+    let tries = 0;
+    (function attempt() {
+        const ready = typeof window.showScreen === 'function'
+            && document.getElementById('plugin-multiplayer')
+            && document.getElementById('mp-join-code');
+        if (!ready) {
+            if (++tries < 150) setTimeout(attempt, 200);   // up to ~30 s for plugins to load
+            return;
+        }
+        window.showScreen('plugin-multiplayer');
+        if (sessionStorage.getItem('mp_room') === code && sessionStorage.getItem('mp_player')) return;
+        if (_roomCode) return;      // in another room in this tab: leave it to the player
+        _loadSettings();
+        const codeInput = document.getElementById('mp-join-code');
+        const nameInput = document.getElementById('mp-join-name');
+        if (codeInput) codeInput.value = code;
+        if (_playerName) {
+            window.mpJoinRoom();
+        } else if (nameInput) {
+            _showError('Enter your name and click Join to enter room ' + code);
+            nameInput.focus();
+        }
+    })();
 })();
 
 // ── Page unload: tear down the broadcast cleanly ───────────────────────

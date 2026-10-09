@@ -991,6 +991,94 @@ async def _grace_then_finalize_endpoint(room, player_id, endpoint):
         _start_cleanup(room["code"])
 
 
+def _load_lan_relay_module():
+    """lan_relay.py from this plugin's folder (plugin dirs aren't on sys.path)."""
+    import importlib.util
+    path = Path(__file__).resolve().parent / "lan_relay.py"
+    spec = importlib.util.spec_from_file_location("mp_lan_relay", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _setup_lan_relay(app, mp_dir):
+    """"Allow LAN players": relay a fixed LAN port to this (127.0.0.1-only) server.
+
+    GET  /api/plugins/multiplayer/lan  -> status + join URLs (anyone)
+    POST /api/plugins/multiplayer/lan  {enabled, port?} (this computer only)
+    The choice is saved in <config>/multiplayer/lan.json and restored at startup.
+    """
+    import json
+    from fastapi import Request
+
+    lr = _load_lan_relay_module()
+    relay = lr.LanRelay()
+    state_file = mp_dir / "lan.json"
+    state = {"enabled": False, "port": lr.DEFAULT_PORT}
+    try:
+        state.update(json.loads(state_file.read_text(encoding="utf-8")))
+    except (OSError, ValueError):
+        pass
+
+    def save():
+        try:
+            mp_dir.mkdir(parents=True, exist_ok=True)
+            state_file.write_text(json.dumps(state), encoding="utf-8")
+        except OSError as e:
+            _log.warning("multiplayer: could not save lan.json: %s", e)
+
+    def target_port(request=None):
+        p = lr.server_port_from_argv()
+        if p is None and request is not None:
+            p = request.url.port
+        return p or 8000
+
+    def status():
+        return {
+            "enabled": bool(state.get("enabled")),
+            "running": relay.running,
+            "port": relay.port or int(state.get("port") or lr.DEFAULT_PORT),
+            "addresses": lr.lan_addresses(),
+            "error": relay.error,
+        }
+
+    if state.get("enabled"):
+        try:
+            relay.start(int(state.get("port") or lr.DEFAULT_PORT), target_port())
+            _log.info("multiplayer: LAN relay on 0.0.0.0:%s -> 127.0.0.1:%s", relay.port, relay.target_port)
+        except Exception as e:
+            _log.warning("multiplayer: LAN relay failed to start: %s", e)
+
+    @app.get("/api/plugins/multiplayer/lan")
+    async def lan_status():
+        return status()
+
+    @app.post("/api/plugins/multiplayer/lan")
+    async def lan_set(request: Request, data: dict):
+        # This computer only. Relayed guests reach us from 127.0.0.2 (see
+        # lan_relay.GUEST_SOURCE_ADDR); where that bind isn't possible they come
+        # from 127.0.0.1 too, so also require a local Host header (a guest's
+        # browser sends the LAN address it opened).
+        peer = request.client.host if request.client else ""
+        host_hdr = (request.headers.get("host") or "").rsplit(":", 1)[0].strip("[]").lower()
+        local_host = host_hdr in ("127.0.0.1", "localhost", "::1") or host_hdr.endswith(".localhost")
+        if peer not in ("127.0.0.1", "::1") or not local_host:
+            return JSONResponse({"error": "Only the computer running Slopsmith can change this."}, status_code=403)
+        want = bool(data.get("enabled"))
+        port = int(data.get("port") or state.get("port") or lr.DEFAULT_PORT)
+        state.update(enabled=want, port=port)
+        save()
+        if want:
+            try:
+                relay.start(port, target_port(request))
+            except Exception:
+                pass            # reported in status()["error"]
+        else:
+            relay.stop()
+            relay.error = None
+        return status()
+
+
 def setup(app, context):
     config_dir = context["config_dir"]
     STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
@@ -1002,6 +1090,8 @@ def setup(app, context):
     global _MP_DIR
     _MP_DIR = MP_DIR
     _get_dlc_dir = context.get("get_dlc_dir")
+
+    _setup_lan_relay(app, MP_DIR)
 
     # ── Room CRUD ──────────────────────────────────────────────────────
 

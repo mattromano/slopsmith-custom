@@ -66,21 +66,28 @@
         <!-- How to join (filled by _renderJoinHelp) -->
         <details id="mp-joinhelp" class="mb-6 bg-dark-700/50 rounded-xl border border-gray-800/50" open>
             <summary class="px-5 py-3 cursor-pointer text-sm text-white font-semibold select-none">How to join this room</summary>
-            <div class="px-5 pb-4 text-sm text-gray-400 space-y-2">
-                <ol class="list-decimal list-inside space-y-1">
-                    <li>Open <button id="mp-joinhelp-url" onclick="mpCopyJoinUrl()" title="Click to copy"
-                        class="font-mono text-accent hover:text-accent-light"></button> in a browser.</li>
-                    <li>Go to <span class="text-gray-300">Plugins → Multiplayer</span>.</li>
-                    <li>Enter a name and the code <span id="mp-joinhelp-code" class="font-mono text-accent"></span>, then click <span class="text-gray-300">Join</span>.</li>
-                    <li>Pick your part (Lead, Rhythm, Bass, Drums…) from your dropdown in the Players list.</li>
-                </ol>
-                <p id="mp-joinhelp-local-note" class="hidden text-xs text-yellow-500/80">
-                    This server only accepts connections from this computer, so other devices can't open that address.
-                    To play with another device, every player has to open the same Slopsmith server that's reachable on
-                    the network (e.g. started with HOST=0.0.0.0) and join from there.
-                </p>
-                <p class="text-xs text-gray-500">Rooms only exist on the server they were created on. A room made in
-                    another copy of Slopsmith (e.g. on a different computer) is a separate room.</p>
+            <div class="px-5 pb-4 text-sm text-gray-400 space-y-3">
+                <div>
+                    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">On this computer</div>
+                    <div class="flex items-center gap-2 flex-wrap">
+                        <a id="mp-joinhelp-url" target="_blank" rel="noopener"
+                            class="font-mono text-accent hover:text-accent-light break-all"></a>
+                        <button onclick="mpCopyJoinLink('local')" class="mp-joinhelp-copy px-2 py-0.5 bg-dark-600 hover:bg-dark-500 rounded text-xs text-gray-300">Copy</button>
+                    </div>
+                    <div class="text-xs text-gray-500 mt-1">Open it in another browser window: it goes straight into this room.</div>
+                </div>
+                <div id="mp-joinhelp-lan">
+                    <div class="text-xs text-gray-500 uppercase tracking-wider mb-1">Other devices on your Wi-Fi (Mac, laptop, phone)</div>
+                    <label id="mp-lan-toggle-row" class="hidden flex items-center gap-2 cursor-pointer select-none mb-1">
+                        <input type="checkbox" id="mp-lan-toggle" onchange="mpSetLan(this.checked)" class="accent-current">
+                        <span class="text-gray-300">Allow LAN players</span>
+                        <span class="text-xs text-gray-500">(anyone on your network can open Slopsmith while this is on)</span>
+                    </label>
+                    <div id="mp-joinhelp-lan-links" class="space-y-1"></div>
+                    <div id="mp-joinhelp-lan-note" class="text-xs text-gray-500"></div>
+                </div>
+                <p class="text-xs text-gray-500">Then pick your part (Lead, Rhythm, Bass, Drums…) from your dropdown in the Players list.
+                    Or join by hand: Plugins → Multiplayer, enter a name and the code <span id="mp-joinhelp-code" class="font-mono text-accent"></span>.</p>
             </div>
         </details>
 
