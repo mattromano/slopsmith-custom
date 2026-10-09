@@ -72,13 +72,19 @@
         </div>
         <div class="dr-row">
             <div><div class="dr-t">Auto kick</div>
-                <div class="dr-d">The game plays the kick for you (pedal hits are ignored and it isn't scored). Choose which difficulties it's on for.</div></div>
+                <div class="dr-d">The game plays the kick for you, with its sound (pedal hits are ignored and it isn't scored). Choose which difficulties it's on for.</div></div>
             <div class="dr-ctl"><select class="drums-auto-kick" data-dr="autoKick" aria-label="Auto kick"></select></div>
         </div>
         <div class="dr-row">
             <div><div class="dr-t">Auto cymbals</div>
                 <div class="dr-d">The game plays hi-hat, ride and crash notes for you, so you only play snare, toms (and kick).</div></div>
             <div class="dr-ctl"><select class="drums-auto-cym" data-dr="autoCymbals" aria-label="Auto cymbals"></select></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">Auto note volume</div>
+                <div class="dr-d">The kick and cymbal notes the game plays for you are heard on the drum kit sound, so muting the drum stem doesn't leave holes. Separate from the pad volume below.</div></div>
+            <div class="dr-ctl"><input type="range" class="drums-autovol-slider" data-dr="autoVolume" min="0" max="100" aria-label="Auto note volume">
+                <span data-dr="autoVolumeText" style="font-size:.75rem;color:#9ca3af;width:2.5rem;text-align:right;"></span></div>
         </div>
         <div class="dr-row">
             <div><div class="dr-t">Hit timing</div>

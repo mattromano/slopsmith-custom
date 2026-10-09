@@ -169,6 +169,10 @@ changes apply right away to a song that is playing in another panel:
   dimmed, flash at the strikeline as if played, and pad hits on them are ignored (no overhits). Cymbals = the
   chart's yellow / blue / green cymbal notes (hi-hat, ride, crash). The 2D view ignores those lanes in its
   hit counter. Changing it mid-song rescores from the current position, like a difficulty change.
+  The auto notes are **played on the drum kit sound** as they reach the strikeline (scheduled ~60 ms ahead
+  on the audio clock), so muting the drum stem doesn't leave holes. Their volume is **Auto note volume**
+  (`drums_auto_volume_v1`, default 80%), separate from the pad volume, so pads can stay silent when the
+  kit module makes its own sound.
 - **Hit timing** (`drums_timing_v1`, 3D view): Relaxed ±130 ms, Forgiving ±100 ms, Normal ±70 ms (YARG's
   default), Precision (YARG's dynamic window that tightens on fast notes).
 - **Kit** (`drums_kit_v1`): the sound set for pad hits; only the chosen kit is loaded. Default **Crocell

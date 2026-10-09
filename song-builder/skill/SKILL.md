@@ -34,7 +34,7 @@ and the album YAMLs. Never commit tabs, audio, built sloppaks or `.env`.
 | `scripts/gp_to_sloppak.py` | One song: GP tab + MP3 → sloppak. Syncs the tab to the recording (beat_this beats, beat-level DTW, constant-tempo fallback), polishes sustains and hand shapes, fills gaps from extra guitar parts, splits 6 Demucs stems, records `x_build` in the manifest. |
 | `scripts/tab_check.py` | Grades a sloppak: Basic Pitch on its own guitar/bass stems vs chart notes → `lift` (hit rate ÷ luck), `best_shift`, weak bar ranges. |
 | `scripts/rebuild_song.py` | Rebuilds a song from its `x_build` recipe, picking up feedBack Studio sync points as `--anchors`. Backs up the old file. |
-| `scripts/drums_join.py` / `song_builder.py drums` | Adds a **Drums** arrangement: a matching YARG/Clone Hero chart aligned to the stems, else the tab's drum track via `x_sync.json`. Validates against `stems/drums.ogg` and refuses weak joins (`--force` overrides). |
+| `scripts/drums_join.py` / `song_builder.py drums` | Adds a **Drums** arrangement (automatic at the end of `build`/`tune`): a Clone Hero chart (local or Chorus Encore) aligned to the stems, else the tab's drum track via `x_sync.json`, with Easy–Hard generated when missing. Validates against `stems/drums.ogg` and refuses weak joins (`--force` overrides). |
 | `scripts/ch_to_sloppak.py` / `scripts/sloppak_to_ch.py` | YARG/CH song folder → new drums sloppak, and back (notes.mid + song.ini + stems). |
 | `scripts/gp7_to_gp5.py` | Songsterr/GP7/8 `.gp` → `.gp5` (song_builder does this automatically). |
 | `lib/gp2rs.py` | GP → RS XML. Patched 2026-10: ties extend sustain, H/P resolved on the destination note by fret direction, slide targets, slide-outs, ghost notes no longer muted, bends scaled right (quarter-tones/2), anchors one-per-chord at the index finger (`_compute_anchors`; the old per-note "fret-1" anchors shifted chord frames 2 frets). Backup: `_build/backup/gp2rs.py.bak`. |
@@ -80,17 +80,36 @@ Cheap 52 *Vermont*). Copy one to start a new album. The format is in song_builde
    the choice in `ALBUM_tuning.json` so later builds reuse it. That's how Big-Box Store Heart went
    from C to B.
 7. **Grade.** `build`/`tune` end with a report (also `ALBUM_report.json`); `song_builder.py check` regrades.
+   Then the drums step runs (see Drums below) and prints which songs got a chart, the GP drums, or were flagged.
 8. Update `_build/HANDOFF.md`; then give the user the graded list.
 
 ## Drums (Rock Band–style)
 
-- `song_builder.py drums ALBUM.yaml --chart-dir "<Clone Hero Songs folder>" --dry-run` first: it prints
-  per song the source used (chart/gp), median offset, % of notes within 30 ms and drift. Drop
-  `--dry-run` to write. Joins that fail validation are flagged, not written; the old file is backed up
-  in `_build/backup/`. Report: `ALBUM_drums.json`; per-song detail in `_build/logs/<slug>_drums.json`.
-- Drums live in `arrangements/drums.json` (GM drum numbers as `s*24+f`; star power/fills in its `drums`
-  block). `--notation-only` rebuilds keep it; after an anchor rebuild re-run `drums` if it came from the GP tab.
-- `tab_check` ignores Drums, so grades are unaffected. The drums plugin's 3D view auto-selects for Drums.
+**Every build gets drums automatically.** `song_builder.py build` and `tune` end with the drums step for
+the songs they built (`--no-drums` skips it). Run it on its own with `song_builder.py drums ALBUM.yaml`
+(add `--dry-run` to only report). Per song, in this order:
+
+1. a Clone Hero/YARG chart: a `--chart-dir` folder match, else the best **Chorus Encore** (enchor.us)
+   search result — ranked by name, then length, then **most hand-charted difficulties** (`noteCounts`),
+   so a chart with real Easy/Medium/Hard wins. `--no-online-charts` turns the search off.
+2. else the **GP tab's drum track**, placed with the build's stored sync map (`x_sync.json`).
+
+Each candidate is aligned and validated against `stems/drums.ogg` (median offset, % of notes within
+30 ms, drift, kick/cymbal bands); one that fails is flagged, not written (`--force` overrides), and the
+next source is tried. Whatever is written gets star power + fills generated when the source had none, and
+**Easy/Medium/Hard reduced from Expert** when the source didn't chart them (listed in `levels_generated`,
+shown as AUTO in the game). Old file → `_build/backup/`. Report: `ALBUM_drums.json`; per-song detail in
+`_build/logs/<slug>_drums.json`.
+
+- Drums live in `arrangements/drums.json` (GM drum numbers as `s*24+f`; star power/fills/levels in its
+  `drums` block). `--notation-only` rebuilds keep it.
+- Songsterr drum maps vary; if a GP join looks wrong in the game (snare on a tom, etc.), check the note
+  numbers against the GM/pro-drums mapping in `PROGRESS.md` ("Drum data in a sloppak").
+- Whole library: `scripts/drums_library.py LIBRARY --backup-dir DIR --write` finds charts for songs without
+  drums; `--upgrade` replaces drums whose lower levels are software-made when a validated chart with more
+  hand-charted levels exists. State/CSV in `~/drums-work/library/`.
+- `tab_check` ignores Drums, so grades are unaffected. The drums plugin picks the Drum Highway for Drums;
+  Plugins → Drums has the player's drum settings (difficulty, auto kick/cymbals, kit…).
 
 ## Reading the grades
 

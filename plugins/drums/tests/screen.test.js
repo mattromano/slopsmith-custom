@@ -416,3 +416,17 @@ test('_drumTabFor: a Drums arrangement with notes wins over the sloppak drum tab
     assert.equal(mod._drumTabFor({ songInfo: drums, notes: [] }), null);
     assert.equal(mod._drumTabFor({ drumTab: { hits: 'x' } }), null);
 });
+
+test('auto notes: _autoNotesBetween returns the auto kick / cymbal notes in (from, to] with velocities', () => {
+    const mod = freshPlugin();
+    const n = (t, midi, extra) => Object.assign({ t, s: Math.floor(midi / 24), f: midi % 24 }, extra || {});
+    const notes = [n(1, 36), n(1, 42), n(1.5, 38), n(2, 36, { ac: true }), n(2, 49), n(3, 35, { mt: true }), n(3, 44)];
+    const chords = [{ t: 2.5, notes: [{ s: 1, f: 12 }, { s: 1, f: 14 }] }];   // kick + snare
+    const k = mod._autoNotesBetween(notes, chords, 1, 3, { kick: true });
+    assert.deepEqual(k, [{ t: 2, midi: 36, vel: 118 }, { t: 3, midi: 35, vel: 55 }, { t: 2.5, midi: 36, vel: 100 }]);
+    const c = mod._autoNotesBetween(notes, [], 0, 3, { cymbals: true });
+    assert.deepEqual(c.map(x => x.midi), [42, 49], 'hat pedal 44 is not an auto note');
+    assert.deepEqual(mod._autoNotesBetween(notes, chords, 0, 3, { kick: false, cymbals: false }), []);
+    assert.deepEqual(mod._autoNotesBetween(notes, chords, 3, 3, { kick: true }), [], 'empty window');
+    assert.equal(mod._cfg().autoVolume, 0.8);
+});

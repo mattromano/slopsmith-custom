@@ -98,6 +98,10 @@ const STORE_KEYS = {
     timing:         'drums_timing_v1',
     // Drum synth sound set (DRUM_KITS).
     kit:            'drums_kit_v1',
+    // Volume of the notes the auto kick / auto cymbals play for you (0..1),
+    // separate from the pad volume so pads can be silent (kit module makes
+    // the sound) while the auto notes still fill in for a muted drum stem.
+    autoVolume:     'drums_auto_volume_v1',
 };
 
 // Valid preset ids — kept here so _saveCfg can validate before persisting
@@ -200,6 +204,7 @@ function _validateCustomMapping(raw) {
 const _cfg = {
     midiInputId:    _readStore(STORE_KEYS.midiInputId) || '',
     synthVolume:    _readNum(STORE_KEYS.synthVolume, 0.7, 0, 1),
+    autoVolume:     _readNum(STORE_KEYS.autoVolume, 0.8, 0, 1),
     // -1 = all, 0..15 are the 16 MIDI channels (9 = "ch10" Drums)
     midiChannel:    Math.round(_readNum(STORE_KEYS.midiChannel, -1, -1, 15)),
     hitDetection:   _readStore(STORE_KEYS.hitDetection) === 'true',
@@ -278,6 +283,10 @@ function _saveCfg(key, val) {
     }
     if (key === 'kit' && !Object.prototype.hasOwnProperty.call(DRUM_KITS, val)) {
         val = DEFAULT_KIT;
+    }
+    if (key === 'autoVolume') {
+        const n = Number(val);
+        val = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0.8;
     }
     if (key === 'synthVolume') {
         const n = Number(val);
@@ -410,6 +419,7 @@ function _timingParams() {
 let _audioCtx = null;
 let _synthPlayer = null;
 let _synthGain = null;
+let _autoGain = null;        // bus for auto-played notes (its own volume)
 let _synthLoading = false;
 let _playerScriptLoaded = false;
 const _drumPresets = {};           // midiNote -> preset
@@ -670,7 +680,7 @@ function _loadScript(url) {
 // module, the same file the bundled 3D guitar highway imports.
 
 const PLUGIN_ID = 'drums';
-const ASSET_VERSION = '5.5.0';   // cache-buster for the lazily loaded files
+const ASSET_VERSION = '5.5.1';   // cache-buster for the lazily loaded files
 const THREE_URL = '/static/vendor/three/three.module.min.js';
 const PLUGIN_STATIC = '/api/plugins/' + PLUGIN_ID + '/static/';
 
@@ -873,7 +883,7 @@ function _dropSampleKitsExcept(kitId) {
     }
 }
 
-function _sampleKitHit(kit, midiNote, velocity, when) {
+function _sampleKitHit(kit, midiNote, velocity, when, dest) {
     const n = kit.manifest.notes[midiNote];
     if (!n) return;
     const layer = _pickKitLayer(n.layers, velocity);
@@ -903,7 +913,7 @@ function _sampleKitHit(kit, midiNote, velocity, when) {
     const g = _audioCtx.createGain();
     g.gain.value = _kitHitGain(layer, velocity) * n.gain * kit.manifest.gain;
     src.connect(g);
-    g.connect(_synthGain);
+    g.connect(dest || _synthGain);
     src.start(t);
     const list = (_kitVoices[midiNote] = (_kitVoices[midiNote] || []));
     const voice = { src, gain: g, t0: t };
@@ -925,6 +935,9 @@ async function _synthInit() {
         _audioCtx = new AC({ latencyHint: 'interactive' });
         _synthGain = _audioCtx.createGain();
         _synthGain.gain.value = _cfg.synthVolume;
+        _autoGain = _audioCtx.createGain();
+        _autoGain.gain.value = _cfg.autoVolume;
+        _autoGain.connect(_audioCtx.destination);
         _synthGain.connect(_audioCtx.destination);
         await _synthLoadDrumKit();
     } catch (e) {
@@ -1009,16 +1022,66 @@ function _synthEnsureCtx() {
 }
 
 // One drum sound at `when` (AudioContext time; 0 = now) on the current kit.
-function _synthPlayNote(midiNote, velocity, when) {
+// dest: the output bus (default: the pad bus _synthGain; _autoGain for auto notes).
+function _synthPlayNote(midiNote, velocity, when, dest) {
     if (!_audioCtx || !_synthGain) return;
+    dest = dest || _synthGain;
     if (_sampleKit) {
-        _sampleKitHit(_sampleKit, midiNote, velocity, when);
+        _sampleKitHit(_sampleKit, midiNote, velocity, when, dest);
         return;
     }
     const preset = _drumPresets[midiNote];
     if (!preset || !_synthPlayer) return;
-    _synthPlayer.queueWaveTable(_audioCtx, _synthGain, preset, when || 0, midiNote, when ? 0.6 : 0.5,
-        (velocity / 127) * _cfg.synthVolume);
+    _synthPlayer.queueWaveTable(_audioCtx, dest, preset, when || 0, midiNote, when ? 0.6 : 0.5,
+        (velocity / 127) * (dest === _synthGain ? _cfg.synthVolume : 1));
+}
+
+function _setAutoVolume(vol) {
+    _saveCfg('autoVolume', vol);
+    if (_autoGain) _autoGain.gain.value = _cfg.autoVolume;
+    try {
+        document.querySelectorAll('.drums-autovol-slider').forEach((el) => { el.value = String(Math.round(_cfg.autoVolume * 100)); });
+    } catch (_) { /* no DOM */ }
+}
+
+// GM notes the auto settings play for the player (engine.js MIDI_MAP: kick
+// pads and the yellow/blue/green cymbals; the hat pedal is never scored).
+const _AUTO_KICK_MIDI = new Set([35, 36]);
+const _AUTO_CYM_MIDI = new Set([42, 46, 49, 51, 52, 53, 55, 57, 59]);
+
+function _isAutoMidi(midi, auto) {
+    return !!auto && ((auto.kick && _AUTO_KICK_MIDI.has(midi)) || (auto.cymbals && _AUTO_CYM_MIDI.has(midi)));
+}
+
+// Velocity for an auto note: drum-tab velocity, else accent / ghost / normal.
+function _autoVelocity(n) {
+    if (Number.isFinite(n._vel)) return n._vel;
+    return n.ac ? 118 : (n.mt ? 55 : 100);
+}
+
+// Auto notes with from < t <= to in a sorted wire list ({t, s, f}) and its
+// chords, as [{t, midi, vel}]. Pure (tested).
+function _autoNotesBetween(notes, chords, from, to, auto) {
+    const out = [];
+    if (!auto || (!auto.kick && !auto.cymbals) || !(to > from)) return out;
+    const scan = (list, each) => {
+        if (!Array.isArray(list)) return;
+        let lo = 0, hi = list.length;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (!(list[m] && list[m].t > from)) lo = m + 1; else hi = m; }
+        for (let i = lo; i < list.length && list[i] && list[i].t <= to; i++) each(list[i]);
+    };
+    scan(notes, (n) => {
+        if (n._noScore) return;
+        const midi = (n.s | 0) * 24 + (n.f | 0);
+        if (_isAutoMidi(midi, auto)) out.push({ t: n.t, midi, vel: _autoVelocity(n) });
+    });
+    scan(chords, (c) => {
+        for (const cn of (c.notes || [])) {
+            const midi = (cn.s | 0) * 24 + (cn.f | 0);
+            if (_isAutoMidi(midi, auto)) out.push({ t: c.t, midi, vel: _autoVelocity(cn) });
+        }
+    });
+    return out;
 }
 
 function _synthDrumHit(midiNote, velocity) {
@@ -1810,6 +1873,38 @@ function createFactory(forceView) {
     let _diffMenu = null;           // difficulty pop-up menu
     let _onDiffKey = null, _onMenuOutside = null;
     let _auto = { kick: false, cymbals: false };   // auto lanes for the difficulty in use
+    // Auto-note sounds: song time up to which they're scheduled, and the last
+    // frame's (song time, wall ms) for the playback-rate estimate.
+    let _autoSchedTo = NaN, _autoPrevT = NaN, _autoPrevWall = NaN;
+
+    // Play the auto notes (kick / cymbals) so a muted drum stem doesn't leave
+    // holes. Scheduled ~60 ms ahead on the audio clock for tight timing; a
+    // pause, seek or song change resets the schedule (nothing is replayed).
+    const AUTO_LOOKAHEAD = 0.06;
+    function _scheduleAutoSounds(notes, chords, t) {
+        const wall = performance.now();
+        const prevT = _autoPrevT, prevWall = _autoPrevWall;
+        _autoPrevT = t; _autoPrevWall = wall;
+        if ((!_auto.kick && !_auto.cymbals) || !_audioCtx || !_autoGain || _cfg.autoVolume <= 0) {
+            _autoSchedTo = NaN;
+            return;
+        }
+        const dt = t - prevT, dw = (wall - prevWall) / 1000;
+        if (!Number.isFinite(dt) || dt <= 0 || dt > 0.5 || !(dw > 0)) {
+            // first frame, paused, seek or jump back: start from here
+            _autoSchedTo = t;
+            return;
+        }
+        const rate = Math.max(0.25, Math.min(2, dt / dw));
+        if (!Number.isFinite(_autoSchedTo) || _autoSchedTo < t - 0.1 || _autoSchedTo > t + 1) _autoSchedTo = t;
+        const to = t + AUTO_LOOKAHEAD * rate;
+        const due = _autoNotesBetween(notes, chords, _autoSchedTo, to, _auto);
+        _autoSchedTo = to;
+        if (!due.length) return;
+        _synthEnsureCtx();
+        const now = _audioCtx.currentTime;
+        for (const n of due) _synthPlayNote(n.midi, n.vel, now + Math.max(0, (n.t - t) / rate), _autoGain);
+    }
 
     function _now() { return performance.now(); }
 
@@ -2731,6 +2826,12 @@ function createFactory(forceView) {
                     <select class="drums-auto-cym" aria-label="Auto cymbals" style="${_SEL_CSS}width:118px;">${_autoOptions(_cfg.autoCymbals)}</select>
                 </label>
                 <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:#666;"
+                    title="Volume of the kick / cymbal notes the game plays for you (so a muted drum stem has no holes).">
+                    Auto vol
+                    <input type="range" class="drums-autovol-slider" min="0" max="100"
+                        value="${Math.round(_cfg.autoVolume * 100)}" style="width:70px;accent-color:#ef4444;height:14px;">
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:#666;"
                     title="3D view: how early or late a hit can be and still count.">
                     Timing
                     <select class="drums-timing-select" aria-label="Hit timing window" style="${_SEL_CSS}width:150px;">${_timingOptions(_cfg.timing)}</select>
@@ -2834,6 +2935,7 @@ function createFactory(forceView) {
         panel.querySelector('.drums-auto-cym').onchange = function () { _setAssist('autoCymbals', this.value); };
         panel.querySelector('.drums-timing-select').onchange = function () { _setAssist('timing', this.value); };
         panel.querySelector('.drums-kit-select').onchange = function () { _synthSetKit(this.value); };
+        panel.querySelector('.drums-autovol-slider').oninput = function () { _setAutoVolume(parseInt(this.value, 10) / 100); };
 
         _wireLearnButtons(panel);
     }
@@ -3446,6 +3548,8 @@ function createFactory(forceView) {
             _latestNotes = drumNotes;
             _latestChords = drumChords;
             _latestTime = bundle.currentTime;
+            if (isReady) _scheduleAutoSounds(drumNotes, drumChords, +bundle.currentTime || 0);
+            else _autoSchedTo = NaN;
 
             if (_view === '3d') {
                 _draw3D(bundle, drumNotes, drumChords, isReady);
@@ -3778,6 +3882,11 @@ function _pageKitNote() {
     if (el && k) el.textContent = 'Sound played when you hit a pad. ' + k.name + ': ' + k.note + '.';
 }
 
+function _pageAutoVolumeText() {
+    const el = _page && _page.querySelector('[data-dr="autoVolumeText"]');
+    if (el) el.textContent = Math.round(_cfg.autoVolume * 100) + '%';
+}
+
 function _pageVolumeText() {
     const el = _page && _page.querySelector('[data-dr="volumeText"]');
     if (el) el.textContent = Math.round(_cfg.synthVolume * 100) + '%';
@@ -3796,6 +3905,7 @@ function _pageFill() {
     q('channel').value = String(_cfg.midiChannel);
     q('proCymbals').checked = _cfg.proCymbals;
     q('volume').value = String(Math.round(_cfg.synthVolume * 100));
+    q('autoVolume').value = String(Math.round(_cfg.autoVolume * 100));
     q('view').value = _cfg.view;
     q('offset').value = String(_cfg.inputOffsetMs);
     q('keyboard').checked = _cfg.keyboard;
@@ -3806,6 +3916,7 @@ function _pageFill() {
     if (v) v.textContent = 'Drum Highway ' + ((_page.dataset.pluginVersion) || '');
     _pageKitNote();
     _pageVolumeText();
+    _pageAutoVolumeText();
     _pageRenderPads();
     _refreshAllMappingTables();
     _midiUpdateAllDeviceLists();
@@ -3827,6 +3938,7 @@ function _pageWire() {
     };
     q('test').onclick = () => { _synthPlayTest(); };
     q('volume').oninput = function () { _synthSetVolume(parseInt(this.value, 10) / 100); _pageVolumeText(); };
+    q('autoVolume').oninput = function () { _synthInit(); _setAutoVolume(parseInt(this.value, 10) / 100); _pageAutoVolumeText(); };
     q('midi').onchange = function () {
         _saveCfg('midiManual', this.value ? '1' : '');
         _midiConnect(this.value);
@@ -3885,6 +3997,7 @@ function _resetDrumSettings() {
     _setAssist('timing', 'normal');
     _synthSetKit(DEFAULT_KIT);
     _synthSetVolume(0.7);
+    _setAutoVolume(0.8);
     _saveCfg('midiChannel', -1);
     _saveCfg('view', 'auto');
     _saveCfg('inputOffsetMs', 0);
@@ -3963,7 +4076,7 @@ if (typeof module !== 'undefined' && module.exports) {
         _webMidiShim: () => _webMidiShim(), _resetWebMidiShim: () => { _shim = null; },
         _midiOnMessage, _midiDiag,
         AUTO_LEVEL_IDS, TIMING_PRESETS, TIMING_IDS, DRUM_KITS, KIT_IDS,
-        _autoAt, _laneIsAuto, _timingParams, _setAssist, _saveCfg, _cfg: () => _cfg,
+        _autoAt, _laneIsAuto, _timingParams, _autoNotesBetween, _isAutoMidi, _setAssist, _saveCfg, _cfg: () => _cfg,
         _drumWafVar, _drumWafUrl, _kitSf, _drumTabFor, DEFAULT_KIT, _kitIsSampled, _kitBaseUrl,
         _validateKitManifest, _pickKitLayer, _kitHitGain, KIT_FILE_RE, KIT_DIR_RE, DRUM_MIDI_NOTES,
     };
