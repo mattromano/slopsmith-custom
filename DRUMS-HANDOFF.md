@@ -66,6 +66,12 @@ plugins/drums/tests plugins/multiplayer/tests/test_lan_relay.py`, core `python -
 
 ### 1. Re-search drum charts that are Expert-only; prefer multi-difficulty charts; catch missed songs
 
+**Done (2026-10-09, PC):** "In Too Deep" fixed in the plugin (`_drumTabFor`: a Drums arrangement with notes
+beats the drum tab; it was the only sloppak with both). `drums_library.py` now ranks Chorus candidates by
+hand-charted lower levels and has `--upgrade`. Runs (state/CSV in `~/drums-work/library/pc_*`):
+upgrade 31 songs upgraded to hand-charted Easy/Medium/Hard, 97 no better chart online, 3 flagged; search over
+all 1,396 songs without drums (Mac flagged + no-chart + PC-only): 3 joined, 1,094 still no chart, 299 flagged.
+
 **"In Too Deep" (`sum41deep.sloppak`) is NOT Expert-only in the data** — it has hand-charted Easy/Medium/Hard
 (584/964/1171 notes vs 1358 Expert). It is the only sloppak that also ships a `drum_tab.json`
 (manifest `drum_tab:`), and `drums/screen.js` gives the drum tab precedence over the Drums arrangement
@@ -136,6 +142,11 @@ hits on them ignored; 2D hit counter skips those lanes. Still open: auto floor t
   `proCymbals`; per-browser so each multiplayer player has their own. Add tests in `tests/highway3d.test.js`.
 
 ### 4. Drums from the Guitar Pro tabs (+ automatic Easy–Expert)
+
+**Done:** all 7 album YAMLs: 38/39 songs have GP drums with generated Easy/Medium/Hard + star power
+("To The Guy Who Stole My Bike" flagged, 29% within 30 ms; "A Random Exercise…" already had drums).
+Fixed `reduce_level` crashing on repeated beat times. `song_builder.py build`/`tune` now end with the drums
+step (Chorus chart, else GP); skill updated in all three copies.
 
 - Most pieces exist: `lib/gp2rs.py` `convert_drum_track()` (GP drum track → same GM encoding),
   `lib/drumchart.py` `reduce_level()` (Easy/Medium/Hard reduction fitted on 136 hand charts),
