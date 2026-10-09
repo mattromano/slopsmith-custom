@@ -49,8 +49,9 @@ def ensure_backup(src: Path, backup_dir: Path) -> Path:
     if dst.exists():          # backup differs from the current file: keep it, add a dated one
         dst = backup_dir / f"{src.stem}.{time.strftime('%Y%m%d-%H%M%S')}{src.suffix}"
     backup_dir.mkdir(parents=True, exist_ok=True)
-    r = subprocess.run(["cp", "-cRp", str(src), str(dst)], capture_output=True)   # APFS clone
-    if r.returncode:
+    cloned = sys.platform == "darwin" and not subprocess.run(
+        ["cp", "-cRp", str(src), str(dst)], capture_output=True).returncode      # APFS clone
+    if not cloned:
         (shutil.copytree if src.is_dir() else shutil.copy2)(src, dst)
     return dst
 
