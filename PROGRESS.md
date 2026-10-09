@@ -162,6 +162,47 @@ Synthetic alignment benchmark (2-min charts, 2 seeds, % of notes within 30 ms af
 - Headless end-to-end check of the real `screen.js` (`plugins/drums/tools/app-check.mjs` with
   `dev_server.py`): perfect simulated MIDI play → 213 hits, 0 misses, zero page errors.
 
+## Library run (2026-10-09): drums for the whole sloppak library
+
+- Library: `~/Desktop/rocksmith/dlc/sloppak` (2,215 zipped sloppaks, 19 GB; 684 have a Demucs drums stem,
+  1,531 only a full mix).
+- **Backup:** `~/Desktop/rocksmith/sloppak_backup_2026-10-09_pre-drums` (APFS clone of every file, taken
+  before any write; outside `dlc/` so Slopsmith doesn't list duplicates). `drums_library.py --write`
+  refuses to run without a populated backup dir and re-checks each song's copy right before writing.
+  Writes only add `arrangements/drums.json` + manifest entries; every other file stays byte-identical
+  (spot-checked). To undo one song: copy it back from the backup folder.
+- Chart sources: `~/Desktop/clone_hero_songs` (Beatles/Green Day Rock Band folders + .sng packages),
+  `~/Clone Hero/Songs`, then **Chorus Encore** (enchor.us) search. `.sng` packages are read directly;
+  online charts are fetched with HTTP range requests (only notes.mid + drum stems or the mix, ~2 MB).
+  Cache: `~/.cache/slopsmith-drums/`.
+- Command (resumable; state + CSV report in `~/drums-work/library/`):
+  ```
+  python scripts/drums_library.py ~/Desktop/rocksmith/dlc/sloppak \
+      --backup-dir ~/Desktop/rocksmith/sloppak_backup_2026-10-09_pre-drums \
+      --local ~/Desktop/clone_hero_songs --local "~/Clone Hero/Songs" --write --workers 6
+  # later passes: --retry no-chart,flagged  (new charts appear on Chorus all the time)
+  ```
+- Rock Band look in the desktop app: the branch's `plugins/drums` + `plugins/multiplayer` are installed in
+  `~/Library/Application Support/feedback-desktop/plugins/` (user plugins override the app's copies;
+  verified with the app's own loader). **Restart the feedBack app** to pick them up; delete those two
+  folders to go back to the app's versions.
+
+## Difficulty levels (Easy / Medium / Hard / Expert / Expert+)
+
+- Data: Expert stays the arrangement's wire notes; `drums.levels = {easy|medium|hard: [[t, gm, flag]]}` in
+  the drums block (flag 1 accent, 2 ghost), `levels_generated` lists software-made ones. Charts' own
+  levels are used when present (.mid 60/72/84, .chart [EasyDrums]…; most Chorus/RB charts have all
+  four). Otherwise a reduction fitted on 136 hand-authored charts (F1 vs human levels Easy 0.67,
+  Medium 0.78, Hard 0.89; note counts 1.12× / 0.98× / 1.05×): Easy quarter grid, ≤2 hands, no kick with
+  hands; Medium quarter grid + off-grid 8ths where there's room, ≤2 gems; Hard 8th grid + room-permitting
+  16ths, ≤3 gems; no 2x kick or ghosts below Expert. Exporter writes every level.
+- Plugin (5.1.0): per-player choice saved in the browser (`drums_difficulty_v1`), gear-panel selector,
+  clickable HUD badge ("HARD", "MEDIUM · AUTO" for generated), **D / Shift+D** to step harder/easier,
+  mid-song switching restarts scoring from the current position, 2D and 3D views. Missing levels are
+  greyed with a reason and that song plays Expert without overwriting your saved choice.
+- **Behaviour change:** plain Expert now hides 2x-kick notes (GM 35); pick **Expert+** for double bass.
+- Joins store their chart→audio warp (`source.warp`) so future backfills don't need re-alignment.
+
 ## Open issues
 - ~~Beat-ambiguous alignments pass validation~~ → mitigated: validation now also checks kick notes against
   kick-band (<150 Hz) onsets and cymbal notes against cymbal-band (>5 kHz) onsets of the drum stem
@@ -197,6 +238,8 @@ Hook: `drumjoin.register_transcriber(name, fn)`, `fn(drums_wav_path, sr) -> [Dru
   torch with CUDA ≥ 12.8 for the 5070 Ti. Benchmark on 3–5 of your own stems first.
 
 ## Test by hand (needs real hardware / real songs)
+- Difficulty: switch levels mid-song from the badge and with D / Shift+D; check that generated (AUTO)
+  levels feel playable, and Expert vs Expert+ on a double-bass song.
 - **Real chart joins:** run `song_builder.py drums ALBUM.yaml --chart-dir … --dry-run` on an album you
   have charts for; look at the table (median offset, % within 30 ms, drift) before writing. Then play a
   few joined songs and check the feel at the start, middle and end (drift).
