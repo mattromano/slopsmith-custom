@@ -1771,11 +1771,32 @@ function _showRoomView() {
 
     const codeEl = document.getElementById('mp-room-code');
     if (codeEl) codeEl.textContent = _roomCode || '';
+    _renderJoinHelp();
 
     _renderPlayers();
     _renderQueue();
     _updateControls();
 }
+
+// "How to join" panel: the address other players open is this page's own
+// origin (the desktop app picks its port at launch, so it isn't fixed).
+function _isLoopbackHost(hostname) {
+    const h = String(hostname || '').replace(/^\[|\]$/g, '').toLowerCase();
+    return h === 'localhost' || h === '::1' || h.endsWith('.localhost') || /^127\./.test(h);
+}
+
+function _renderJoinHelp() {
+    const urlEl = document.getElementById('mp-joinhelp-url');
+    const codeEl = document.getElementById('mp-joinhelp-code');
+    const noteEl = document.getElementById('mp-joinhelp-local-note');
+    if (urlEl) urlEl.textContent = location.origin;
+    if (codeEl) codeEl.textContent = _roomCode || '';
+    if (noteEl) noteEl.classList.toggle('hidden', !_isLoopbackHost(location.hostname));
+}
+
+window.mpCopyJoinUrl = function () {
+    if (navigator.clipboard) navigator.clipboard.writeText(location.origin).catch(() => {});
+};
 
 // ── WebSocket ──────────────────────────────────────────────────────────
 
@@ -5313,7 +5334,7 @@ if (typeof module !== 'undefined' && module.exports) {
         DEFAULT_ARRANGEMENTS,
         _arrangementNames, _arrangementChoices, _arrangementOptionsHtml,
         _resolveArrangementIndex, _arrangementFixIndex, _arrangementSourceItem,
-        _sortSearchResults, _searchResultParts,
+        _sortSearchResults, _searchResultParts, _isLoopbackHost,
     };
 }
 

@@ -130,3 +130,9 @@ test('search results list songs with Drums first, then more parts, else library 
     assert.deepEqual(sorted.map(s => s.filename), ['a.sloppak', 'a_p.psarc', 'c_p.psarc', 'b_p.psarc']);
     assert.equal(m._searchResultParts(['Lead', 'Rhythm', 'Bass', 'Bass', 'Drums']), 'Lead, Rhythm, Bass, Drums');
 });
+
+test('join help flags addresses only this computer can reach', () => {
+    const m = freshPlugin();
+    for (const h of ['127.0.0.1', 'localhost', '[::1]', 'app.localhost']) assert.equal(m._isLoopbackHost(h), true, h);
+    for (const h of ['192.168.4.72', 'my-pc.local', '10.0.0.5']) assert.equal(m._isLoopbackHost(h), false, h);
+});
