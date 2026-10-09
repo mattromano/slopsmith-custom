@@ -14,10 +14,14 @@
 //    to /api/plugins/highway_tweaks/log (-> jank_log.jsonl next to this file)
 //    so the cause of the session-dependent lag can be read off disk without
 //    restarting the app (restarting always makes the lag disappear).
+//
+// Also rewrites highway_3d for Rock Band-style hit / miss feedback (see
+// rbVerdicts): hits burst and vanish, misses go grey and drift past the
+// line, partly hit chords get an amber plate.
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.10.0' };
+    window.__highwayTweaks = { version: '1.11.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -69,6 +73,211 @@
             }
 `;
 
+    // Rock Band-style verdicts on the 3D highway (needs a note-state
+    // provider, i.e. Note Detection on). Stock highway_3d only re-tints the
+    // outline of a judged gem that sits on the now line, and its chord-frame
+    // verdict colour is never drawn (the frame stops at the line, the verdict
+    // lands ~0.4 s later), so chord runs give almost no feedback. Instead:
+    //  - hit: the gem vanishes in a burst in its string colour; a fully hit
+    //    chord adds one burst across the chord box;
+    //  - miss: the gem (and its sustain) turns dark grey and keeps scrolling
+    //    past the now line; a fully missed chord's frame turns grey and
+    //    scrolls past too;
+    //  - partly hit chord: an amber frame scrolls past with its grey notes.
+    // Hit vs miss differs in brightness and motion (burst-and-gone vs grey
+    // and moving), not only in hue, so it reads with colour blindness.
+    // Kill switch: localStorage.highwayTweaksNoRbVerdicts = '1', then reload.
+    const RB_DECL = `
+        // [highway_tweaks] Rock Band-style verdicts. __rbV: verdict latch per note
+        // (key __rbKey(t, s)) or chord (key -1 - verdictKey) ->
+        // { v: 'hit' | 'miss' | 'chord', t0: performance.now() ms, t, end: chart s, x, y, s, w, h }.
+        const __rbV = new Map();
+        window.__rbVerdicts = __rbV;   // debug handle
+        let __rbFx = null, __rbPlate = null, __rbBoxGeo = null, __rbGrey = null, __rbGreyOl = null;
+        const __RB_AMBER = 0xffa31a, __RB_MISS_FRAME = 0x9aa0ad, __RB_BURST_S = 0.3, __RB_SHARDS = 8;
+        // Past the now line notes head straight at the camera; misses drift at a fraction
+        // of the highway speed so they stay on screen for the verdict window.
+        const __RB_PAST_SPEED = 0.3;
+        function __rbKey(t, s) { return Math.round(t * 1e4) * 10 + s; }
+        function __rbFxMesh(x, y, z, sx, sy, sz, hex, op) {
+            const m = __rbFx.get();
+            m.position.set(x, y, z);
+            m.rotation.set(0, 0, 0);
+            m.scale.set(sx, sy, sz);
+            m.material.color.setHex(hex);
+            m.material.opacity = op;
+        }
+        function __rbPlateAt(x, y, z, sx, sy, hex, op) {
+            const m = __rbPlate.get();
+            m.position.set(x, y, z);
+            m.rotation.set(0, 0, 0);
+            m.scale.set(sx, sy, 0.5 * K);
+            m.material.color.setHex(hex);
+            m.material.opacity = op;
+        }
+        function __rbDrawFx(now) {
+            if (!__rbFx) return;
+            __rbFx.reset();
+            if (__rbPlate) __rbPlate.reset();
+            const pn = performance.now();
+            for (const [k, e] of __rbV) {
+                if (now < e.t - 0.25 || now > e.end + 2) { __rbV.delete(k); continue; }
+                if (e.v === 'miss') continue;
+                const p = (pn - e.t0) / 1000 / __RB_BURST_S;
+                if (!(p >= 0 && p < 1)) continue;
+                const q = 1 - p;
+                if (e.v === 'chord') {
+                    const sw = e.w / NW, sh = e.h / NH, g = 1 + 0.18 * p;
+                    __rbFxMesh(e.x, e.y, 0, sw * g, sh * g, 0.6, 0xbff6ff, 0.55 * q * q);
+                    for (let i = 0; i < 12; i++) {
+                        const a = (i / 12) * Math.PI * 2 + 0.3;
+                        const r = 0.5 + 0.35 * p;
+                        __rbFxMesh(e.x + Math.cos(a) * e.w * r, e.y + Math.sin(a) * e.h * r, 0.002, 0.3, 0.3, 1, 0xffffff, q);
+                    }
+                    continue;
+                }
+                const col = (activePalette && activePalette[e.s] != null) ? activePalette[e.s] : 0xffffff;
+                const g = 1.15 + 1.4 * p;
+                __rbFxMesh(e.x, e.y, 0, e.w * g, e.h * g, 1.5, col, 0.95 * q * Math.sqrt(q));
+                __rbFxMesh(e.x, e.y, 0.002, e.w * (0.9 + 0.5 * p), e.h * (0.9 + 0.5 * p), 2, 0xffffff, q * q);
+                const d = NW * (0.55 + 1.9 * p);
+                for (let i = 0; i < __RB_SHARDS; i++) {
+                    const a = (i / __RB_SHARDS) * Math.PI * 2 + (k % 7) * 0.4;
+                    __rbFxMesh(e.x + Math.cos(a) * d * (e.w > 1.5 ? 0.5 * e.w : 1), e.y + Math.sin(a) * d * 0.7, 0.004,
+                        0.24, 0.32, 1, col, q);
+                }
+            }
+        }
+`;
+    const RB_LATCH = `
+            // [highway_tweaks] Rock Band-style verdict latch (see __rbV).
+            const __rbK = __rbKey(n.t, n.s);
+            let __rbE = __rbV.get(__rbK);
+            if (__rbE && dt > 0.25) { __rbV.delete(__rbK); __rbE = undefined; }
+            if (!__rbE && _ndHasProvider && dt < 0.12 && (_ndGood || _ndState === 'miss')) {
+                __rbE = { v: _ndGood ? 'hit' : 'miss', t0: performance.now(), t: n.t, end: susEnd, x, y: y + techniqueYNow, s,
+                    w: n.f === 0 ? (40 * K / NW) * openWScale : 1, h: n.f === 0 ? 0.1 * openSlabThickMul : 1 };
+                __rbV.set(__rbK, __rbE);
+            }
+            const __rbHit = !!__rbE && __rbE.v === 'hit' && _ndState !== 'miss';
+            const __rbMiss = !!__rbE && __rbE.v === 'miss';
+            if (__rbMiss) {
+                _ndState = 'miss'; _ndGood = false;
+                if (!_ndCs) { _ndCs = 'miss'; _ndCsIsObj = false; }
+                noteZ = dZ(dt) * __RB_PAST_SPEED;
+            }
+`;
+    const RB_CHORD_SCAN = `let allHit = chordNotes.length > 0, anyMiss = false, anyHit = false, anyNull = false, anyState = false;
+                                // [highway_tweaks] scan every constituent (partial = amber); the
+                                // per-note latch fills in verdicts the provider has already dropped.
+                                for (const cn of chordNotes) {
+                                    let cs = null;
+                                    try { cs = _ndGetNoteState(cn, ch.t); } catch (e) { cs = null; }
+                                    let st = (cs && typeof cs === 'object') ? cs.state : cs;
+                                    if (st !== 'hit' && st !== 'active' && st !== 'miss') {
+                                        const __e = __rbV.get(__rbKey(ch.t, cn.s));
+                                        if (__e) st = __e.v;
+                                    }
+                                    if (st === 'hit' || st === 'active') { anyHit = true; anyState = true; }
+                                    else if (st === 'miss') { anyMiss = true; allHit = false; anyState = true; }
+                                    else { allHit = false; anyNull = true; }
+                                }
+                                const __late = chDt < -_ND_UNMATCHED_LATCH_AFTER;
+                                if (allHit) {
+                                    _chordVerdicts.set(verdictKey, 'green');
+                                    rimHex = CHORD_BOX_HIT_BRIGHT_HEX;
+                                    __rbV.set(-1 - verdictKey, { v: 'chord', t0: performance.now(), t: ch.t, end: ch.t,
+                                        x: cx, y: cY, s: 0, w: width, h: height });
+                                } else if (anyHit && (anyMiss || __late)) {
+                                    _chordVerdicts.set(verdictKey, 'amber');
+                                    rimHex = __RB_AMBER;
+                                } else if (anyMiss && (!anyNull || __late)) {
+                                    _chordVerdicts.set(verdictKey, 'red');
+                                    rimHex = CHORD_BOX_MISS_DARK_HEX;
+                                } else if (__late && !anyState) {
+                                    _chordVerdicts.set(verdictKey, 'unmatched');
+                                }
+                                // else: no verdict yet → leave teal default`;
+
+    // Past the line the stock frame is hairline bars + a near-transparent
+    // gradient fill, so a verdict frame gets its own solid plate instead.
+    const RB_PLATE = `{
+                            // [highway_tweaks] amber (partly hit) / grey (missed) chord plate past the line
+                            const __rbL = _chordVerdicts.get(verdictKey);
+                            if (chDt <= 0 && _ndHasProvider && __rbPlate && (__rbL === 'amber' || __rbL === 'red')) {
+                                const hex = __rbL === 'amber' ? __RB_AMBER : __RB_MISS_FRAME;
+                                const op = Math.max(0, 1 + chDt / NOTEDETECT_GEM_VERDICT_WINDOW);
+                                const pz = dZ(chDt) * __RB_PAST_SPEED;
+                                const pw = width, ph = fullChordBoxH, py = (yMinF + yMaxF) * 0.5;
+                                const bt = Math.max(1.2 * K, ph * 0.07);
+                                __rbPlateAt(cx, py, pz, pw, ph, hex, 0.3 * op);
+                                __rbPlateAt(cx, py - ph / 2 + bt / 2, pz, pw, bt, hex, op);
+                                __rbPlateAt(cx, py + ph / 2 - bt / 2, pz, pw, bt, hex, op);
+                                __rbPlateAt(cx - pw / 2 + bt / 2, py, pz, bt, ph, hex, op);
+                                __rbPlateAt(cx + pw / 2 - bt / 2, py, pz, bt, ph, hex, op);
+                            }
+                        }
+                        `;
+
+    // Apply every rbVerdicts edit to a copy; null if any anchor is missing.
+    function rbVerdicts(code) {
+        const edits = [
+            // state + burst drawing, next to the provider handle
+            [/( {8}let _ndHasProvider = false;[^\n]*\n)/, (m) => m + RB_DECL],
+            // burst pool + grey materials, created with the note pool
+            ['            pNote = pool(noteG, () => new T.Mesh(gNote, mStr[0]));', (m) => m +
+                '\n            __rbFx = pool(noteG, () => { const fx = new T.Mesh(gNote, new T.MeshBasicMaterial({ color: 0xffffff, transparent: true,' +
+                ' opacity: 1, blending: T.AdditiveBlending, depthWrite: false })); fx.renderOrder = 950; return fx; });' +
+                '\n            __rbBoxGeo = new T.BoxGeometry(1, 1, 1);' +
+                '\n            __rbPlate = pool(noteG, () => { const pl = new T.Mesh(__rbBoxGeo, new T.MeshBasicMaterial({ color: 0xffffff, transparent: true,' +
+                ' opacity: 1, depthWrite: false, depthTest: false })); pl.renderOrder = 940; return pl; });' +
+                '\n            __rbGrey = new T.MeshLambertMaterial({ color: 0x8a8f9c, emissive: 0x2c2e34, transparent: true, opacity: 0.92, depthWrite: false });' +
+                '\n            __rbGreyOl = new T.MeshLambertMaterial({ color: 0x2a2c33, emissive: 0x000000, transparent: true, opacity: 1, depthWrite: false });'],
+            ['            mMissOutline?.dispose?.();', (m) => m + ' __rbGrey?.dispose?.(); __rbGreyOl?.dispose?.(); __rbBoxGeo?.dispose?.(); __rbFx = __rbPlate = __rbBoxGeo = __rbGrey = __rbGreyOl = null; __rbV.clear();'],
+            // draw the bursts each frame
+            ['            const now = smoothNow(bundle);', (m) => m + ' __rbDrawFx(now);'],
+            // a latched miss keeps the gem alive past its linger time (until the verdict window ends)
+            ["if (_probeSt !== 'hit' && _probeSt !== 'active' && _probeSt !== 'miss') return;",
+                () => "if (_probeSt !== 'hit' && _probeSt !== 'active' && _probeSt !== 'miss'" +
+                    " && (__rbV.get(__rbKey(n.t, n.s)) || {}).v !== 'miss') return;"],
+            ['const noteZ = sustained ? 0 : Math.min(0, dZ(dt));', () => 'let noteZ = sustained ? 0 : Math.min(0, dZ(dt));'],
+            [/( {12})const _showHit = \(_ndState === 'miss'\) \? false/, (m) => RB_LATCH + m],
+            // hit gems are gone; missed gems draw (grey) past the linger time
+            ['if (!skipBody && !arpGhostOnlyMode && !_overLinger) {', (() => {
+                let i = 0;
+                return () => (i++ === 0
+                    ? 'if (!skipBody && !arpGhostOnlyMode && (!_overLinger || __rbMiss) && !__rbHit) {'
+                    : 'if (!skipBody && !arpGhostOnlyMode && !_overLinger && !__rbHit) {');
+            })(), 2],
+            ['outline.material = (n.ac && !_ndVerdict) ? mAccentOutline[s] : _ndOutline;',
+                () => 'outline.material = __rbMiss ? __rbGreyOl : ((n.ac && !_ndVerdict) ? mAccentOutline[s] : _ndOutline);'],
+            ['if (_ndFaceMat) {', () => 'if (_ndFaceMat && !__rbMiss) {'],
+            ['core.material = n.ac ? mAccentCore[s] : mStr[s];', () => 'core.material = __rbMiss ? __rbGrey : (n.ac ? mAccentCore[s] : mStr[s]);'],
+            ['core.geometry = (!n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote;', () => 'core.geometry = (!__rbMiss && !n.ac && gNoteGrad[s]) ? gNoteGrad[s] : gNote;'],
+            // missed sustains: grey trail
+            ["const _susOlMat = _ndState === 'miss' ? mMissOutline", () => "const _susOlMat = _ndState === 'miss' ? __rbGreyOl"],
+            ['tr.material = _ndState ? mGlow[s] : mSus[s];', () => "tr.material = _ndState === 'miss' ? __rbGrey : (_ndState ? mGlow[s] : mSus[s]);"],
+            ['body.material = _ndState ? mGlow[s] : mSus[s];', () => "body.material = _ndState === 'miss' ? __rbGrey : (_ndState ? mGlow[s] : mSus[s]);"],
+            // chord verdict: partial = amber; amber / grey frames keep drawing past the line
+            [/let allHit = chordNotes\.length > 0;[\s\S]*?\/\/ else: no verdict yet → leave teal default/, () => RB_CHORD_SCAN],
+            [/\} else if \(latched === 'red'\) \{/, () => "} else if (latched === 'amber') {\n                                rimHex = __RB_AMBER;\n                            } else if (latched === 'red') {"],
+            // amber / grey verdict plate where the frame would be, drifting past the line
+            ['if (chDt > 0) { // framebox only on highway, not on the fretboard', (m) => RB_PLATE + m],
+        ];
+        let out = code;
+        for (const [find, rep, want = 1] of edits) {
+            const n = typeof find === 'string'
+                ? out.split(find).length - 1
+                : (out.match(new RegExp(find.source, 'g')) || []).length;
+            if (n !== want) {
+                console.warn('[highway_tweaks] rb-verdicts anchor matched ' + n + 'x (want ' + want + '):', String(find).slice(0, 80));
+                return null;
+            }
+            out = typeof find === 'string' ? out.split(find).map((p, i) => (i ? rep(find) : '') + p).join('') : out.replace(find, rep);
+        }
+        return { code: out };
+    }
+
     const PATCHERS = {
         highway_3d(code, hits) {
             // Every selectable palette (default/neon/pastel/colorblind_hc).
@@ -86,6 +295,12 @@
                 hits.push('outline');
                 return a + setGB(list, G_OUTLINE, B_OUTLINE) + c;
             });
+            // Rock Band-style hit / miss (all-or-nothing, see rbVerdicts).
+            let noRb = false;
+            try { noRb = localStorage.getItem('highwayTweaksNoRbVerdicts') === '1'; } catch (_) { /* ignore */ }
+            const rb = noRb ? null : rbVerdicts(code);
+            if (rb) { code = rb.code; hits.push('rb-verdicts'); }
+            else if (!noRb) console.warn('[highway_tweaks] rb-verdicts: highway_3d changed, keeping the stock hit/miss look');
             return code;
         },
         fretboard(code, hits) {
