@@ -3009,6 +3009,74 @@ window.slopsmithViz_drums3d.matchesArrangement = createFactory.matchesArrangemen
 window.slopsmithViz_drums2d = function () { return createFactory('2d'); };
 window.slopsmithViz_drums2d.matchesArrangement = createFactory.matchesArrangement;
 
+// ── Retire the stock "3D Drum Highway" (drum_highway_3d) ──────────────
+// The desktop app bundles an older drum view that this plugin replaces.
+// It's marked bundled, so a user copy can't shadow it server-side, and in
+// Auto mode it would claim Drums arrangements before this plugin (picker
+// order). Here: its factory is blocked (whether its script loads before or
+// after this one), its picker / splitscreen options are removed, and saved
+// choices of it move to the Drum Highway.
+const _RETIRED_VIZ = 'drum_highway_3d';
+
+function _blockRetiredFactory() {
+    for (const k of ['slopsmithViz_' + _RETIRED_VIZ, 'feedBackViz_' + _RETIRED_VIZ]) {
+        try {
+            const d = Object.getOwnPropertyDescriptor(window, k);
+            if (d && d.get && d.get.__drumsRetired) continue;
+            if (d && !d.configurable) { window[k] = undefined; continue; }
+            const get = () => undefined;
+            get.__drumsRetired = true;
+            Object.defineProperty(window, k, { configurable: true, get, set() { /* retired */ } });
+        } catch (_) { /* non-browser */ }
+    }
+}
+
+function _migrateRetiredVizPrefs() {
+    try {
+        if (localStorage.getItem('vizSelection') === _RETIRED_VIZ) localStorage.setItem('vizSelection', 'drums');
+        const raw = localStorage.getItem('splitscreenPanelPrefs');
+        if (raw && raw.includes('__viz__:' + _RETIRED_VIZ + ':')) {
+            localStorage.setItem('splitscreenPanelPrefs',
+                raw.split('__viz__:' + _RETIRED_VIZ + ':').join('__viz__:drums:'));
+        }
+    } catch (_) { /* storage blocked */ }
+}
+
+function _removeRetiredVizOptions() {
+    if (typeof document === 'undefined' || !document.querySelectorAll) return;
+    const main = document.querySelector('#viz-picker option[value="' + _RETIRED_VIZ + '"]');
+    if (main) {
+        const sel = main.parentNode;
+        const was = sel.value === _RETIRED_VIZ;
+        main.remove();
+        if (was) {
+            sel.value = 'drums';
+            if (typeof window.setViz === 'function') window.setViz('drums');
+        }
+    }
+    const prefix = '__viz__:' + _RETIRED_VIZ + ':';
+    document.querySelectorAll('select option[value^="' + prefix + '"]').forEach((o) => {
+        const sel = o.parentNode;
+        const was = sel.value === o.value;
+        const repl = '__viz__:drums:' + o.value.slice(prefix.length);
+        o.remove();
+        if (was && Array.from(sel.options).some(x => x.value === repl)) {
+            sel.value = repl;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+        }
+    });
+}
+
+try {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined' && document.querySelectorAll) {
+        _blockRetiredFactory();
+        _migrateRetiredVizPrefs();
+        _removeRetiredVizOptions();
+        // Pickers are (re)built after plugins load and when splitscreen panels open.
+        setInterval(() => { _blockRetiredFactory(); _removeRetiredVizOptions(); }, 1000);
+    }
+} catch (_) { /* non-browser */ }
+
 // ── Drums never render through a guitar view ─────────────────────────
 // When the picker holds a guitar view (3D Highway / Classic 2D, e.g. the
 // fresh-install default on a device that just joined a multiplayer room)
