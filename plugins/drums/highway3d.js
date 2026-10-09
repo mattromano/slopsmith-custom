@@ -157,6 +157,8 @@
             c.id = n.id;
             c.t = n.t;
             c.pad = n.pad | 0;
+            c.chartCymbal = !!n.cymbal;   // the chart's cymbal marking, even when non-pro draws it as a pad
+            c.auto = isAutoNote(c.pad, c.chartCymbal, opts && opts.auto);
             gems.push(c);
         }
         gems.sort((a, b) => a.t - b.t);
@@ -195,6 +197,55 @@
         }
         out.sort((a, b) => a.t - b.t);
         return out;
+    }
+
+    // ── Pure helpers: auto lanes (accessibility) ────────────────────────────
+    //
+    // Auto kick / auto cymbals take those notes off the player: they are left out of the chart the
+    // engine scores (YARG "no kicks" style, so score / accuracy / streak only count what you play),
+    // still drawn (dimmed) and flash at the strikeline as if played, and pad hits on them are ignored.
+    // The setting is a difficulty ceiling: 'off' | 'easy' | 'medium' | 'hard' | 'all' = on at that
+    // difficulty and the ones below it.
+
+    const AUTO_LEVELS = Object.freeze(['off', 'easy', 'medium', 'hard', 'all']);
+
+    function normalizeAutoLevel(raw) {
+        return typeof raw === 'string' && AUTO_LEVELS.includes(raw) ? raw : 'off';
+    }
+
+    /** Is an auto setting on at this difficulty? */
+    function autoAppliesAt(level, difficultyId) {
+        level = normalizeAutoLevel(level);
+        if (level === 'off') return false;
+        if (level === 'all') return true;
+        return DIFFICULTIES.indexOf(normalizeDifficulty(difficultyId)) <= DIFFICULTIES.indexOf(level);
+    }
+
+    /** {kick, cymbals} booleans for the difficulty being played. */
+    function autoFor(settings, difficultyId) {
+        settings = settings || {};
+        return {
+            kick: autoAppliesAt(settings.kick, difficultyId),
+            cymbals: autoAppliesAt(settings.cymbals, difficultyId),
+        };
+    }
+
+    function normalizeAuto(auto) {
+        return { kick: !!(auto && auto.kick), cymbals: !!(auto && auto.cymbals) };
+    }
+
+    /** A chart note (engine pad + the chart's cymbal marking) the player does not have to hit. */
+    function isAutoNote(pad, cymbal, auto) {
+        if (!auto) return false;
+        if (auto.kick && pad === PAD.KICK) return true;
+        return !!(auto.cymbals && cymbal && pad >= PAD.YELLOW);
+    }
+
+    /** First index of a gem with g.t > t (gems sorted by t). */
+    function firstAfter(gems, t) {
+        let lo = 0, hi = gems.length;
+        while (lo < hi) { const m = (lo + hi) >> 1; if (gems[m].t <= t) lo = m + 1; else hi = m; }
+        return lo;
     }
 
     // ── Pure helpers: drums metadata (star power / fills) ───────────────────
@@ -661,7 +712,13 @@
             decoded: null, gems: [], beats: [], rawBeats: null, meta: null, engine: null,
             lastTime: null, events: [], builds: 0,
             proWanted: opts.proDrums !== false,   // the player's "Pro cymbals" setting
+            auto: normalizeAuto(opts.auto),       // {kick, cymbals}: lanes played for the player
+            params: opts.params || null,          // engine params override (hit window)
         };
+
+        function gemsFor() {
+            return buildGems(s.decoded, { pro: effectivePro(), auto: s.auto });
+        }
 
         // Pro drums only when the player wants it and the chart has cymbal markings.
         function effectivePro() {
@@ -683,11 +740,15 @@
         function build(fromTime) {
             if (!s.decoded) { s.engine = null; return; }
             let chart = s.decoded;
-            if (Number.isFinite(fromTime)) {
-                chart = { notes: s.decoded.notes.filter(n => n.t >= fromTime - 0.001), chords: [] };
+            const auto = s.auto.kick || s.auto.cymbals;
+            if (Number.isFinite(fromTime) || auto) {
+                // Auto lanes are left out of the scored chart (chords regroup from the notes).
+                chart = { notes: s.decoded.notes.filter(n => (!Number.isFinite(fromTime) || n.t >= fromTime - 0.001)
+                    && !(auto && isAutoNote(n.pad, n.cymbal, s.auto))), chords: [] };
             }
             const m = s.meta;
             const eopts = { beats: s.rawBeats || [], proDrums: effectivePro() };
+            if (s.params) eopts.params = s.params;
             if (m) {
                 eopts.starPower = m.starPower;
                 eopts.activation = m.activation;
@@ -713,7 +774,7 @@
                 chart = chart || {};
                 const wire = collectWireNotes(chart.notes, chart.chords);
                 s.decoded = Engine.decodeNotes(wire, { kick2x: true });
-                s.gems = buildGems(s.decoded, { pro: effectivePro() });
+                s.gems = gemsFor();
                 s.rawBeats = Array.isArray(chart.beats) ? chart.beats : [];
                 s.beats = normalizeBeats(s.rawBeats);
                 s.lastTime = null;
@@ -725,9 +786,28 @@
             setMeta(meta) {
                 s.meta = meta || null;
                 if (s.decoded) {
-                    s.gems = buildGems(s.decoded, { pro: effectivePro() });
+                    s.gems = gemsFor();
                     rebuildHere();
                 }
+                return api;
+            },
+            /** Auto lanes ({kick, cymbals}); mid-song changes score from the current time. */
+            setAuto(auto) {
+                auto = normalizeAuto(auto);
+                if (auto.kick === s.auto.kick && auto.cymbals === s.auto.cymbals) return api;
+                s.auto = auto;
+                if (s.decoded) {
+                    s.gems = gemsFor();
+                    rebuildHere();
+                }
+                return api;
+            },
+            /** Engine params override (e.g. {hitWindow: {...}}), or null for the defaults. */
+            setParams(params) {
+                params = params || null;
+                if (JSON.stringify(params) === JSON.stringify(s.params)) return api;
+                s.params = params;
+                if (s.decoded) rebuildHere();
                 return api;
             },
             /** The player's "Pro cymbals" setting. false = non-pro drums (no cymbal lanes). */
@@ -736,7 +816,7 @@
                 if (on === s.proWanted) return api;
                 s.proWanted = on;
                 if (s.decoded) {
-                    s.gems = buildGems(s.decoded, { pro: effectivePro() });
+                    s.gems = gemsFor();
                     rebuildHere();
                 }
                 return api;
@@ -744,7 +824,16 @@
             update(time) {
                 time = +time;
                 if (!Number.isFinite(time) || !s.engine) return;
-                if (s.lastTime != null) { if (isSeek(s.lastTime, time)) build(time); }
+                if (s.lastTime != null) {
+                    if (isSeek(s.lastTime, time)) build(time);
+                    else if (time > s.lastTime && (s.auto.kick || s.auto.cymbals)) {
+                        // Auto notes crossing the strikeline this frame flash as if played.
+                        for (let i = firstAfter(s.gems, s.lastTime); i < s.gems.length && s.gems[i].t <= time; i++) {
+                            const g = s.gems[i];
+                            if (g.auto) push({ type: 'hit', pad: g.pad, cymbal: g.cymbal, id: g.id, sp: false, auto: true, time: g.t });
+                        }
+                    }
+                }
                 // First frame after a load that starts mid-song (view switched while playing,
                 // renderer installed late): score from here instead of missing everything before.
                 else if (s.gems.length && time > s.gems[0].t - SEEK_BACK) build(time);
@@ -754,6 +843,8 @@
             hit(time, pad, o) {
                 o = o || {};
                 push({ type: 'press', pad: pad | 0, cymbal: !!o.cymbal });
+                // Pads the game plays for you: no score, no overhit.
+                if (isAutoNote(pad | 0, !!o.cymbal, s.auto)) return { type: 'ignored', reason: 'auto' };
                 if (!s.engine || !Number.isFinite(+time)) return { type: 'ignored', reason: 'no-chart' };
                 if (s.lastTime != null && isSeek(s.lastTime, +time)) return { type: 'ignored', reason: 'seek' };
                 return s.engine.hit(+time, pad, { cymbal: !!o.cymbal, velocity: o.velocity });
@@ -774,6 +865,7 @@
             get beats() { return s.beats; },
             get meta() { return s.meta; },
             get proDrums() { return effectivePro(); },
+            get auto() { return { kick: s.auto.kick, cymbals: s.auto.cymbals }; },
             get builds() { return s.builds; },
             get lastTime() { return s.lastTime; },
         };
@@ -1533,6 +1625,8 @@
                 // Draw far -> near so additive glows layer sensibly.
                 for (let i = g1 - 1; i >= g0; i--) {
                     const g = gems[i];
+                    // Auto notes are played for you: gone once they reach the strikeline.
+                    if (g.auto && g.t <= t) continue;
                     const st = eng ? eng.noteState(g.id) : null;
                     if (st === 'hit') continue;
                     const missed = st === 'miss';
@@ -1541,6 +1635,7 @@
                     const base = missed ? missedColor : (isSp ? spColor : tmpColor.setHex(g.color));
                     const col = gemColor.copy(base);
                     if (g.accent && !missed) col.lerp(white, 0.1);
+                    if (g.auto) col.multiplyScalar(0.38);
                     const s = TRACK.gemScale * (g.ghost ? 0.74 : (g.accent ? 1.16 : 1));
                     if (g.kind === 'kick' || g.kind === 'kick2x') {
                         if (cnt.kick < 128) {
@@ -1548,7 +1643,7 @@
                             place(meshes.kick, cnt.kick++, 0, 0, z, 1, sy * (g.accent ? 1.2 : 1), g.accent ? 1.25 : 1, col);
                             if (g.kick2x && cnt.stripe < 128) place(meshes.stripe, cnt.stripe++, 0, 0.02, z, 1, sy, 1, white);
                         }
-                        if (!missed && cnt.glow < MAX_GEMS) place(meshes.glow, cnt.glow++, 0, 0, z, W4 + 0.6, 1, 0.9, tmp2.copy(col).multiplyScalar(0.55));
+                        if (!missed && !g.auto && cnt.glow < MAX_GEMS) place(meshes.glow, cnt.glow++, 0, 0, z, W4 + 0.6, 1, 0.9, tmp2.copy(col).multiplyScalar(0.55));
                     } else {
                         const x = laneX(g.lane);
                         if (g.kind === 'cymbal') {
@@ -1566,7 +1661,7 @@
                                 place(meshes.padRim, cnt.padRim++, x, 0, z, s, s, s, tmp2.copy(col).multiplyScalar(0.35));
                             }
                         }
-                        if (!missed) {
+                        if (!missed && !g.auto) {
                             const gs = (g.ghost ? 0.9 : (g.accent ? 1.75 : 1.35));
                             place(meshes.glow, cnt.glow++, x, 0, z, gs, 1, gs,
                                 tmp2.copy(col).multiplyScalar(g.ghost ? 0.3 : (g.accent ? 0.9 : 0.6)));
@@ -1694,6 +1789,7 @@
     return {
         PAD, LANE_NAMES, LANE_COLORS, COLORS, TRACK, PAD_SYNTH_MIDI, LANE_ID_TO_PAD, SEEK_BACK, SEEK_FORWARD,
         collectWireNotes, classifyNote, buildGems, visibleRange, normalizeBeats,
+        AUTO_LEVELS, normalizeAutoLevel, autoAppliesAt, autoFor, isAutoNote,
         parseDrumsMeta, drumsMetaUrl,
         DIFFICULTIES, DEFAULT_DIFFICULTY, DIFFICULTY_LABELS, DIFFICULTY_NAMES, DIFFICULTY_COLORS,
         normalizeDifficulty, parseLevels, levelToWireNotes, hasKick2x, stripKick2x, difficultyOptions,

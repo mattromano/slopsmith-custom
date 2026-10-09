@@ -21,7 +21,9 @@ from pathlib import Path
 from fastapi.responses import Response
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
-_SOUND_NAME = re.compile(r"WebAudioFontPlayer\.js|128\d{2}_0_JCLive_sf2_file\.js")
+# The player + one file per GM drum note for each bundled kit (screen.js DRUM_KITS).
+_SOUND_NAME = re.compile(
+    r"WebAudioFontPlayer\.js|128\d{2}_0_(?:JCLive_sf2_file|FluidR3_GM_sf2_file|SBLive_sf2|Chaos_sf2_file)\.js")
 _ASSETS = {
     "engine.js": "application/javascript",
     "highway3d.js": "application/javascript",

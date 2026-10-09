@@ -21,6 +21,9 @@ A plugin for [Slopsmith](https://github.com/got-feedback/feedback) that replaces
 - **Built-in drum sounds** — WebAudioFont-powered GM drum kit playback on MIDI hit
 - **Accuracy scoring** — hit detection with tight +/-50ms timing window, accuracy %, streak counter
 - **Inline settings** — MIDI device, volume, channel filter, lane labels, hit detection, and mapping table
+- **Drums settings page** — Plugins → **Drums**: every drum setting on one page, plus a pad tester. See [Settings page](#settings-page).
+- **Assists** — auto kick, auto cymbals (each up to a chosen difficulty) and hit-timing presets. See [Assists](#assists).
+- **Four drum kits** for the built-in sounds (JCLive, FluidR3 GM, Sound Blaster Live!, Chaos)
 
 ## 3D view
 
@@ -142,6 +145,32 @@ through core's sloppak file route (`GET /api/sloppak/<filename>/file/arrangement
 is not a sloppak, the file is missing or it has no `drums` block, the chart plays without star power
 phrases (the engine then allows manual activation, but the meter never fills) and only Expert / Expert+ are
 available. `pro: false` switches the engine to non-pro drums (cymbals count as their tom lane).
+
+### Settings page
+
+**Plugins → Drums** opens a page with every drum setting (the manifest's `nav` entry + `screen.html`; the
+controls are wired by `screen.js`). It holds the same per-browser settings as the ⚙ panel in the player, and
+changes apply right away to a song that is playing in another panel:
+
+- **Difficulty & assists** — default difficulty, auto kick, auto cymbals, hit timing, pro cymbals.
+- **Drum sounds** — kit (with a ▶ Play test groove) and volume (0% = silent, for kits whose module makes the sound).
+- **Your kit (MIDI)** — input, channel, a **pad tester** (each hit lights the lane it counts as and plays the
+  kit sound; the page borrows the MIDI connection only while it is showing), and the Learn mapping table.
+- **Display & controls** — view, input offset, keyboard drumming, 2D lane layout / labels / hit counter.
+- **Reset drum settings** — back to defaults; keeps the MIDI input and the pad mapping.
+
+### Assists
+
+- **Auto kick / Auto cymbals** (`drums_auto_kick_v1`, `drums_auto_cymbals_v1`): `Off`, `Easy only`,
+  `Easy – Medium`, `Easy – Hard` or `Every difficulty` — the assist is on at that difficulty and the ones
+  below it, so e.g. "Easy – Medium" kicks for you on Medium but you play the kick on Hard. Those notes are
+  left out of the scored chart (score, accuracy, streak and star power only count what you play), drawn
+  dimmed, flash at the strikeline as if played, and pad hits on them are ignored (no overhits). Cymbals = the
+  chart's yellow / blue / green cymbal notes (hi-hat, ride, crash). The 2D view ignores those lanes in its
+  hit counter. Changing it mid-song rescores from the current position, like a difficulty change.
+- **Hit timing** (`drums_timing_v1`, 3D view): Relaxed ±130 ms, Forgiving ±100 ms, Normal ±70 ms (YARG's
+  default), Precision (YARG's dynamic window that tightens on fast notes).
+- **Kit** (`drums_kit_v1`): the WebAudioFont GM kit used for pad sounds; only the chosen kit is loaded.
 
 ### Notes and limits
 

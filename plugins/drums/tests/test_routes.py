@@ -111,8 +111,15 @@ def test_bundled_drum_sounds_are_served_locally():
     notes = [35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 57, 58, 59]
     for n in notes:
         assert (PLUGIN_DIR / "sounds" / f"128{n}_0_JCLive_sf2_file.js").is_file(), n
+    # the other kits (screen.js DRUM_KITS) are bundled and served too
+    for sf in ("FluidR3_GM_sf2_file", "SBLive_sf2", "Chaos_sf2_file"):
+        for n in notes:
+            assert (PLUGIN_DIR / "sounds" / f"128{n}_0_{sf}.js").is_file(), (sf, n)
+        r = c.get(f"/api/plugins/drums/sounds/12838_0_{sf}.js")
+        assert r.status_code == 200 and f"_drum_38_0_{sf}" in r.text, sf
     # nothing else from the plugin folder
-    for bad in ("README.md", "..%2Froutes.py", "routes.py", "12838_0_JCLive_sf2_file.js.bak"):
+    for bad in ("README.md", "..%2Froutes.py", "routes.py", "12838_0_JCLive_sf2_file.js.bak",
+                "12838_5_FluidR3_GM_sf2_file.js", "12838_0_Other_sf2.js"):
         assert c.get(f"/api/plugins/drums/sounds/{bad}").status_code == 404, bad
 
 

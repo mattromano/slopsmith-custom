@@ -1,0 +1,179 @@
+<!-- Drums settings screen (Plugins → Drums). screen.js fills in and wires the controls;
+     every setting here is the same per-browser setting as the ⚙ panel in the player. -->
+<style>
+#plugin-drums .dr-wrap { max-width: 46rem; margin: 0 auto; padding: 6rem 1.5rem 4rem; color: #d1d5db; }
+#plugin-drums .dr-back { color: #6b7280; font-size: .875rem; display: inline-flex; align-items: center; gap: .25rem;
+    background: none; border: 0; cursor: pointer; margin-bottom: 1.5rem; padding: 0; }
+#plugin-drums .dr-back:hover { color: #fff; }
+#plugin-drums h2 { font-size: 1.875rem; font-weight: 700; color: #fff; margin: 0 0 .35rem; }
+#plugin-drums .dr-lead { color: #9ca3af; font-size: .875rem; margin: 0 0 2rem; }
+#plugin-drums .dr-card { background: rgb(16 16 30 / .6); border: 1px solid #1f2937; border-radius: .9rem;
+    padding: .25rem 1.1rem; margin-bottom: 1.25rem; }
+#plugin-drums .dr-card > h3 { font-size: .75rem; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: #60a0ff; margin: .9rem 0 .25rem; }
+#plugin-drums .dr-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+    padding: .8rem 0; border-top: 1px solid rgb(31 41 55 / .6); }
+#plugin-drums .dr-card > h3 + .dr-row { border-top: 0; }
+#plugin-drums .dr-row > div:first-child { min-width: 0; }
+#plugin-drums .dr-t { font-size: .875rem; font-weight: 500; color: #e5e7eb; }
+#plugin-drums .dr-d { font-size: .72rem; color: #6b7280; margin-top: .15rem; line-height: 1.35; }
+#plugin-drums .dr-ctl { flex-shrink: 0; display: flex; align-items: center; gap: .5rem; }
+#plugin-drums select, #plugin-drums input[type=number] { background: #181830; border: 1px solid #2a3150; border-radius: .5rem;
+    color: #d1d5db; font-size: .8rem; padding: .35rem .55rem; outline: none; min-width: 11rem; }
+#plugin-drums input[type=number] { min-width: 0; width: 5.5rem; }
+#plugin-drums select:focus, #plugin-drums input:focus { border-color: rgb(64 128 224 / .7); }
+#plugin-drums input[type=range] { width: 10rem; accent-color: #4080e0; }
+#plugin-drums .dr-btn { background: #181830; border: 1px solid #2a3150; border-radius: .5rem; color: #d1d5db;
+    font-size: .8rem; padding: .4rem .8rem; cursor: pointer; white-space: nowrap; }
+#plugin-drums .dr-btn:hover { border-color: rgb(64 128 224 / .7); color: #fff; }
+#plugin-drums .dr-btn.dr-primary { background: #4080e0; border-color: #4080e0; color: #fff; }
+#plugin-drums .dr-btn.dr-primary:hover { background: #4f8ff0; }
+/* toggle switch */
+#plugin-drums .dr-sw { position: relative; display: inline-block; width: 2.4rem; height: 1.35rem; }
+#plugin-drums .dr-sw input { opacity: 0; width: 0; height: 0; position: absolute; }
+#plugin-drums .dr-sw span { position: absolute; inset: 0; background: #374151; border-radius: 999px; transition: background .15s; cursor: pointer; }
+#plugin-drums .dr-sw span::after { content: ''; position: absolute; top: .18rem; left: .18rem; width: 1rem; height: 1rem;
+    background: #fff; border-radius: 50%; transition: transform .15s; }
+#plugin-drums .dr-sw input:checked + span { background: #4080e0; }
+#plugin-drums .dr-sw input:checked + span::after { transform: translateX(1.05rem); }
+#plugin-drums .dr-sw input:focus-visible + span { outline: 2px solid #60a0ff; outline-offset: 2px; }
+/* pad tester */
+#plugin-drums .dr-status { font-size: .75rem; color: #8ab; padding: .7rem 0 .2rem; }
+#plugin-drums .dr-pads { display: flex; flex-wrap: wrap; gap: .4rem; padding: .3rem 0 .4rem; }
+#plugin-drums .dr-pad { min-width: 3.2rem; text-align: center; padding: .45rem .5rem; border-radius: .5rem; font-size: .75rem;
+    font-weight: 700; border: 1px solid #2a3150; background: #10101e; color: var(--c, #ccc); transition: background .25s, box-shadow .25s; }
+#plugin-drums .dr-pad.dr-on { background: var(--c, #555); color: #05050a; box-shadow: 0 0 14px var(--c, #555); transition: none; }
+#plugin-drums .dr-last { font-size: .75rem; color: #9ca3af; min-height: 1.1rem; padding-bottom: .7rem; }
+#plugin-drums details { padding: .2rem 0 .9rem; border-top: 1px solid rgb(31 41 55 / .6); }
+#plugin-drums summary { cursor: pointer; font-size: .85rem; color: #e5e7eb; padding: .7rem 0 .3rem; }
+#plugin-drums .drums-map-table { font-size: .8rem; margin: .3rem 0 .6rem; }
+#plugin-drums .dr-foot { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap;
+    font-size: .72rem; color: #6b7280; margin-top: .5rem; }
+@media (max-width: 560px) {
+    #plugin-drums .dr-row { flex-direction: column; align-items: stretch; }
+    #plugin-drums .dr-ctl { justify-content: flex-start; flex-wrap: wrap; }
+}
+</style>
+
+<div class="dr-wrap">
+    <button type="button" class="dr-back" data-dr="back">
+        <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg> Back
+    </button>
+    <h2>Drums</h2>
+    <p class="dr-lead">Settings for the Drum Highway. They're saved on this computer, and each player in multiplayer keeps their own.
+        The ⚙ button in the player has the same settings while you play.</p>
+
+    <section class="dr-card" aria-labelledby="dr-h-play">
+        <h3 id="dr-h-play">Difficulty &amp; assists</h3>
+        <div class="dr-row">
+            <div><div class="dr-t">Default difficulty</div>
+                <div class="dr-d">Songs open at this difficulty. Songs without it play Expert. While playing: click the badge, or press D / Shift+D.</div></div>
+            <div class="dr-ctl"><select class="drums-difficulty-select" data-dr="difficulty" aria-label="Default drum difficulty"></select></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">Auto kick</div>
+                <div class="dr-d">The game plays the kick for you (pedal hits are ignored and it isn't scored). Choose which difficulties it's on for.</div></div>
+            <div class="dr-ctl"><select class="drums-auto-kick" data-dr="autoKick" aria-label="Auto kick"></select></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">Auto cymbals</div>
+                <div class="dr-d">The game plays hi-hat, ride and crash notes for you, so you only play snare, toms (and kick).</div></div>
+            <div class="dr-ctl"><select class="drums-auto-cym" data-dr="autoCymbals" aria-label="Auto cymbals"></select></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">Hit timing</div>
+                <div class="dr-d">How early or late a hit can be and still count (3D view). Relaxed is easier on a laggy setup.</div></div>
+            <div class="dr-ctl"><select class="drums-timing-select" data-dr="timing" aria-label="Hit timing window"></select></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">Pro cymbals</div>
+                <div class="dr-d">On: cymbals and toms of the same colour are separate notes. Off: either pad of a colour counts.</div></div>
+            <div class="dr-ctl"><label class="dr-sw"><input type="checkbox" class="drums-chk-pro" data-dr="proCymbals" aria-label="Pro cymbals"><span></span></label></div>
+        </div>
+    </section>
+
+    <section class="dr-card" aria-labelledby="dr-h-sound">
+        <h3 id="dr-h-sound">Drum sounds</h3>
+        <div class="dr-row">
+            <div><div class="dr-t">Kit</div>
+                <div class="dr-d" data-dr="kitNote">Sound played when you hit a pad.</div></div>
+            <div class="dr-ctl">
+                <select class="drums-kit-select" data-dr="kit" aria-label="Drum kit sound"></select>
+                <button type="button" class="dr-btn" data-dr="test">▶ Play test</button>
+            </div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">Volume</div>
+                <div class="dr-d">0% turns the drum sounds off (use this if your kit module makes its own sound). Sound from the computer adds some delay.</div></div>
+            <div class="dr-ctl"><input type="range" class="drums-vol-slider" data-dr="volume" min="0" max="100" aria-label="Drum sound volume">
+                <span data-dr="volumeText" style="font-size:.75rem;color:#9ca3af;width:2.5rem;text-align:right;"></span></div>
+        </div>
+    </section>
+
+    <section class="dr-card" aria-labelledby="dr-h-kit">
+        <h3 id="dr-h-kit">Your kit (MIDI)</h3>
+        <div class="dr-status drums-midi-status"></div>
+        <div class="dr-row">
+            <div><div class="dr-t">Input</div>
+                <div class="dr-d">Your drum kit is picked automatically when it's plugged in.</div></div>
+            <div class="dr-ctl"><select class="drums-midi-select" data-dr="midi" aria-label="MIDI input"><option value="">None</option></select></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">MIDI channel</div>
+                <div class="dr-d">Only listen to one channel (most kits send drums on 10).</div></div>
+            <div class="dr-ctl"><select class="drums-channel-select" data-dr="channel" aria-label="MIDI channel"></select></div>
+        </div>
+        <div class="dr-row" style="display:block;">
+            <div class="dr-t">Pad tester</div>
+            <div class="dr-d">Hit your pads: the lane each one counts as lights up and the kit sound plays.</div>
+            <div class="dr-pads" data-dr="pads"></div>
+            <div class="dr-last" data-dr="last"></div>
+        </div>
+        <details>
+            <summary>Pad mapping <span class="drums-map-source" style="color:#6b7280;font-size:.75rem;"></span></summary>
+            <div class="dr-d" style="margin:.2rem 0 .3rem;">Click Learn next to a lane, then hit the pad you want for it.</div>
+            <table class="drums-map-table"></table>
+            <button type="button" class="dr-btn" data-dr="resetMap">Reset mapping</button>
+        </details>
+    </section>
+
+    <section class="dr-card" aria-labelledby="dr-h-view">
+        <h3 id="dr-h-view">Display &amp; controls</h3>
+        <div class="dr-row">
+            <div><div class="dr-t">View</div>
+                <div class="dr-d">3D drum track, or the flat 2D lanes. Auto uses 3D when the computer supports it.</div></div>
+            <div class="dr-ctl"><select class="drums-view-select" data-dr="view" aria-label="Drum view">
+                <option value="auto">Auto</option><option value="3d">3D</option><option value="2d">2D</option></select></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">Input offset</div>
+                <div class="dr-d">Raise it if your hits register late, lower it if they register early (3D view).</div></div>
+            <div class="dr-ctl"><input type="number" class="drums-offset-input" data-dr="offset" min="-250" max="250" step="5" aria-label="Input offset in milliseconds"> <span style="font-size:.75rem;color:#9ca3af;">ms</span></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">Keyboard drumming</div>
+                <div class="dr-d">3D view: B kick, F red, J/K/L yellow/blue/green, Shift or U/I/O for cymbals, Enter for star power.</div></div>
+            <div class="dr-ctl"><label class="dr-sw"><input type="checkbox" class="drums-chk-keys" data-dr="keyboard" aria-label="Keyboard drumming"><span></span></label></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">2D lane layout</div>
+                <div class="dr-d">Phase Shift: 8 lanes (hi-hat, snare, 3 toms, crash, ride, kick). Rock Band: 7 lanes.</div></div>
+            <div class="dr-ctl"><select class="drums-lane-preset" data-dr="lanes" aria-label="2D lane layout">
+                <option value="phase_shift_8">Phase Shift 8</option><option value="rb4">Rock Band</option></select></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">2D lane labels</div></div>
+            <div class="dr-ctl"><label class="dr-sw"><input type="checkbox" class="drums-chk-labels" data-dr="labels" aria-label="2D lane labels"><span></span></label></div>
+        </div>
+        <div class="dr-row">
+            <div><div class="dr-t">2D hit counter</div>
+                <div class="dr-d">Count hits and misses in the 2D view (the 3D view always scores).</div></div>
+            <div class="dr-ctl"><label class="dr-sw"><input type="checkbox" class="drums-chk-hits" data-dr="hits" aria-label="2D hit counter"><span></span></label></div>
+        </div>
+    </section>
+
+    <div class="dr-foot">
+        <span data-dr="version"></span>
+        <button type="button" class="dr-btn" data-dr="resetAll">Reset drum settings</button>
+    </div>
+</div>

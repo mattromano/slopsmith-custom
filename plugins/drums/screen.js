@@ -90,6 +90,14 @@ const STORE_KEYS = {
     // (first start, hotplug) never set it, so a later start can still move
     // an auto-picked non-kit device (e.g. a Loupedeck) to the drum kit.
     midiManual:     'drums_midi_manual',
+    // Accessibility (both views): auto kick / auto cymbals are played for
+    // you up to a difficulty ('off' | 'easy' | 'medium' | 'hard' | 'all').
+    autoKick:       'drums_auto_kick_v1',
+    autoCymbals:    'drums_auto_cymbals_v1',
+    // 3D view hit window preset (TIMING_PRESETS).
+    timing:         'drums_timing_v1',
+    // Drum synth sound set (DRUM_KITS).
+    kit:            'drums_kit_v1',
 };
 
 // Valid preset ids — kept here so _saveCfg can validate before persisting
@@ -101,7 +109,31 @@ const _VALID_VIEWS = new Set(['auto', '3d', '2d']);
 const DIFFICULTY_IDS = ['easy', 'medium', 'hard', 'expert', 'expert_plus'];
 const DIFFICULTY_NAMES = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', expert_plus: 'Expert+' };
 const _VALID_DIFFICULTIES = new Set(DIFFICULTY_IDS);
+// Same ids as DrumsHighway3D.AUTO_LEVELS.
+const AUTO_LEVEL_IDS = ['off', 'easy', 'medium', 'hard', 'all'];
+const AUTO_LEVEL_NAMES = { off: 'Off', easy: 'Easy only', medium: 'Easy – Medium', hard: 'Easy – Hard', all: 'Every difficulty' };
+const _VALID_AUTO_LEVELS = new Set(AUTO_LEVEL_IDS);
 
+// Hit window presets for the 3D view's engine (engine.js params.hitWindow).
+// Normal = YARG's default 140 ms window (±70 ms).
+const TIMING_PRESETS = {
+    relaxed:   { name: 'Relaxed (±130 ms)', params: { hitWindow: { maxWindow: 0.26, minWindow: 0.26, isDynamic: false } } },
+    forgiving: { name: 'Forgiving (±100 ms)', params: { hitWindow: { maxWindow: 0.20, minWindow: 0.20, isDynamic: false } } },
+    normal:    { name: 'Normal (±70 ms)', params: null },
+    precision: { name: 'Precision (tightens on fast notes)', params: { hitWindow: {
+        maxWindow: 0.13, minWindow: 0.05, isDynamic: true, dynamicScale: 1, dynamicSlope: 0.60615, dynamicGamma: 2 } } },
+};
+const TIMING_IDS = ['relaxed', 'forgiving', 'normal', 'precision'];
+
+// Drum synth sound sets: WebAudioFont General MIDI drum kits bundled in
+// sounds/ (see sounds/README.md). Only the chosen kit is loaded.
+const DRUM_KITS = {
+    jclive: { name: 'JCLive', sf: 'JCLive_sf2_file', note: 'tight, dry rock kit (default)' },
+    fluid:  { name: 'FluidR3 GM', sf: 'FluidR3_GM_sf2_file', note: 'full acoustic kit with room' },
+    sblive: { name: 'Sound Blaster Live!', sf: 'SBLive_sf2', note: 'punchy, bright' },
+    chaos:  { name: 'Chaos', sf: 'Chaos_sf2_file', note: 'lighter, softer kit' },
+};
+const KIT_IDS = ['jclive', 'fluid', 'sblive', 'chaos'];
 // Safe localStorage reader — getItem can throw SecurityError in
 // sandboxed iframes, under Safari on file://, or when storage is
 // disabled for the origin. An unguarded throw during the _cfg
@@ -187,6 +219,22 @@ const _cfg = {
         return _VALID_DIFFICULTIES.has(raw) ? raw : 'expert';
     })(),
     proCymbals:     _readStore(STORE_KEYS.proCymbals) !== 'false',
+    autoKick:       (function () {
+        const raw = _readStore(STORE_KEYS.autoKick);
+        return _VALID_AUTO_LEVELS.has(raw) ? raw : 'off';
+    })(),
+    autoCymbals:    (function () {
+        const raw = _readStore(STORE_KEYS.autoCymbals);
+        return _VALID_AUTO_LEVELS.has(raw) ? raw : 'off';
+    })(),
+    timing:         (function () {
+        const raw = _readStore(STORE_KEYS.timing);
+        return Object.prototype.hasOwnProperty.call(TIMING_PRESETS, raw) ? raw : 'normal';
+    })(),
+    kit:            (function () {
+        const raw = _readStore(STORE_KEYS.kit);
+        return Object.prototype.hasOwnProperty.call(DRUM_KITS, raw) ? raw : 'jclive';
+    })(),
     // Transient: which lane is in learn mode. Module-scope across
     // panels — the Learn-mode UX is "click Learn in any panel, then
     // hit a pad on the focused MIDI device." The next focused-panel
@@ -215,6 +263,19 @@ function _saveCfg(key, val) {
     }
     if (key === 'difficulty' && !_VALID_DIFFICULTIES.has(val)) {
         val = 'expert';
+    }
+    if ((key === 'autoKick' || key === 'autoCymbals') && !_VALID_AUTO_LEVELS.has(val)) {
+        val = 'off';
+    }
+    if (key === 'timing' && !Object.prototype.hasOwnProperty.call(TIMING_PRESETS, val)) {
+        val = 'normal';
+    }
+    if (key === 'kit' && !Object.prototype.hasOwnProperty.call(DRUM_KITS, val)) {
+        val = 'jclive';
+    }
+    if (key === 'synthVolume') {
+        const n = Number(val);
+        val = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0.7;
     }
     if (key === 'inputOffsetMs') {
         const n = Math.round(Number(val));
@@ -283,6 +344,60 @@ function _setProCymbals(on) {
     for (const inst of _instances) {
         try { inst._proCymbalsChanged(); } catch (e) { console.warn('[Drums] pro cymbals update failed:', e); }
     }
+}
+
+// Save an assist setting (auto kick / auto cymbals / timing) and apply it
+// to every live instance (mid-song, scoring restarts from the current
+// position, like a difficulty change).
+function _setAssist(key, val) {
+    _saveCfg(key, val);
+    const cls = { autoKick: '.drums-auto-kick', autoCymbals: '.drums-auto-cym', timing: '.drums-timing-select' }[key];
+    try {
+        if (cls) document.querySelectorAll(cls).forEach((sel) => { sel.value = _cfg[key]; });
+    } catch (_) { /* no DOM */ }
+    for (const inst of _instances) {
+        try { if (inst._assistsChanged) inst._assistsChanged(); } catch (e) { console.warn('[Drums] assist update failed:', e); }
+    }
+}
+
+// <option> lists for the settings selects (values are fixed ids; names are ours).
+function _optList(ids, names, current) {
+    return ids.map(id => `<option value="${id}"${id === current ? ' selected' : ''}>${names[id]}</option>`).join('');
+}
+function _autoOptions(current) { return _optList(AUTO_LEVEL_IDS, AUTO_LEVEL_NAMES, current); }
+function _timingOptions(current) {
+    const names = {};
+    for (const id of TIMING_IDS) names[id] = TIMING_PRESETS[id].name;
+    return _optList(TIMING_IDS, names, current);
+}
+function _kitOptions(current) {
+    const names = {};
+    for (const id of KIT_IDS) names[id] = DRUM_KITS[id].name;
+    return _optList(KIT_IDS, names, current);
+}
+
+const _SEL_CSS = 'background:#1a1a2e;border:1px solid #333;border-radius:6px;padding:3px 6px;font-size:11px;color:#ccc;outline:none;';
+
+// Auto lanes for a difficulty: each setting is a ceiling ('easy' = on at
+// Easy only, 'hard' = Easy..Hard, 'all' = always). Mirrors
+// DrumsHighway3D.autoFor (kept here so the 2D view needs no helpers).
+function _autoAt(diffId) {
+    const rank = (id) => DIFFICULTY_IDS.indexOf(id);
+    const on = (lvl) => lvl === 'all' || (lvl !== 'off' && rank(diffId) >= 0 && rank(diffId) <= rank(lvl));
+    return { kick: on(_cfg.autoKick), cymbals: on(_cfg.autoCymbals) };
+}
+
+// 2D lane ids played for the player by the auto settings.
+function _laneIsAuto(laneIdx, auto) {
+    const lane = DRUM_LANES[laneIdx];
+    if (!lane || !auto) return false;
+    if (lane.id === 'kick') return !!auto.kick;
+    return !!auto.cymbals && (lane.id === 'hihat' || lane.id === 'crash' || lane.id === 'ride');
+}
+
+function _timingParams() {
+    const p = TIMING_PRESETS[_cfg.timing];
+    return p && p.params ? JSON.parse(JSON.stringify(p.params)) : null;
 }
 
 // ── Synth ─────────────────────────────────────────────────────────────
@@ -549,7 +664,7 @@ function _loadScript(url) {
 // module, the same file the bundled 3D guitar highway imports.
 
 const PLUGIN_ID = 'drums';
-const ASSET_VERSION = '5.1.0';   // cache-buster for the lazily loaded files
+const ASSET_VERSION = '5.4.0';   // cache-buster for the lazily loaded files
 const THREE_URL = '/static/vendor/three/three.module.min.js';
 const PLUGIN_STATIC = '/api/plugins/' + PLUGIN_ID + '/static/';
 
@@ -618,7 +733,7 @@ function _resolveView(view, canWebGL2) {
 // third-party sites). Same files as surikov.github.io/webaudiofont(data).
 const WAF_BASE = '/api/plugins/drums/sounds/';
 const WAF_PLAYER_URL = '/api/plugins/drums/sounds/WebAudioFontPlayer.js';
-const WAF_SF = 'JCLive_sf2_file';
+function _kitSf(kitId) { return (DRUM_KITS[kitId] || DRUM_KITS.jclive).sf; }
 
 // MIDI notes that the WebAudioFont synth preloads samples for. Includes
 // all notes that appear in any LANE_PRESETS midiNotes array so that
@@ -626,8 +741,8 @@ const WAF_SF = 'JCLive_sf2_file';
 // and alternate tom3 (58) produce audio rather than scoring silently.
 const DRUM_MIDI_NOTES = [35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 57, 58, 59];
 
-function _drumWafVar(note)  { return '_drum_' + note + '_0_' + WAF_SF; }
-function _drumWafUrl(note)  { return WAF_BASE + '128' + note + '_0_' + WAF_SF + '.js'; }
+function _drumWafVar(note, sf)  { return '_drum_' + note + '_0_' + sf; }
+function _drumWafUrl(note, sf)  { return WAF_BASE + '128' + note + '_0_' + sf + '.js'; }
 
 async function _synthInit() {
     if (_synthPlayer) return;
@@ -650,19 +765,26 @@ async function _synthInit() {
     }
 }
 
+let _kitLoadSeq = 0;
 async function _synthLoadDrumKit() {
     if (!_synthPlayer || !_audioCtx) return;
     _synthLoading = true;
+    const seq = ++_kitLoadSeq;
+    const sf = _kitSf(_cfg.kit);
 
     const promises = DRUM_MIDI_NOTES.map(async (note) => {
-        const varName = _drumWafVar(note);
+        const varName = _drumWafVar(note, sf);
         try {
             if (!window[varName]) {
-                await _loadScript(_drumWafUrl(note));
+                await _loadScript(_drumWafUrl(note, sf));
             }
             const preset = window[varName];
-            if (preset) {
-                _synthPlayer.adjustPreset(_audioCtx, preset);
+            // A newer kit pick supersedes this load: keep its sounds.
+            if (preset && seq === _kitLoadSeq) {
+                if (!preset.__drumsAdjusted) {
+                    _synthPlayer.adjustPreset(_audioCtx, preset);
+                    preset.__drumsAdjusted = true;
+                }
                 _drumPresets[note] = preset;
             }
         } catch (e) {
@@ -694,7 +816,38 @@ function _synthDrumHit(midiNote, velocity) {
 
 function _synthSetVolume(vol) {
     _saveCfg('synthVolume', vol);
-    if (_synthGain) _synthGain.gain.value = vol;
+    if (_synthGain) _synthGain.gain.value = _cfg.synthVolume;
+    try {
+        document.querySelectorAll('.drums-vol-slider').forEach((el) => { el.value = String(Math.round(_cfg.synthVolume * 100)); });
+    } catch (_) { /* no DOM */ }
+}
+
+// Switch the synth's sound set. Loads only the picked kit (lazily, once).
+async function _synthSetKit(kitId) {
+    _saveCfg('kit', kitId);
+    try { document.querySelectorAll('.drums-kit-select').forEach((sel) => { sel.value = _cfg.kit; }); } catch (_) { /* no DOM */ }
+    if (_synthPlayer) await _synthLoadDrumKit();
+}
+
+// Short groove on the current kit (settings "Play test" button).
+async function _synthPlayTest() {
+    await _synthInit();
+    if (!_synthPlayer || !_audioCtx) return;
+    _synthEnsureCtx();
+    if (_synthLoading) await new Promise((r) => setTimeout(r, 400));
+    // [eighth, GM note, velocity] at 110 BPM, then a tom fill into a crash.
+    const pat = [
+        [0, 36, 110], [0, 42, 90], [1, 42, 70], [2, 38, 110], [2, 42, 90], [3, 42, 70],
+        [4, 36, 110], [4, 42, 90], [5, 36, 90], [5, 42, 70], [6, 38, 115], [6, 42, 90], [7, 46, 80],
+        [8, 50, 100], [8.5, 48, 100], [9, 45, 105], [9.5, 43, 110], [10, 36, 120], [10, 49, 115],
+    ];
+    const step = 60 / 110 / 2;
+    const t0 = _audioCtx.currentTime + 0.08;
+    for (const [b, note, vel] of pat) {
+        const preset = _drumPresets[note];
+        if (!preset) continue;
+        _synthPlayer.queueWaveTable(_audioCtx, _synthGain, preset, t0 + b * step, note, 0.6, (vel / 127) * _cfg.synthVolume);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1207,6 +1360,25 @@ function _mapSourceText() {
     return 'General MIDI defaults';
 }
 
+// Learn mode: when a lane is waiting for a pad, assign this MIDI note to it
+// and return true (the hit is consumed). _cfg.learnLane is module-scope so
+// the assignment + UI refresh apply uniformly across every open panel.
+function _learnConsume(midiNote) {
+    if (_cfg.learnLane === null || !DRUM_LANES[_cfg.learnLane]) return false;
+    // Use the full customMapping (not the filtered active-only view) so
+    // that inactive preset lane assignments (e.g. tom2 in rb4 mode) are
+    // preserved — only the new assignment is added/overwritten.
+    const map = Object.assign({}, _cfg.customMapping || _kitMap || _getActiveDrumMap());
+    map[midiNote] = DRUM_LANES[_cfg.learnLane].id;
+    _saveCfg('customMapping', map);
+    _cfg.learnLane = null;
+    _updateLearnUI();
+    // Rebuild the "assigned" column on EVERY open settings table —
+    // customMapping is module-shared.
+    _refreshAllMappingTables();
+    return true;
+}
+
 function _refreshAllMappingTables() {
     document.querySelectorAll('.drums-map-source').forEach((el) => { el.textContent = '— ' + _mapSourceText(); });
     const tables = document.querySelectorAll('.drums-map-table');
@@ -1428,6 +1600,7 @@ function createFactory(forceView) {
     let _badgeRectKey = '';
     let _diffMenu = null;           // difficulty pop-up menu
     let _onDiffKey = null, _onMenuOutside = null;
+    let _auto = { kick: false, cymbals: false };   // auto lanes for the difficulty in use
 
     function _now() { return performance.now(); }
 
@@ -1498,7 +1671,8 @@ function createFactory(forceView) {
             _libs = libs;
             _h = libs.H;
             _view3d = libs.H.createView(libs.THREE, canvas, { hudCanvas: _hudCanvas, context: gl });
-            _session = libs.H.createSession(libs.E, { proDrums: _cfg.proCymbals });
+            _auto = _autoAt(_diff ? _diff.id : _cfg.difficulty);
+            _session = libs.H.createSession(libs.E, { proDrums: _cfg.proCymbals, auto: _auto, params: _timingParams() });
             _chartRefs = null;
             _resetMeta();
             _resize3D();
@@ -1634,7 +1808,23 @@ function createFactory(forceView) {
             }
         }
         _refreshDifficultyUI();
+        _syncAuto();
         return _lvlMemo.chart;
+    }
+
+    // Auto kick / cymbals follow the difficulty being played.
+    function _syncAuto() {
+        const a = _autoAt(_diff ? _diff.id : _cfg.difficulty);
+        if (a.kick !== _auto.kick || a.cymbals !== _auto.cymbals) {
+            _auto = a;
+            if (_view !== '3d') { _resetScoring(); _scoreFromT = _latestTime || 0; }
+        }
+        if (_session) _session.setAuto(_auto);
+    }
+
+    function _assistsChanged() {
+        _syncAuto();
+        if (_session) _session.setParams(_timingParams());
     }
 
     function _proCymbalsChanged() {
@@ -1980,24 +2170,7 @@ function createFactory(forceView) {
         if (midiNote < 0 || midiNote > 127) return;
 
         // Learn mode: assign this MIDI note to the pending lane.
-        // _cfg.learnLane is module-scope so the assignment + UI
-        // refresh apply uniformly across every open settings panel.
-        if (_cfg.learnLane !== null) {
-            // Use the full customMapping (not the filtered active-only view) so
-            // that inactive preset lane assignments (e.g. tom2 in rb4 mode) are
-            // preserved — only the new assignment is added/overwritten.
-            const map = Object.assign({}, _cfg.customMapping || _kitMap || _getActiveDrumMap());
-            map[midiNote] = DRUM_LANES[_cfg.learnLane].id;
-            _saveCfg('customMapping', map);
-            _cfg.learnLane = null;
-            _updateLearnUI();
-            // Rebuild the "assigned" column on EVERY open settings
-            // panel — customMapping is module-shared, so a Learn
-            // assignment from the focused panel must also update
-            // any other splitscreen panel's open settings table.
-            _refreshAllMappingTables();
-            return;
-        }
+        if (_learnConsume(midiNote)) return;
 
         // Clone Hero kit thresholds (only while its map is the one in use).
         if (!_cfg.customMapping && _kitMinVel[midiNote] && velocity < _kitMinVel[midiNote]) return;
@@ -2048,6 +2221,7 @@ function createFactory(forceView) {
 
         const playedLane = _midiToLaneIdx(playedMidi);
         if (playedLane < 0) return;
+        if (_laneIsAuto(playedLane, _auto)) return;   // played for you: no hit, no miss
 
         let foundHit = false;
 
@@ -2110,6 +2284,7 @@ function createFactory(forceView) {
                 // user is expected to hit the main note, not the grace ornament.
                 if (n._noScore) continue;
                 const songMidi = noteToMidi(n.s, n.f);
+                if (_laneIsAuto(_songNoteToLaneIdx(songMidi), _auto)) continue;
                 const key = _noteKey(n.t, songMidi);
                 if (!_hitNoteKeys.has(key) && !_missedNoteKeys.has(key) && n.t < cutoff) {
                     _missedNoteKeys.add(key);
@@ -2122,6 +2297,7 @@ function createFactory(forceView) {
                 if (c.t < cutoff - 2 || c.t < _scoreFromT) continue;
                 for (const cn of (c.notes || [])) {
                     const songMidi = noteToMidi(cn.s, cn.f);
+                    if (_laneIsAuto(_songNoteToLaneIdx(songMidi), _auto)) continue;
                     const key = _noteKey(c.t, songMidi);
                     if (!_hitNoteKeys.has(key) && !_missedNoteKeys.has(key) && c.t < cutoff) {
                         _missedNoteKeys.add(key);
@@ -2334,6 +2510,28 @@ function createFactory(forceView) {
                 </label>
                 <span class="drums-difficulty-note" style="font-size:10px;color:#a8946a;">${_difficultyNote()}</span>
             </div>
+            <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+                <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:#666;"
+                    title="Kick notes are played for you (no score, no misses) at the difficulties picked here.">
+                    Auto kick
+                    <select class="drums-auto-kick" aria-label="Auto kick" style="${_SEL_CSS}width:118px;">${_autoOptions(_cfg.autoKick)}</select>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:#666;"
+                    title="Cymbal notes (hi-hat, ride, crash) are played for you at the difficulties picked here.">
+                    Auto cymbals
+                    <select class="drums-auto-cym" aria-label="Auto cymbals" style="${_SEL_CSS}width:118px;">${_autoOptions(_cfg.autoCymbals)}</select>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:#666;"
+                    title="3D view: how early or late a hit can be and still count.">
+                    Timing
+                    <select class="drums-timing-select" aria-label="Hit timing window" style="${_SEL_CSS}width:150px;">${_timingOptions(_cfg.timing)}</select>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:#666;"
+                    title="Drum sounds played when you hit a pad. More options under Plugins → Drums.">
+                    Kit
+                    <select class="drums-kit-select" aria-label="Drum kit sound" style="${_SEL_CSS}width:130px;">${_kitOptions(_cfg.kit)}</select>
+                </label>
+            </div>
             <details style="margin-top:2px;">
                 <summary style="font-size:10px;color:#666;cursor:pointer;">MIDI Mapping <span class="drums-map-source" style="color:#888;">— ${_mapSourceText()}</span></summary>
                 <table class="drums-map-table" style="font-size:11px;margin-top:4px;">${_buildMappingRows()}</table>
@@ -2423,6 +2621,10 @@ function createFactory(forceView) {
             _saveCfg('inputOffsetMs', this.value);
             this.value = String(_cfg.inputOffsetMs);
         };
+        panel.querySelector('.drums-auto-kick').onchange = function () { _setAssist('autoKick', this.value); };
+        panel.querySelector('.drums-auto-cym').onchange = function () { _setAssist('autoCymbals', this.value); };
+        panel.querySelector('.drums-timing-select').onchange = function () { _setAssist('timing', this.value); };
+        panel.querySelector('.drums-kit-select').onchange = function () { _synthSetKit(this.value); };
 
         _wireLearnButtons(panel);
     }
@@ -3102,6 +3304,8 @@ function createFactory(forceView) {
         // Called by the module-level _setDifficulty for every live instance.
         _difficultyChanged,
         _proCymbalsChanged,
+        _assistsChanged,
+        _autoLanes() { return Object.assign({}, _auto); },
     };
 
     return instance;
@@ -3300,6 +3504,229 @@ try {
     }
 } catch (e) { /* no host */ }
 
+// ── Drums settings screen (Plugins → Drums) ──────────────────────────
+// plugin.json's nav entry puts "Drums" in the core Plugins menu; core
+// injects screen.html into #plugin-drums before this script runs. The
+// controls share their classes with the in-player ⚙ panel, so the
+// module-level setters keep both in sync. While the screen is showing it
+// registers a pseudo-instance so the kit connects and the pad tester
+// receives hits (MIDI only routes to live instances).
+
+const _LANE_NAMES = { hihat: 'Hi-hat', snare: 'Snare', tom1: 'Tom 1', tom2: 'Tom 2', tom3: 'Floor tom',
+    crash: 'Crash', ride: 'Ride', kick: 'Kick' };
+let _page = null;          // #plugin-drums once wired
+let _pageVisible = false;
+let _padFlashTimers = {};
+
+const _pageInst = {
+    _handleDrumHit(midiNote, velocity) {
+        if (midiNote < 0 || midiNote > 127) return;
+        if (_learnConsume(midiNote)) { _pageLast('Learned: note ' + midiNote); return; }
+        if (!_cfg.customMapping && _kitMinVel[midiNote] && velocity < _kitMinVel[midiNote]) {
+            _pageLast('note ' + midiNote + ' vel ' + velocity + ' — below the kit profile\'s threshold (' + _kitMinVel[midiNote] + '), ignored');
+            return;
+        }
+        _synthDrumHit(midiNote, velocity);
+        _synthEnsureCtx();
+        const idx = _midiToLaneIdx(midiNote);
+        const lane = DRUM_LANES[idx];
+        _pageLast('note ' + midiNote + ' · velocity ' + velocity + ' → ' + (lane ? (_LANE_NAMES[lane.id] || lane.label) : 'not mapped'));
+        if (!lane || !_page) return;
+        const chip = _page.querySelector('.dr-pad[data-lane="' + idx + '"]');
+        if (!chip) return;
+        chip.classList.add('dr-on');
+        clearTimeout(_padFlashTimers[idx]);
+        _padFlashTimers[idx] = setTimeout(() => chip.classList.remove('dr-on'), 140);
+    },
+    _releaseAllSounding() {},
+    _difficultyChanged() {},
+    _proCymbalsChanged() {},
+    _assistsChanged() {},
+};
+
+function _pageLast(text) {
+    const el = _page && _page.querySelector('[data-dr="last"]');
+    if (el) el.textContent = text;
+}
+
+function _pageRenderPads() {
+    const box = _page && _page.querySelector('[data-dr="pads"]');
+    if (!box) return;
+    box.textContent = '';
+    DRUM_LANES.forEach((lane, idx) => {
+        const chip = document.createElement('div');
+        chip.className = 'dr-pad';
+        chip.dataset.lane = String(idx);
+        chip.style.setProperty('--c', _rgbStr(lane.color[0], lane.color[1], lane.color[2]));
+        chip.textContent = _LANE_NAMES[lane.id] || lane.label;
+        box.appendChild(chip);
+    });
+}
+
+function _pageKitNote() {
+    const el = _page && _page.querySelector('[data-dr="kitNote"]');
+    const k = DRUM_KITS[_cfg.kit];
+    if (el && k) el.textContent = 'Sound played when you hit a pad. ' + k.name + ': ' + k.note + '.';
+}
+
+function _pageVolumeText() {
+    const el = _page && _page.querySelector('[data-dr="volumeText"]');
+    if (el) el.textContent = Math.round(_cfg.synthVolume * 100) + '%';
+}
+
+// Put the saved values into every control (first show and after a reset).
+function _pageFill() {
+    const q = (k) => _page.querySelector('[data-dr="' + k + '"]');
+    q('difficulty').innerHTML = _optList(DIFFICULTY_IDS, DIFFICULTY_NAMES, _cfg.difficulty);
+    q('autoKick').innerHTML = _autoOptions(_cfg.autoKick);
+    q('autoCymbals').innerHTML = _autoOptions(_cfg.autoCymbals);
+    q('timing').innerHTML = _timingOptions(_cfg.timing);
+    q('kit').innerHTML = _kitOptions(_cfg.kit);
+    q('channel').innerHTML = '<option value="-1">All channels</option>'
+        + Array.from({ length: 16 }, (_, i) => `<option value="${i}">${i + 1}${i === 9 ? ' (drums)' : ''}</option>`).join('');
+    q('channel').value = String(_cfg.midiChannel);
+    q('proCymbals').checked = _cfg.proCymbals;
+    q('volume').value = String(Math.round(_cfg.synthVolume * 100));
+    q('view').value = _cfg.view;
+    q('offset').value = String(_cfg.inputOffsetMs);
+    q('keyboard').checked = _cfg.keyboard;
+    q('lanes').value = _cfg.lanePreset;
+    q('labels').checked = _cfg.showLaneLabels;
+    q('hits').checked = _cfg.hitDetection;
+    const v = q('version');
+    if (v) v.textContent = 'Drum Highway ' + ((_page.dataset.pluginVersion) || '');
+    _pageKitNote();
+    _pageVolumeText();
+    _pageRenderPads();
+    _refreshAllMappingTables();
+    _midiUpdateAllDeviceLists();
+}
+
+function _pageWire() {
+    const q = (k) => _page.querySelector('[data-dr="' + k + '"]');
+    q('back').onclick = () => { if (typeof window.showScreen === 'function') window.showScreen('home'); };
+    q('difficulty').onchange = function () { _setDifficulty(this.value); };
+    q('autoKick').onchange = function () { _setAssist('autoKick', this.value); };
+    q('autoCymbals').onchange = function () { _setAssist('autoCymbals', this.value); };
+    q('timing').onchange = function () { _setAssist('timing', this.value); };
+    q('proCymbals').onchange = function () { _setProCymbals(this.checked); };
+    q('kit').onchange = function () {
+        const id = this.value;
+        _saveCfg('kit', id);
+        _pageKitNote();
+        _synthInit().then(() => _synthSetKit(id)).then(_synthPlayTest);
+    };
+    q('test').onclick = () => { _synthPlayTest(); };
+    q('volume').oninput = function () { _synthSetVolume(parseInt(this.value, 10) / 100); _pageVolumeText(); };
+    q('midi').onchange = function () {
+        _saveCfg('midiManual', this.value ? '1' : '');
+        _midiConnect(this.value);
+        _synthInit();
+    };
+    q('channel').onchange = function () {
+        _saveCfg('midiChannel', parseInt(this.value, 10));
+        document.querySelectorAll('.drums-channel-select').forEach((sel) => { sel.value = String(_cfg.midiChannel); });
+    };
+    q('resetMap').onclick = () => {
+        _saveCfg('customMapping', null);
+        _cfg.learnLane = null;
+        _refreshAllMappingTables();
+    };
+    q('view').onchange = function () {
+        _saveCfg('view', this.value);
+        document.querySelectorAll('.drums-view-select').forEach((sel) => { sel.value = _cfg.view; });
+    };
+    q('offset').onchange = function () {
+        _saveCfg('inputOffsetMs', this.value);
+        document.querySelectorAll('.drums-offset-input').forEach((el) => { el.value = String(_cfg.inputOffsetMs); });
+    };
+    q('keyboard').onchange = function () {
+        _saveCfg('keyboard', this.checked);
+        document.querySelectorAll('.drums-chk-keys').forEach((el) => { el.checked = _cfg.keyboard; });
+    };
+    q('lanes').onchange = function () {
+        _saveCfg('lanePreset', this.value);
+        _applyLanePreset(_cfg.lanePreset);
+        _cfg.learnLane = null;
+        document.querySelectorAll('.drums-lane-preset').forEach((sel) => { sel.value = _cfg.lanePreset; });
+        _pageRenderPads();
+        _refreshAllMappingTables();
+    };
+    q('labels').onchange = function () {
+        _saveCfg('showLaneLabels', this.checked);
+        document.querySelectorAll('.drums-chk-labels').forEach((el) => { el.checked = _cfg.showLaneLabels; });
+    };
+    q('hits').onchange = function () {
+        _saveCfg('hitDetection', this.checked);
+        document.querySelectorAll('.drums-chk-hits').forEach((el) => { el.checked = _cfg.hitDetection; });
+    };
+    q('resetAll').onclick = () => {
+        if (!window.confirm('Reset the drum settings to their defaults? Your MIDI input and pad mapping are kept.')) return;
+        _resetDrumSettings();
+        _pageFill();
+    };
+}
+
+// Defaults for everything except the MIDI device and the pad mapping.
+function _resetDrumSettings() {
+    _setDifficulty('expert');
+    _setProCymbals(true);
+    _setAssist('autoKick', 'off');
+    _setAssist('autoCymbals', 'off');
+    _setAssist('timing', 'normal');
+    _synthSetKit('jclive');
+    _synthSetVolume(0.7);
+    _saveCfg('midiChannel', -1);
+    _saveCfg('view', 'auto');
+    _saveCfg('inputOffsetMs', 0);
+    _saveCfg('keyboard', true);
+    _saveCfg('lanePreset', 'phase_shift_8');
+    _applyLanePreset(_cfg.lanePreset);
+    _saveCfg('showLaneLabels', true);
+    _saveCfg('hitDetection', false);
+}
+
+function _pageSetVisible(on) {
+    if (on === _pageVisible) return;
+    _pageVisible = on;
+    if (on) {
+        _pageFill();
+        _instances.add(_pageInst);
+        if (!_activeInstance) _activeInstance = _pageInst;
+        _midiResumeHandler();
+        _midiInit();
+        _synthInit();
+        _midiUpdateAllDeviceLists();
+    } else {
+        _instances.delete(_pageInst);
+        if (_activeInstance === _pageInst) _activeInstance = null;
+        _cfg.learnLane = null;
+        if (_instances.size === 0) _midiReleaseSession();
+    }
+}
+
+function _initDrumsScreen() {
+    const el = document.getElementById('plugin-drums');
+    if (!el || el.dataset.drumsWired === '1') return !!el;
+    el.dataset.drumsWired = '1';
+    _page = el;
+    _pageWire();
+    new MutationObserver(() => _pageSetVisible(el.classList.contains('active')))
+        .observe(el, { attributes: true, attributeFilter: ['class'] });
+    _pageSetVisible(el.classList.contains('active'));
+    return true;
+}
+
+try {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined' && document.getElementById) {
+        // The screen div exists before this script runs; retry briefly in case it doesn't.
+        if (!_initDrumsScreen()) {
+            let tries = 0;
+            const t = setInterval(() => { if (_initDrumsScreen() || ++tries > 40) clearInterval(t); }, 250);
+        }
+    }
+} catch (e) { console.warn('[Drums] settings screen failed to start:', e); }
+
 // Node-only export hook for tests; browsers keep the window.*Viz_drums wiring.
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -3314,6 +3741,9 @@ if (typeof module !== 'undefined' && module.exports) {
         _isDrumsArrangement, _preferredKitSource, _kitSource, _midiAutoChoice,
         _webMidiShim: () => _webMidiShim(), _resetWebMidiShim: () => { _shim = null; },
         _midiOnMessage, _midiDiag,
+        AUTO_LEVEL_IDS, TIMING_PRESETS, TIMING_IDS, DRUM_KITS, KIT_IDS,
+        _autoAt, _laneIsAuto, _timingParams, _setAssist, _saveCfg, _cfg: () => _cfg,
+        _drumWafVar, _drumWafUrl, _kitSf,
     };
 }
 

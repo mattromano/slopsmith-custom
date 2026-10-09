@@ -269,3 +269,48 @@ test('_kitSource: exact Clone Hero name, drum-looking names, no loose substring 
     assert.equal(m._kitSource([...ins, { name: 'Roland TD-17', key: 'd' }], '').key, 'd');
     assert.equal(m._kitSource([...ins, { name: 'Yamaha DTX-PRO', key: 'e' }], '').key, 'e');
 });
+
+test('assists: _autoAt follows the difficulty ceiling; _saveCfg validates the new settings', () => {
+    const mod = freshPlugin();
+    const cfg = mod._cfg();
+    assert.equal(cfg.autoKick, 'off');
+    assert.equal(cfg.timing, 'normal');
+    assert.equal(cfg.kit, 'jclive');
+    mod._saveCfg('autoKick', 'medium');
+    mod._saveCfg('autoCymbals', 'all');
+    assert.deepEqual(mod._autoAt('easy'), { kick: true, cymbals: true });
+    assert.deepEqual(mod._autoAt('hard'), { kick: false, cymbals: true });
+    mod._saveCfg('autoKick', 'nonsense');
+    mod._saveCfg('timing', 'turbo');
+    mod._saveCfg('kit', '../etc');
+    mod._saveCfg('synthVolume', 7);
+    assert.equal(cfg.autoKick, 'off');
+    assert.equal(cfg.timing, 'normal');
+    assert.equal(cfg.kit, 'jclive');
+    assert.equal(cfg.synthVolume, 1);
+    assert.equal(mod._timingParams(), null);
+    mod._saveCfg('timing', 'relaxed');
+    assert.equal(mod._timingParams().hitWindow.maxWindow, 0.26);
+});
+
+test('assists: _laneIsAuto maps 2D lanes (kick; hi-hat/crash/ride)', () => {
+    const mod = freshPlugin();
+    const idx = (id) => mod.DRUM_LANES.findIndex(l => l.id === id);
+    const a = { kick: true, cymbals: false };
+    assert.equal(mod._laneIsAuto(idx('kick'), a), true);
+    assert.equal(mod._laneIsAuto(idx('hihat'), a), false);
+    assert.equal(mod._laneIsAuto(idx('ride'), { cymbals: true }), true);
+    assert.equal(mod._laneIsAuto(idx('snare'), { kick: true, cymbals: true }), false);
+});
+
+test('kits: every kit resolves to bundled sound files', () => {
+    const mod = freshPlugin();
+    const fs = require('node:fs');
+    for (const id of mod.KIT_IDS) {
+        const sf = mod._kitSf(id);
+        assert.equal(mod._drumWafVar(38, sf), '_drum_38_0_' + sf);
+        const file = mod._drumWafUrl(38, sf).replace('/api/plugins/drums/sounds/', '');
+        assert.ok(fs.existsSync(path.join(__dirname, '..', 'sounds', file)), file);
+    }
+    assert.equal(mod._kitSf('nope'), mod._kitSf('jclive'));
+});

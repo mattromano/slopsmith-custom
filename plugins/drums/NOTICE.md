@@ -26,6 +26,6 @@ The header of `engine.js` lists every behaviour that deviates from YARG ("Deviat
 | Files | License |
 |-------|---------|
 | `sounds/WebAudioFontPlayer.js` | **GPL-3.0**. WebAudioFont player, unmodified, by Sergey Surikov (https://github.com/surikov/webaudiofont). It is a separate script the synth loads at runtime; the rest of the plugin only calls its public `WebAudioFontPlayer` API. |
-| `sounds/128*_0_JCLive_sf2_file.js` | **MIT**. General MIDI drum samples (JCLive set) from https://github.com/surikov/webaudiofontdata, unmodified. |
+| `sounds/128*_0_JCLive_sf2_file.js`, `sounds/128*_0_FluidR3_GM_sf2_file.js`, `sounds/128*_0_SBLive_sf2.js`, `sounds/128*_0_Chaos_sf2_file.js` | **MIT**. General MIDI drum samples (JCLive, FluidR3 GM, SB Live! and Chaos sets) from https://github.com/surikov/webaudiofontdata, unmodified. |
 
 See `sounds/README.md`.

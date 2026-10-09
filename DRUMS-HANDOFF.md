@@ -89,6 +89,11 @@ Then the real re-search:
 
 ### 2. Better drum sounds + a kit picker in the app
 
+**Done in 5.4 (2026-10-09):** Plugins → **Drums** settings page (`screen.html`, wired in `screen.js` "Drums
+settings screen") + a **Kit** selector there and in the ⚙ panel, with three more WebAudioFont kits bundled
+(FluidR3 GM, SB Live!, Chaos; `DRUM_KITS`, routes `_SOUND_NAME`). Still open: real multi-sample kits with
+velocity layers (below) — add them as more `DRUM_KITS` entries.
+
 - Today: WebAudioFont player + 22 GM drum notes of the **JCLive** set, bundled in `plugins/drums/sounds/`
   (828 KB), served by `routes.py` `/api/plugins/drums/sounds/{name}` (whitelist regex `_SOUND_NAME` — only
   JCLive file names now). Synth code: `drums/screen.js` `WAF_*`, `_drumWafVar/_drumWafUrl`, `_synthInit`,
@@ -104,6 +109,11 @@ Then the real re-search:
   delay vs the kit module's own sound.
 
 ### 3. Accessibility drum settings (auto floor tom / auto cymbal etc.)
+
+**Done in 5.4:** Auto kick and Auto cymbals (each a difficulty ceiling: off / easy / ≤medium / ≤hard / all),
+hit-timing presets (Relaxed ±130 / Forgiving ±100 / Normal ±70 / Precision). Approach (a): auto notes are left
+out of the engine chart (`highway3d.js` session `setAuto` / `isAutoNote`), drawn dimmed, flash as played, pad
+hits on them ignored; 2D hit counter skips those lanes. Still open: auto floor tom / any-lane, no-fail.
 
 - Goal: make drums very accessible. Ideas to confirm with Matt: auto-kick, auto floor tom (green tom),
   auto crash/ride (green/blue cymbal), auto any-lane, no-fail, hit-window presets, Pro cymbals already exists

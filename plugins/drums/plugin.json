@@ -1,9 +1,14 @@
 {
   "id": "drums",
   "name": "Drum Highway",
-  "version": "5.3.0",
+  "version": "5.4.0",
   "type": "visualization",
   "private": false,
+  "nav": {
+    "label": "Drums",
+    "screen": "plugin-drums"
+  },
+  "screen": "screen.html",
   "script": "screen.js",
   "routes": "routes.py",
   "standards": [
@@ -26,7 +31,7 @@
       "compatibility": "degrade-noop",
       "ownership": "requester-only",
       "safety": "sensitive",
-      "description": "Reads the e-kit/MIDI-pad input through the core midi-input domain (Web-MIDI provider ships built-in with the domain). Absent domain \u2192 no MIDI devices, fail-soft.",
+      "description": "Reads the e-kit/MIDI-pad input through the core midi-input domain (Web-MIDI provider ships built-in with the domain). Absent domain → no MIDI devices, fail-soft.",
       "version": 1
     }
   },

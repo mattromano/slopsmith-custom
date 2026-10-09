@@ -673,3 +673,79 @@ test('session: a chart marked non-pro stays non-pro even with Pro cymbals on', (
     assert.equal(s.proDrums, false);
     assert.equal(s.gems[0].kind, 'pad');
 });
+
+// ── auto kick / auto cymbals ───────────────────────────────────────────────
+
+test('autoAppliesAt / autoFor: each setting is a difficulty ceiling', () => {
+    assert.equal(H.autoAppliesAt('off', 'easy'), false);
+    assert.equal(H.autoAppliesAt('all', 'expert_plus'), true);
+    assert.equal(H.autoAppliesAt('easy', 'easy'), true);
+    assert.equal(H.autoAppliesAt('easy', 'medium'), false);
+    assert.equal(H.autoAppliesAt('hard', 'medium'), true);
+    assert.equal(H.autoAppliesAt('hard', 'expert'), false);
+    assert.equal(H.autoAppliesAt('bogus', 'easy'), false);
+    assert.deepEqual(H.autoFor({ kick: 'medium', cymbals: 'off' }, 'easy'), { kick: true, cymbals: false });
+    assert.deepEqual(H.autoFor(null, 'easy'), { kick: false, cymbals: false });
+});
+
+test('isAutoNote: kick by pad, cymbals by the chart marking (never red)', () => {
+    const a = { kick: true, cymbals: true };
+    assert.equal(H.isAutoNote(H.PAD.KICK, false, a), true);
+    assert.equal(H.isAutoNote(H.PAD.YELLOW, true, a), true);
+    assert.equal(H.isAutoNote(H.PAD.YELLOW, false, a), false);
+    assert.equal(H.isAutoNote(H.PAD.RED, true, a), false);
+    assert.equal(H.isAutoNote(H.PAD.KICK, false, { kick: false, cymbals: true }), false);
+    assert.equal(H.isAutoNote(H.PAD.KICK, false, null), false);
+});
+
+test('session: auto kick leaves kicks out of scoring, ignores kick input and flashes them as played', () => {
+    // kick+hi-hat, snare, kick+hi-hat
+    const notes = [w(1, 36), w(1, 42), w(2, 38), w(3, 36), w(3, 42)];
+    const s = H.createSession(E, { auto: { kick: true } }).load({ notes });
+    assert.equal(s.getState().totalNotes, 3, 'kicks are not scored');
+    assert.equal(s.gems.filter(g => g.auto).length, 2, 'kicks are still drawn, marked auto');
+    assert.deepEqual(s.auto, { kick: true, cymbals: false });
+    s.update(0.5); s.drainEvents();
+    s.update(1);
+    const ev = s.drainEvents();
+    assert.ok(ev.some(e => e.type === 'hit' && e.auto && e.pad === H.PAD.KICK), 'kick flashes at the strikeline');
+    assert.equal(s.hit(1, H.PAD.KICK).reason, 'auto', 'kick pedal is ignored');
+    assert.equal(s.hit(1, H.PAD.YELLOW, { cymbal: true }).type, 'hit');
+    s.update(2); assert.equal(s.hit(2, H.PAD.RED).type, 'hit');
+    s.update(3); assert.equal(s.hit(3, H.PAD.YELLOW, { cymbal: true }).type, 'hit');
+    s.update(4);
+    const st = s.getState();
+    assert.equal(st.notesHit, 3);
+    assert.equal(st.notesMissed, 0);
+    assert.equal(st.overhits, 0);
+});
+
+test('session: auto cymbals; setAuto mid-song rescoring from the current time', () => {
+    const notes = [w(1, 42), w(1, 38), w(2, 49), w(2, 36), w(3, 51), w(3, 38)];
+    const s = H.createSession(E).load({ notes });
+    assert.equal(s.getState().totalNotes, 6);
+    s.update(1.5);
+    s.setAuto({ cymbals: true });
+    assert.equal(s.gems.filter(g => g.auto).length, 3);
+    assert.equal(s.hit(2, H.PAD.GREEN, { cymbal: true }).reason, 'auto', 'cymbal pads are ignored');
+    s.update(2); assert.equal(s.hit(2, H.PAD.KICK).type, 'hit');
+    s.update(3); assert.equal(s.hit(3, H.PAD.RED).type, 'hit');
+    s.update(4);
+    assert.equal(s.getState().notesMissed, 0, 'the auto ride is not missed');
+    // unchanged setting -> no rebuild
+    const b = s.builds;
+    s.setAuto({ cymbals: true, kick: false });
+    assert.equal(s.builds, b);
+});
+
+test('session: setParams widens the hit window', () => {
+    const notes = [w(1, 38)];
+    const n = H.createSession(E).load({ notes });
+    n.update(0.5); n.update(1.09); assert.notEqual(n.hit(1.09, H.PAD.RED).type, 'hit', 'normal window is +-70 ms');
+    const r = H.createSession(E, { params: { hitWindow: { maxWindow: 0.26, minWindow: 0.26 } } }).load({ notes });
+    r.update(0.5); r.update(1.09); assert.equal(r.hit(1.09, H.PAD.RED).type, 'hit', 'relaxed window is +-130 ms');
+    const m = H.createSession(E).load({ notes });
+    m.update(0.5);
+    m.setParams({ hitWindow: { maxWindow: 0.26, minWindow: 0.26 } });
+    m.update(1.09); assert.equal(m.hit(1.09, H.PAD.RED).type, 'hit');
+});
