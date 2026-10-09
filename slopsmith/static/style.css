@@ -1,0 +1,461 @@
+/* Base */
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+
+/* Plugin settings collapsibles use a custom SVG chevron — hide the
+   browser's default <summary> disclosure triangle so we don't get
+   two indicators side-by-side. */
+.plugin-settings-summary { list-style: none; }
+.plugin-settings-summary::-webkit-details-marker { display: none; }
+.plugin-settings-summary::marker { content: ''; }
+
+/* Screens */
+.screen { display: none; }
+.screen.active { display: block; }
+
+/* Player is special — needs flex column for canvas + controls */
+#player.active {
+    display: flex;
+    flex-direction: column;
+    height: 100dvh;
+    position: fixed;
+    inset: 0;
+    z-index: 100;
+    background: #050508;
+}
+#highway { flex: 1; width: 100%; min-height: 0; }
+
+/* Player controls need their own stacking context so visualization
+   plugins that paint absolutely-positioned overlays (e.g. the bundled
+   3D Highway's WebGL wrap at z-index:2, or any community viz plugin)
+   don't paint over the picker / mixer / lyrics toggle. Without this,
+   the bottom controls bar would silently sit underneath the canvas
+   and become click-through invisible.
+   Folds in the fix from byrongamatos/slopsmith#99. */
+#player-controls { position: relative; z-index: 10; }
+
+/* Song cards */
+.song-card {
+    background: linear-gradient(145deg, #10101e 0%, #0d0d18 100%);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 16px;
+    overflow: hidden;
+    cursor: pointer;
+    transition: all 0.25s ease;
+}
+.song-card:hover {
+    border-color: rgba(64,128,224,0.2);
+    transform: translateY(-4px);
+    box-shadow: 0 12px 40px rgba(0,0,0,0.4), 0 0 0 1px rgba(64,128,224,0.1);
+}
+/* Keyboard-focused card: ring without the lift, since the lift is a
+   pointer affordance and would feel jumpy when arrow-keying through.
+   :focus is a fallback for environments without :focus-visible
+   support so keyboard users always see SOMETHING; modern browsers
+   that do support :focus-visible only show the ring on keyboard
+   focus, not on click, because the same rule applies via the more
+   specific :focus-visible selector below. */
+.song-card { outline: none; }
+.song-card:focus,
+.song-card:focus-visible {
+    border-color: rgba(64,128,224,0.7);
+    box-shadow: 0 0 0 2px rgba(64,128,224,0.5), 0 0 24px rgba(64,128,224,0.3);
+}
+/* In :focus-visible-supporting browsers, suppress the focus ring on
+   click-derived focus so card hover/selection stays the dominant
+   visual on mouse use. */
+.song-card:focus:not(:focus-visible) {
+    border-color: rgba(255,255,255,0.04);
+    box-shadow: none;
+}
+/* Persistent selection (survives focus loss). Slightly heavier than
+   focus alone so the user can glance back and still see where they
+   were after clicking away. */
+.song-card.selected {
+    border-color: rgba(64,128,224,0.6);
+    box-shadow: 0 0 0 2px rgba(64,128,224,0.4), 0 8px 32px rgba(64,128,224,0.18);
+}
+/* When a selected card also has keyboard-visible focus, keep the
+   persistent selection styling but restore a stronger focus ring so
+   keyboard focus remains visually distinct from selection. */
+.song-card.selected:focus-visible {
+    border-color: rgba(64,128,224,0.7);
+    box-shadow: 0 0 0 3px rgba(64,128,224,0.55), 0 0 24px rgba(64,128,224,0.3), 0 8px 32px rgba(64,128,224,0.18);
+}
+/* In :focus-visible-supporting browsers, keep click-focused selected
+   cards looking selected without reintroducing the stronger focus ring. */
+.song-card.selected:focus:not(:focus-visible) {
+    border-color: rgba(64,128,224,0.6);
+    box-shadow: 0 0 0 2px rgba(64,128,224,0.4), 0 8px 32px rgba(64,128,224,0.18);
+}
+.song-card .card-art {
+    aspect-ratio: 1;
+    background: linear-gradient(135deg, #1a1a30 0%, #0f0f1e 100%);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+}
+.song-card .card-art img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.song-card .card-art .placeholder {
+    font-size: 3rem;
+    opacity: 0.15;
+}
+
+/* Library tree */
+.artist-row {
+    background: linear-gradient(145deg, #10101e 0%, #0d0d18 100%);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 12px;
+    overflow: hidden;
+    transition: border-color 0.2s;
+}
+.artist-row:hover {
+    border-color: rgba(64,128,224,0.15);
+}
+.artist-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    outline: none;
+}
+.artist-header:focus,
+.artist-header:focus-visible {
+    background: rgba(64,128,224,0.14);
+    box-shadow: inset 0 0 0 2px rgba(64,128,224,0.55);
+}
+.artist-header:focus:not(:focus-visible) {
+    background: transparent;
+    box-shadow: none;
+}
+.artist-header.selected {
+    background: rgba(64,128,224,0.10);
+    box-shadow: inset 3px 0 0 rgba(64,128,224,0.7);
+}
+.artist-header.selected:focus-visible {
+    background: rgba(64,128,224,0.14);
+    box-shadow: inset 3px 0 0 rgba(64,128,224,0.7), inset 0 0 0 2px rgba(64,128,224,0.55);
+}
+.artist-header.selected:focus:not(:focus-visible) {
+    background: rgba(64,128,224,0.10);
+    box-shadow: inset 3px 0 0 rgba(64,128,224,0.7);
+}
+.artist-header .chevron {
+    transition: transform 0.2s;
+    color: #555;
+    flex-shrink: 0;
+}
+.artist-row.open .artist-header .chevron {
+    transform: rotate(90deg);
+}
+.artist-body {
+    display: none;
+    padding: 0 12px 12px;
+}
+.artist-row.open .artist-body {
+    display: block;
+}
+.album-group {
+    background: rgba(255,255,255,0.02);
+    border-radius: 10px;
+    margin-bottom: 6px;
+    overflow: hidden;
+}
+.album-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    cursor: pointer;
+    user-select: none;
+    outline: none;
+}
+.album-header:focus,
+.album-header:focus-visible {
+    background: rgba(64,128,224,0.13);
+    box-shadow: inset 0 0 0 2px rgba(64,128,224,0.5);
+}
+.album-header:focus:not(:focus-visible) {
+    background: transparent;
+    box-shadow: none;
+}
+.album-header.selected {
+    background: rgba(64,128,224,0.09);
+    box-shadow: inset 3px 0 0 rgba(64,128,224,0.6);
+}
+.album-header.selected:focus-visible {
+    background: rgba(64,128,224,0.13);
+    box-shadow: inset 3px 0 0 rgba(64,128,224,0.6), inset 0 0 0 2px rgba(64,128,224,0.5);
+}
+.album-header.selected:focus:not(:focus-visible) {
+    background: rgba(64,128,224,0.09);
+    box-shadow: inset 3px 0 0 rgba(64,128,224,0.6);
+}
+.album-header .chevron {
+    transition: transform 0.2s;
+    color: #444;
+    flex-shrink: 0;
+}
+.album-group.open .album-header .chevron {
+    transform: rotate(90deg);
+}
+.album-body {
+    display: none;
+    padding: 0 8px 8px;
+}
+.album-group.open .album-body {
+    display: block;
+}
+.album-art-sm {
+    width: 36px;
+    height: 36px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: #1a1a2e;
+    flex-shrink: 0;
+}
+.song-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+    outline: none;
+}
+.song-row:hover {
+    background: rgba(64,128,224,0.08);
+}
+.song-row:focus,
+.song-row:focus-visible {
+    background: rgba(64,128,224,0.14);
+    box-shadow: 0 0 0 1px rgba(64,128,224,0.5);
+}
+.song-row:focus:not(:focus-visible) {
+    background: transparent;
+    box-shadow: none;
+}
+.song-row.selected {
+    background: rgba(64,128,224,0.12);
+    box-shadow: inset 2px 0 0 rgba(64,128,224,0.7);
+}
+.song-row.selected:focus-visible {
+    background: rgba(64,128,224,0.14);
+    box-shadow: inset 2px 0 0 rgba(64,128,224,0.7), 0 0 0 1px rgba(64,128,224,0.5);
+}
+.song-row.selected:focus:not(:focus-visible) {
+    background: rgba(64,128,224,0.12);
+    box-shadow: inset 2px 0 0 rgba(64,128,224,0.7);
+}
+
+/* Search result items */
+.result-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: #10101e;
+    border: 1px solid rgba(255,255,255,0.03);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+}
+.result-item:hover {
+    background: #181830;
+    border-color: rgba(64,128,224,0.15);
+}
+
+/* Progress bar */
+.progress-bar {
+    height: 6px;
+    background: #1a1a2e;
+    border-radius: 999px;
+    overflow: hidden;
+}
+.progress-bar .fill {
+    height: 100%;
+    background: linear-gradient(90deg, #4080e0, #60a0ff);
+    border-radius: 999px;
+    transition: width 0.3s ease;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2a2a50; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #3a3a60; }
+
+/* Mobile controls */
+@media (max-width: 640px) {
+    #player-controls { gap: 4px; padding: 6px; }
+    #player-controls button { padding: 4px 8px; font-size: 11px; }
+}
+
+/* Library filter drawer (slopsmith#129/#69) */
+#lib-filter-drawer.open { transform: translateX(0); }
+#lib-filter-drawer .filter-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid rgba(75, 85, 99, 0.5);
+    background: #181830;
+    color: #d1d5db;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+#lib-filter-drawer .filter-pill:hover { border-color: rgba(64, 128, 224, 0.5); }
+#lib-filter-drawer .filter-pill.state-require {
+    border-color: rgba(34, 197, 94, 0.7);
+    background: rgba(34, 197, 94, 0.15);
+    color: #86efac;
+}
+#lib-filter-drawer .filter-pill.state-exclude {
+    border-color: rgba(248, 113, 113, 0.7);
+    background: rgba(248, 113, 113, 0.15);
+    color: #fca5a5;
+}
+#lib-filter-drawer .filter-pill.state-disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+}
+#lib-filter-drawer .filter-pill::before {
+    content: '';
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: rgba(156, 163, 175, 0.4);
+}
+#lib-filter-drawer .filter-pill.state-require::before { background: #22c55e; }
+#lib-filter-drawer .filter-pill.state-exclude::before {
+    background: #f87171;
+    /* tiny minus indicator: use a horizontal bar instead of dot */
+    width: 10px;
+    height: 2px;
+    border-radius: 1px;
+}
+#lib-filter-drawer .tuning-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 13px;
+    color: #d1d5db;
+}
+#lib-filter-drawer .tuning-row:hover { background: rgba(64, 128, 224, 0.1); }
+#lib-filter-drawer .tuning-row .tuning-count {
+    margin-left: auto;
+    font-size: 11px;
+    color: #6b7280;
+}
+
+/* Active-filter chips row */
+#lib-filter-chips { display: none; }
+#lib-filter-chips:not(.hidden) { display: flex; }
+#lib-filter-chips .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px 3px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    background: #1e1e3a;
+    border: 1px solid rgba(75, 85, 99, 0.5);
+    color: #d1d5db;
+}
+#lib-filter-chips .chip.chip-exclude {
+    border-color: rgba(248, 113, 113, 0.5);
+    color: #fca5a5;
+}
+#lib-filter-chips .chip button {
+    margin-left: 4px;
+    padding: 0 4px;
+    color: #6b7280;
+    font-weight: bold;
+    line-height: 1;
+}
+#lib-filter-chips .chip button:hover { color: #fff; }
+
+/* Audio mixer popover — centered faders with symmetric inset; scrolling lives on the
+   popover so the scrollbar does not carve space only on one side of .mixer-row. */
+#mixer-popover:not(.hidden) {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: fit-content;
+    max-width: 90vw;
+    min-width: 0;
+    box-sizing: border-box;
+    /* Single symmetric inset (replaces Tailwind p-3 on the node). */
+    padding: 12px;
+    overflow-x: auto;
+    overflow-y: visible;
+}
+#mixer-popover .mixer-strip {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    padding: 0;
+    /* Same column width — fit-content strips differ when labels differ (“Song” vs “Amp…”),
+       which pushes fader tracks closer to one edge of the popover despite justify-content:center. */
+    width: 110px;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+}
+#mixer-popover .mixer-strip-label {
+    font-size: 11px; color: #9ca3af; max-width: 80px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center;
+}
+#mixer-popover .mixer-strip-fader {
+    width: 110px;
+    height: 24px;
+    margin: 0;
+    padding: 0;
+    vertical-align: middle;
+    transform: rotate(-90deg);
+    transform-origin: center;
+}
+@supports ((-webkit-appearance: slider-vertical) or (appearance: slider-vertical)) {
+    #mixer-popover .mixer-strip-fader {
+        width: 24px;
+        height: 110px;
+        transform: none;
+        transform-origin: center;
+        writing-mode: vertical-lr;
+        direction: rtl;
+        -webkit-appearance: slider-vertical;
+        appearance: slider-vertical;
+    }
+}
+#mixer-popover .mixer-strip-value { font-size: 10px; color: #6b7280; font-variant-numeric: tabular-nums; }
+#mixer-popover .mixer-row {
+    display: flex;
+    justify-content: center;
+    align-items: stretch;
+    gap: 12px;
+    flex: 0 0 auto;
+    width: max-content;
+    overflow: visible;
+    flex-wrap: nowrap;
+}
