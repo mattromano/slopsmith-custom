@@ -164,3 +164,22 @@ test('difficulty preference: drums_difficulty_v1, default Expert, junk ignored, 
     mod._setDifficulty('<script>');
     assert.equal(store.drums_difficulty_v1, 'expert', 'invalid ids are not persisted');
 });
+
+test('_isDrumsArrangement: only when the loaded arrangement itself is drums', () => {
+    const m = freshPlugin();
+    assert.equal(m._isDrumsArrangement({ arrangement: 'Drums' }), true);
+    assert.equal(m._isDrumsArrangement({ arrangement_index: 3, arrangements: [{ index: 3, name: 'Drums' }] }), true);
+    // a guitar arrangement on a song that also carries a drum tab is not a takeover case
+    assert.equal(m._isDrumsArrangement({ arrangement: 'Lead', has_drum_tab: true }), false);
+    assert.equal(m._isDrumsArrangement({}), false);
+    assert.equal(m._isDrumsArrangement(null), false);
+});
+
+test('_preferredKitSource: Clone Hero device name, then a drum module, then the first input', () => {
+    const m = freshPlugin();
+    const ins = [{ name: 'Arturia KeyStep', key: 'a' }, { name: 'Alesis Drum Module', key: 'b' }, { name: 'CH 2', key: 'c' }];
+    assert.equal(m._preferredKitSource(ins, 'CH 2').key, 'c');
+    assert.equal(m._preferredKitSource(ins, 'Alesis Drum Module 0').key, 'b', 'CH appends an index to the device name');
+    assert.equal(m._preferredKitSource(ins, '').key, 'b', 'no Clone Hero name: anything drum-like');
+    assert.equal(m._preferredKitSource([{ name: 'Keys', key: 'k' }], 'Nope').key, 'k');
+});

@@ -629,3 +629,47 @@ test('screen.js _resolveView: 3D when WebGL2 is available unless 2D is chosen', 
     assert.equal(window.slopsmithViz_drums3d.contextType, 'webgl2');
     assert.equal(typeof window.slopsmithViz_drums.matchesArrangement, 'function');
 });
+
+// ── non-pro drums ("Pro cymbals" off) ──────────────────────────────────────
+
+test('classifyNote / buildGems with pro:false draw cymbals as pads and merge a same-colour tom+cymbal', () => {
+    assert.equal(H.classifyNote({ pad: 2, cymbal: true }, { pro: false }).kind, 'pad');
+    assert.equal(H.classifyNote({ pad: 2, cymbal: true }, { pro: false }).cymbal, false);
+    // yellow tom (48) + hi-hat (42) together, then a ride (51) alone
+    const decoded = E.decodeNotes([w(1, 48), w(1, 42), w(2, 51)], { kick2x: true });
+    const pro = H.buildGems(decoded);
+    assert.deepEqual(pro.map(g => g.kind), ['pad', 'cymbal', 'cymbal']);
+    const plain = H.buildGems(decoded, { pro: false });
+    assert.deepEqual(plain.map(g => [g.t, g.kind, g.lane]), [[1, 'pad', 1], [2, 'pad', 2]]);
+});
+
+test('session: setProDrums(false) lets a cymbal input hit a tom note and redraws without cymbals', () => {
+    const notes = [w(1, 48), w(2, 51)];         // yellow tom, blue cymbal (ride)
+    const pro = H.createSession(E).load({ notes });
+    pro.update(1); const r1 = pro.hit(1, 2, { cymbal: true });   // hi-hat on a yellow tom note
+    assert.notEqual(r1.type, 'hit', 'pro drums: wrong pad type');
+    assert.equal(pro.proDrums, true);
+
+    const s = H.createSession(E, { proDrums: false }).load({ notes });
+    assert.equal(s.proDrums, false);
+    assert.ok(s.gems.every(g => g.kind === 'pad'));
+    s.update(1); assert.equal(s.hit(1, 2, { cymbal: true }).type, 'hit');
+    s.update(2); assert.equal(s.hit(2, 3).type, 'hit', 'blue tom pad hits the (non-pro) ride note');
+    assert.equal(s.getState().notesHit, 2);
+
+    // switching mid-song rebuilds from the current position, and back again
+    const m = H.createSession(E).load({ notes });
+    m.update(1.5);
+    m.setProDrums(false);
+    assert.ok(m.gems.every(g => g.kind === 'pad'));
+    m.update(2); assert.equal(m.hit(2, 3).type, 'hit');
+    m.setProDrums(true);
+    assert.equal(m.gems.filter(g => g.kind === 'cymbal').length, 1);
+});
+
+test('session: a chart marked non-pro stays non-pro even with Pro cymbals on', () => {
+    const s = H.createSession(E).load({ notes: [w(1, 42)] });
+    s.setMeta(H.parseDrumsMeta({ drums: { version: 1, pro: false } }));
+    assert.equal(s.proDrums, false);
+    assert.equal(s.gems[0].kind, 'pad');
+});

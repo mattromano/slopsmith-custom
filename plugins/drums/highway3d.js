@@ -123,8 +123,9 @@
      * its gem: kind 'kick' | 'kick2x' | 'pad' | 'cymbal', lane 0..3 (-1 for the kick), dynamics and
      * the base colour.
      */
-    function classifyNote(n) {
+    function classifyNote(n, opts) {
         if (!n || typeof n !== 'object') return null;
+        const pro = !(opts && opts.pro === false);
         const pad = n.pad | 0;
         if (pad < 0 || pad > 4) return null;
         const accent = n.dyn === 'accent';
@@ -135,17 +136,23 @@
                 color: kick2x ? COLORS.kick2x : COLORS.kick };
         }
         const lane = pad - 1;
-        const cymbal = !!n.cymbal && pad !== PAD.RED;
+        // Non-pro drums (opts.pro === false): no cymbals, every Y/B/G note is a plain pad.
+        const cymbal = pro && !!n.cymbal && pad !== PAD.RED;
         return { kind: cymbal ? 'cymbal' : 'pad', lane, cymbal, kick2x: false, accent, ghost,
             color: LANE_COLORS[LANE_NAMES[lane]] };
     }
 
-    /** Render model: one gem per decoded note, sorted by time, keyed by the engine note id. */
-    function buildGems(decoded) {
+    /**
+     * Render model: one gem per decoded note, sorted by time, keyed by the engine note id.
+     * opts.pro === false (non-pro drums) draws cymbals as pads and, like the engine, keeps one
+     * gem when a tom and a cymbal of the same colour land together (< 1 ms apart).
+     */
+    function buildGems(decoded, opts) {
         const notes = decoded && Array.isArray(decoded.notes) ? decoded.notes : [];
+        const pro = !(opts && opts.pro === false);
         const gems = [];
         for (const n of notes) {
-            const c = classifyNote(n);
+            const c = classifyNote(n, opts);
             if (!c) continue;
             c.id = n.id;
             c.t = n.t;
@@ -153,7 +160,16 @@
             gems.push(c);
         }
         gems.sort((a, b) => a.t - b.t);
-        return gems;
+        if (pro) return gems;
+        const out = [];
+        for (const g of gems) {
+            let dup = false;
+            for (let i = out.length - 1; i >= 0 && g.t - out[i].t < 0.001; i--) {
+                if (out[i].lane === g.lane && out[i].kind === g.kind) { dup = true; break; }
+            }
+            if (!dup) out.push(g);
+        }
+        return out;
     }
 
     /** [i0, i1) of the gems with t0 <= t < t1 (gems sorted by t). */
@@ -644,7 +660,19 @@
         const s = {
             decoded: null, gems: [], beats: [], rawBeats: null, meta: null, engine: null,
             lastTime: null, events: [], builds: 0,
+            proWanted: opts.proDrums !== false,   // the player's "Pro cymbals" setting
         };
+
+        // Pro drums only when the player wants it and the chart has cymbal markings.
+        function effectivePro() {
+            return s.proWanted && !(s.meta && s.meta.pro === false);
+        }
+
+        // Rebuild from where the song is now (mid-song changes keep the score from here on).
+        function rebuildHere() {
+            build(s.lastTime != null && s.lastTime > (s.gems.length ? s.gems[0].t - 0.5 : 0)
+                ? s.lastTime : undefined);
+        }
 
         function push(ev) {
             ev.wall = now();
@@ -659,7 +687,7 @@
                 chart = { notes: s.decoded.notes.filter(n => n.t >= fromTime - 0.001), chords: [] };
             }
             const m = s.meta;
-            const eopts = { beats: s.rawBeats || [], proDrums: m ? m.pro !== false : true };
+            const eopts = { beats: s.rawBeats || [], proDrums: effectivePro() };
             if (m) {
                 eopts.starPower = m.starPower;
                 eopts.activation = m.activation;
@@ -685,7 +713,7 @@
                 chart = chart || {};
                 const wire = collectWireNotes(chart.notes, chart.chords);
                 s.decoded = Engine.decodeNotes(wire, { kick2x: true });
-                s.gems = buildGems(s.decoded);
+                s.gems = buildGems(s.decoded, { pro: effectivePro() });
                 s.rawBeats = Array.isArray(chart.beats) ? chart.beats : [];
                 s.beats = normalizeBeats(s.rawBeats);
                 s.lastTime = null;
@@ -696,8 +724,21 @@
             /** Apply the drums block (parseDrumsMeta output, or null). Rebuilds from the current time. */
             setMeta(meta) {
                 s.meta = meta || null;
-                if (s.decoded) build(s.lastTime != null && s.lastTime > (s.gems.length ? s.gems[0].t - 0.5 : 0)
-                    ? s.lastTime : undefined);
+                if (s.decoded) {
+                    s.gems = buildGems(s.decoded, { pro: effectivePro() });
+                    rebuildHere();
+                }
+                return api;
+            },
+            /** The player's "Pro cymbals" setting. false = non-pro drums (no cymbal lanes). */
+            setProDrums(on) {
+                on = on !== false;
+                if (on === s.proWanted) return api;
+                s.proWanted = on;
+                if (s.decoded) {
+                    s.gems = buildGems(s.decoded, { pro: effectivePro() });
+                    rebuildHere();
+                }
                 return api;
             },
             update(time) {
@@ -732,6 +773,7 @@
             get gems() { return s.gems; },
             get beats() { return s.beats; },
             get meta() { return s.meta; },
+            get proDrums() { return effectivePro(); },
             get builds() { return s.builds; },
             get lastTime() { return s.lastTime; },
         };

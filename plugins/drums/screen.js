@@ -82,6 +82,10 @@ const STORE_KEYS = {
     // expert_plus. Per browser, so each player keeps their own; songs
     // without that level play Expert without overwriting the choice.
     difficulty:     'drums_difficulty_v1',
+    // Pro cymbals (3D view): true = pro drums (cymbal and tom of a colour
+    // are separate lanes); false = non-pro, no cymbal gems and either pad
+    // of a colour hits. Per browser, like difficulty.
+    proCymbals:     'drums_pro_cymbals_v1',
 };
 
 // Valid preset ids — kept here so _saveCfg can validate before persisting
@@ -178,6 +182,7 @@ const _cfg = {
         const raw = _readStore(STORE_KEYS.difficulty);
         return _VALID_DIFFICULTIES.has(raw) ? raw : 'expert';
     })(),
+    proCymbals:     _readStore(STORE_KEYS.proCymbals) !== 'false',
     // Transient: which lane is in learn mode. Module-scope across
     // panels — the Learn-mode UX is "click Learn in any panel, then
     // hit a pad on the focused MIDI device." The next focused-panel
@@ -261,6 +266,18 @@ function _setDifficulty(id) {
     } catch (_) { /* no DOM */ }
     for (const inst of _instances) {
         try { inst._difficultyChanged(); } catch (e) { console.warn('[Drums] difficulty update failed:', e); }
+    }
+}
+
+// Save "Pro cymbals" (per browser) and apply it to every live instance;
+// mid-song, scoring restarts from the current position.
+function _setProCymbals(on) {
+    _saveCfg('proCymbals', !!on);
+    try {
+        document.querySelectorAll('.drums-chk-pro').forEach((chk) => { chk.checked = _cfg.proCymbals; });
+    } catch (_) { /* no DOM */ }
+    for (const inst of _instances) {
+        try { inst._proCymbalsChanged(); } catch (e) { console.warn('[Drums] pro cymbals update failed:', e); }
     }
 }
 
@@ -407,6 +424,37 @@ function _applyLanePreset(presetName) {
 }
 _applyLanePreset(_cfg.lanePreset);
 
+// ── E-kit mapping from Clone Hero ────────────────────────────────────
+// GET /api/plugins/drums/kit-mapping reads the kit mapping from Clone
+// Hero's active MIDI profile on the computer running Slopsmith (so a LAN
+// guest gets the same map). It is the default MIDI map whenever no Learn
+// map is saved: Learn edits start from it and Reset Map returns to it.
+// Its per-note velocity thresholds drop crosstalk/ghost triggers below
+// them, as Clone Hero does.
+let _kitMap = null;          // {midi: laneId} or null (no Clone Hero profile)
+let _kitMinVel = {};         // {midi: velocity}
+let _kitInfo = null;         // {device, source} for the settings panel
+function _baseMapping() {
+    return _cfg.customMapping || _kitMap;
+}
+function _loadKitMapping() {
+    if (typeof fetch !== 'function') return;
+    fetch('/api/plugins/drums/kit-mapping').then(r => (r.ok ? r.json() : null)).then((d) => {
+        const map = d && d.mapping ? _validateCustomMapping(d.mapping) : null;
+        _kitMap = map;
+        _kitMinVel = {};
+        if (map && d.min_velocity && typeof d.min_velocity === 'object') {
+            for (const [k, v] of Object.entries(d.min_velocity)) {
+                const n = parseInt(k, 10), vel = Number(v);
+                if (Number.isFinite(n) && Number.isFinite(vel) && vel > 0) _kitMinVel[n] = vel;
+            }
+        }
+        _kitInfo = map ? { device: d.device || '', source: d.source || '' } : null;
+        try { _refreshAllMappingTables(); } catch (_) { /* no panel yet */ }
+    }).catch(() => { /* no endpoint (older plugin server) */ });
+}
+_loadKitMapping();
+
 function _getActiveDrumMap() {
     // For the settings mapping table and Learn-mode, return the custom map
     // when set, otherwise derive the default map from _midiToLane (which is
@@ -420,10 +468,11 @@ function _getActiveDrumMap() {
     // same effective mapping that _midiToLaneIdx() produces (i.e. entries
     // that fall back to the preset-aware default are shown as unassigned
     // rather than pointing at a lane that doesn't exist).
-    if (_cfg.customMapping) {
+    const base = _baseMapping();
+    if (base) {
         const activeLaneIds = new Set(DRUM_LANES.map(l => l.id));
         const filtered = {};
-        for (const [midi, laneId] of Object.entries(_cfg.customMapping)) {
+        for (const [midi, laneId] of Object.entries(base)) {
             if (activeLaneIds.has(laneId)) filtered[midi] = laneId;
         }
         return filtered;
@@ -442,7 +491,7 @@ function _midiToLaneIdx(midiNote) {
     // _applyLanePreset() and already returns the correct index for the active
     // preset — avoiding stale lane-id references (e.g. 'tom2' in rb4 which
     // has no tom2 lane, causing findIndex to return -1 for mid-tom live hits).
-    const custom = _cfg.customMapping;
+    const custom = _baseMapping();
     if (custom) {
         const laneId = custom[midiNote];
         if (laneId) {
@@ -761,7 +810,21 @@ function _midiAutoConnect() {
     const raw = _readStore(STORE_KEYS.midiInputId);
     if (raw === '') return;
 
-    _midiConnect(_midiResolveSaved(raw, inputs) || inputs[0].key);
+    _midiConnect(_midiResolveSaved(raw, inputs) || _preferredKitSource(inputs).key);
+}
+
+// No saved pick: the kit Clone Hero is set up for (its MIDI profile is
+// named after the device, sometimes with a " 0"-style index), then
+// anything that looks like a drum module, then the first input.
+function _preferredKitSource(inputs, kitDevice) {
+    const norm = (x) => String(x || '').toLowerCase().replace(/\s+\d+$/, '').trim();
+    const want = norm(kitDevice !== undefined ? kitDevice : (_kitInfo && _kitInfo.device));
+    if (want) {
+        const m = inputs.find(s => norm(s.name) === want)
+            || inputs.find(s => norm(s.name).includes(want) || (norm(s.name) && want.includes(norm(s.name))));
+        if (m) return m;
+    }
+    return inputs.find(s => /drum|alesis|td-?\d|e-?kit/i.test(s.name || '')) || inputs[0];
 }
 
 async function _midiConnect(key) {
@@ -1005,7 +1068,16 @@ function _wireLearnButtons(scope) {
 // actually exist in the document — instances whose settings panel
 // was never opened simply don't have a `.drums-map-table` node yet,
 // and they pick up the current state when the panel opens later.
+// Where the MIDI map in use comes from, for the settings panel.
+// (Lanes are by colour in the 3D view: Ri = blue cymbal, Cr = green cymbal.)
+function _mapSourceText() {
+    if (_cfg.customMapping) return 'your Learn map';
+    if (_kitMap) return 'Clone Hero profile "' + ((_kitInfo && _kitInfo.device) || 'kit') + '" (Ri = blue cymbal, Cr = green cymbal)';
+    return 'General MIDI defaults';
+}
+
 function _refreshAllMappingTables() {
+    document.querySelectorAll('.drums-map-source').forEach((el) => { el.textContent = '— ' + _mapSourceText(); });
     const tables = document.querySelectorAll('.drums-map-table');
     if (!tables.length) return;
     const html = _buildMappingRows();
@@ -1295,7 +1367,7 @@ function createFactory(forceView) {
             _libs = libs;
             _h = libs.H;
             _view3d = libs.H.createView(libs.THREE, canvas, { hudCanvas: _hudCanvas, context: gl });
-            _session = libs.H.createSession(libs.E);
+            _session = libs.H.createSession(libs.E, { proDrums: _cfg.proCymbals });
             _chartRefs = null;
             _resetMeta();
             _resize3D();
@@ -1432,6 +1504,10 @@ function createFactory(forceView) {
         }
         _refreshDifficultyUI();
         return _lvlMemo.chart;
+    }
+
+    function _proCymbalsChanged() {
+        if (_session) _session.setProDrums(_cfg.proCymbals);
     }
 
     function _difficultyChanged() {
@@ -1779,7 +1855,7 @@ function createFactory(forceView) {
             // Use the full customMapping (not the filtered active-only view) so
             // that inactive preset lane assignments (e.g. tom2 in rb4 mode) are
             // preserved — only the new assignment is added/overwritten.
-            const map = Object.assign({}, _cfg.customMapping || _getActiveDrumMap());
+            const map = Object.assign({}, _cfg.customMapping || _kitMap || _getActiveDrumMap());
             map[midiNote] = DRUM_LANES[_cfg.learnLane].id;
             _saveCfg('customMapping', map);
             _cfg.learnLane = null;
@@ -1791,6 +1867,9 @@ function createFactory(forceView) {
             _refreshAllMappingTables();
             return;
         }
+
+        // Clone Hero kit thresholds (only while its map is the one in use).
+        if (!_cfg.customMapping && _kitMinVel[midiNote] && velocity < _kitMinVel[midiNote]) return;
 
         _heldPads.set(midiNote, { velocity, wall: performance.now() });
         _synthDrumHit(midiNote, velocity);
@@ -1809,7 +1888,7 @@ function createFactory(forceView) {
         if (_view === '3d') {
             // 3D view: the engine scores. Learn/custom mapping wins, else GM.
             if (_session && _libs) {
-                const m = _libs.H.midiToPad(midiNote, _cfg.customMapping, _libs.E.padFromMidi);
+                const m = _libs.H.midiToPad(midiNote, _baseMapping(), _libs.E.padFromMidi);
                 if (m) _session.hit(_inputTime(), m.pad, { cymbal: m.cymbal, velocity });
             }
             return;
@@ -2116,10 +2195,15 @@ function createFactory(forceView) {
                         ${_optionsHtml()}
                     </select>
                 </label>
+                <label style="display:flex;align-items:center;gap:3px;font-size:11px;color:#999;cursor:pointer;"
+                    title="3D view. On: pro drums, cymbals and toms of the same colour are separate (cymbal gems, cymbal pads). Off: no cymbals, every yellow/blue/green note is a plain pad and either the cymbal or the tom of that colour hits it.">
+                    <input type="checkbox" class="drums-chk-pro" ${_cfg.proCymbals ? 'checked' : ''}
+                        style="accent-color:#eab308;"> Pro cymbals
+                </label>
                 <span class="drums-difficulty-note" style="font-size:10px;color:#a8946a;">${_difficultyNote()}</span>
             </div>
             <details style="margin-top:2px;">
-                <summary style="font-size:10px;color:#666;cursor:pointer;">MIDI Mapping</summary>
+                <summary style="font-size:10px;color:#666;cursor:pointer;">MIDI Mapping <span class="drums-map-source" style="color:#888;">— ${_mapSourceText()}</span></summary>
                 <table class="drums-map-table" style="font-size:11px;margin-top:4px;">${_buildMappingRows()}</table>
             </details>`;
 
@@ -2195,6 +2279,9 @@ function createFactory(forceView) {
         panel.querySelector('.drums-chk-keys').onchange = function () {
             _saveCfg('keyboard', this.checked);
             document.querySelectorAll('.drums-chk-keys').forEach(el => { el.checked = _cfg.keyboard; });
+        };
+        panel.querySelector('.drums-chk-pro').onchange = function () {
+            _setProCymbals(this.checked);
         };
         panel.querySelector('.drums-difficulty-select').onchange = function () {
             _setDifficulty(this.value);
@@ -2881,6 +2968,7 @@ function createFactory(forceView) {
         _chartNoteCount() { return Array.isArray(_latestNotes) ? _latestNotes.length : 0; },
         // Called by the module-level _setDifficulty for every live instance.
         _difficultyChanged,
+        _proCymbalsChanged,
     };
 
     return instance;
@@ -2921,6 +3009,58 @@ window.slopsmithViz_drums3d.matchesArrangement = createFactory.matchesArrangemen
 window.slopsmithViz_drums2d = function () { return createFactory('2d'); };
 window.slopsmithViz_drums2d.matchesArrangement = createFactory.matchesArrangement;
 
+// ── Drums never render through a guitar view ─────────────────────────
+// When the picker holds a guitar view (3D Highway / Classic 2D, e.g. the
+// fresh-install default on a device that just joined a multiplayer room)
+// and the loaded arrangement IS Drums, the Drum Highway takes over for
+// this song only: the picker and the saved choice stay as they are, and
+// the next non-drum song gets the picked view back. Stands down when the
+// core already does this (this repo's core: _instrumentVizOverride).
+const _GUITAR_VIZ = new Set(['default', 'highway_3d']);
+let _drumsOverride = false;
+
+function _isDrumsArrangement(si) {
+    if (!si) return false;
+    if (si.arrangement && DRUMS_PATTERNS.test(si.arrangement)) return true;
+    if (Array.isArray(si.arrangements)) {
+        const arr = si.arrangements.find(a => a && a.index === si.arrangement_index);
+        if (arr && DRUMS_PATTERNS.test(arr.name || '')) return true;
+    }
+    return false;
+}
+
+function _drumsTakeover() {
+    if (typeof window._instrumentVizOverride === 'function') return;   // core handles it
+    const sel = document.getElementById('viz-picker');
+    const hw = window.highway;
+    if (!sel || !hw || typeof hw.setRenderer !== 'function') return;
+    const picked = sel.value;
+    if (!_GUITAR_VIZ.has(picked)) { _drumsOverride = false; return; }
+    const si = typeof hw.getSongInfo === 'function' ? (hw.getSongInfo() || {}) : {};
+    if (_isDrumsArrangement(si)) {
+        if (_drumsOverride) return;
+        let r = null;
+        try { r = createFactory(); } catch (e) { console.error('[Drums] takeover failed', e); }
+        if (!r || typeof r.draw !== 'function') return;
+        _drumsOverride = true;
+        hw.setRenderer(r);
+    } else if (_drumsOverride) {
+        _drumsOverride = false;
+        if (typeof window.setViz === 'function') window.setViz(picked);   // the user's own view, unchanged
+        else hw.setRenderer(null);
+    }
+}
+
+try {
+    if (window.slopsmith && typeof window.slopsmith.on === 'function') {
+        window.slopsmith.on('song:ready', _drumsTakeover);
+        // An explicit pick mid-song is the user's call: stop overriding.
+        document.addEventListener('change', (e) => {
+            if (e.target && e.target.id === 'viz-picker') _drumsOverride = false;
+        }, true);
+    }
+} catch (e) { /* no host */ }
+
 // Node-only export hook for tests; browsers keep the window.*Viz_drums wiring.
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -2932,6 +3072,7 @@ if (typeof module !== 'undefined' && module.exports) {
         _difficultyPref: () => _cfg.difficulty,
         _setDifficulty,
         matchesArrangement: createFactory.matchesArrangement,
+        _isDrumsArrangement, _preferredKitSource,
     };
 }
 
