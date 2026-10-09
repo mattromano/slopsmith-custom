@@ -328,4 +328,4 @@ def test_pad_check_catches_a_chart_one_eighth_off(tmp_path):
     off = [(t + 0.25, p, c) for t, p, c in hits]
     bad = drumalign.validate([h[0] for h in off], on, pad_hits=off, bands=bands)
     assert bad.within_30ms > 0.9            # the plain onset check is fooled...
-    assert not bad.ok and bad.pads["kick"] < 0.35 and any("kick" in r for r in bad.reasons)   # ...this isn't
+    assert not bad.ok and bad.pads["kick"] < 0.5 and any("kick" in r for r in bad.reasons)   # ...this isn't

@@ -70,10 +70,39 @@ class ChartEntry:
     title: str
 
 
+SNG_CACHE = Path.home() / ".cache" / "slopsmith-drums" / "sng"
+
+
+def chart_folder(path: Path) -> Path:
+    """A song folder for a chart source: folders as-is, .sng packages unpacked (cached)."""
+    path = Path(path)
+    if path.is_dir():
+        return path
+    if path.suffix.lower() == ".sng":
+        import hashlib
+        import sngfile
+        st = path.stat()
+        key = hashlib.sha1(f"{path.resolve()}|{st.st_size}|{st.st_mtime_ns}".encode()).hexdigest()[:16]
+        out = SNG_CACHE / key
+        if not (out / "song.ini").exists():
+            sngfile.extract_sng(path, out)
+        return out
+    raise FileNotFoundError(f"not a chart folder or .sng: {path}")
+
+
 def index_chart_dir(root: Path) -> list[ChartEntry]:
-    """Every song folder (has song.ini or notes.mid/.chart) below root."""
+    """Every song folder (has song.ini or notes.mid/.chart) and .sng package below root."""
     out, seen = [], set()
     root = Path(root)
+    for p in sorted(root.rglob("*.sng")):
+        import sngfile
+        try:
+            meta, files = sngfile.read_sng(p)
+        except Exception:
+            continue
+        if not any(f.lower() in ("notes.mid", "notes.chart") for f in files):
+            continue
+        out.append(ChartEntry(p, meta.get("artist", ""), meta.get("name", "") or p.stem))
     for p in sorted(root.rglob("*")):
         if p.name.lower() not in ("song.ini", "notes.mid", "notes.chart"):
             continue
@@ -214,6 +243,7 @@ def align_chart(folder: Path, sp: SloppakFiles, *, onsets=None, force_method: st
                 min_conf: float = 3.0, min_ratio: float = 1.08, max_drift: float = 0.035,
                 log=print) -> Candidate:
     """Source (a): place a YARG/CH chart on the sloppak's audio."""
+    folder = chart_folder(folder)
     chart, ini = drumchart.load_song_folder(folder)
     ours_drums, ours_kind = sp.drums_audio()
     if ours_drums is None:

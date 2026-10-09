@@ -242,3 +242,26 @@ def make_sloppak(path, stems: dict, *, beats=None, x_build=None, x_sync=None, ex
     else:
         shutil.move(str(work), str(path))
     return path
+
+
+def write_sng(path, files: dict, meta: dict, mask=bytes(range(7, 23))):
+    """Pack {name: bytes} into an .sng (SngFileFormat v1) with the given song.ini metadata."""
+    import struct
+    import numpy as np
+    md = b"".join(struct.pack("<i", len(k.encode())) + k.encode() + struct.pack("<i", len(v.encode())) + v.encode()
+                  for k, v in meta.items())
+    names = list(files)
+    idx_len = sum(1 + len(n.encode()) + 16 for n in names)
+    head = b"SNGPKG" + struct.pack("<I", 1) + mask + struct.pack("<QQ", len(md) + 8, len(meta)) + md
+    head += struct.pack("<QQ", idx_len + 8, len(names))
+    data_start = len(head) + idx_len + 8
+    off, index, blobs = data_start, b"", []
+    for n in names:
+        raw = np.frombuffer(files[n], dtype=np.uint8)
+        i = np.arange(len(raw), dtype=np.uint64)
+        key = np.frombuffer(mask, dtype=np.uint8)[(i % 16).astype(np.int64)] ^ (i & 0xFF).astype(np.uint8)
+        blobs.append((raw ^ key).tobytes())
+        index += struct.pack("<B", len(n.encode())) + n.encode() + struct.pack("<QQ", len(files[n]), off)
+        off += len(files[n])
+    Path(path).write_bytes(head + index + struct.pack("<Q", off - data_start) + b"".join(blobs))
+    return path

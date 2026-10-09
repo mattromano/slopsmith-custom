@@ -486,7 +486,7 @@ class Validation:
 
 
 THRESHOLDS = {"min_within_30ms": 0.5, "max_abs_median_ms": 25.0, "max_drift_span_ms": 40.0,
-              "min_pad_within_30ms": 0.35}
+              "min_pad_within_30ms": 0.35, "min_kick_within_30ms": 0.5}
 
 
 def band_onsets(y, sr=SR) -> dict:
@@ -556,7 +556,12 @@ def validate(note_times, onsets, thresholds=None, pad_hits=None, bands=None) -> 
     if span * 1000 > th["max_drift_span_ms"]:
         reasons.append(f"drifts {span * 1000:.0f} ms across the song")
     pads = pad_check(pad_hits, bands) if pad_hits is not None and bands else {}
-    for k, v in pads.items():
-        if v < th["min_pad_within_30ms"]:
-            reasons.append(f"only {v:.0%} of {k} notes line up with {k}-band onsets (a beat off?)")
+    # Kicks are the reliable signal on real stems (90-99% on good joins); a cymbal wash hides
+    # cymbal onsets (Helter Skelter: kicks 95%, cymbals 29%), so cymbals only gate when
+    # there aren't enough kicks to check.
+    if "kick" in pads:
+        if pads["kick"] < th["min_kick_within_30ms"]:
+            reasons.append(f"only {pads['kick']:.0%} of kick notes line up with kick-band onsets (a beat off?)")
+    elif "cymbal" in pads and pads["cymbal"] < th["min_pad_within_30ms"]:
+        reasons.append(f"only {pads['cymbal']:.0%} of cymbal notes line up with cymbal-band onsets (a beat off?)")
     return Validation(len(nt), len(on), med, w30, w30c, slope, span, quarters, not reasons, reasons, pads)

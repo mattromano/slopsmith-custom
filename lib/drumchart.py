@@ -310,7 +310,7 @@ def _finish(raw, five_lane, mix, tempo: TempoMap, offset, sections, sp, fills, s
 def parse_mid(path: Path, ini: dict | None = None, difficulty: str = "expert") -> DrumChart:
     import mido
     ini = ini or {}
-    mid = mido.MidiFile(str(path))
+    mid = mido.MidiFile(str(path), clip=True)   # Phase Shift sysex carries bytes > 127
     if mid.ticks_per_beat <= 0:
         raise ValueError("SMPTE-timed MIDI files are not supported")
     tempos, sigs, sections = [], [], []
