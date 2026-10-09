@@ -119,3 +119,39 @@ def test_bundled_drum_sounds_are_served_locally():
 def test_screen_js_loads_no_third_party_sound_urls():
     src = (PLUGIN_DIR / "screen.js").read_text(encoding="utf-8")
     assert "surikov.github.io" not in src.replace("Same files as surikov.github.io", "")
+
+
+def test_drums_library_filter_patch(monkeypatch):
+    import sys
+    import types
+
+    class MetadataDB:
+        _ALLOWED_ARRANGEMENT_NAMES = {"Lead", "Rhythm", "Bass", "Combo"}
+
+        def _build_where(self, q="", favorites_only=False, arrangements_has=None,
+                         arrangements_lacks=None, naming_mode="legacy"):
+            arr = [a for a in (arrangements_has or []) if a in self._ALLOWED_ARRANGEMENT_NAMES]
+            where, params = "WHERE title != ''", []
+            if arr:
+                where += " AND HAS(" + ",".join("?" * len(arr)) + ")"
+                params += arr
+            return where, params
+
+    fake = types.ModuleType("server")
+    fake.MetadataDB = MetadataDB
+    monkeypatch.setitem(sys.modules, "server", fake)
+    assert routes.allow_drums_library_filter() is True
+    assert "Drums" in MetadataDB._ALLOWED_ARRANGEMENT_NAMES
+    db = MetadataDB()
+    # legacy: core handles Drums itself once whitelisted
+    assert db._build_where(arrangements_has=["Drums"]) == ("WHERE title != '' AND HAS(?)", ["Drums"])
+    # smart: Drums leaves the smart list and is matched by plain name
+    w, p = db._build_where(arrangements_has=["Bass", "Drums"], naming_mode="smart")
+    assert w.startswith("WHERE title != '' AND HAS(?)") and w.endswith("AND " + routes._DRUMS_CLAUSE)
+    assert p == ["Bass", "Drums"]
+    w, p = db._build_where(arrangements_lacks=["Drums"], naming_mode="smart")
+    assert w.endswith("AND NOT " + routes._DRUMS_CLAUSE) and p == ["Drums"]
+    # no Drums: untouched; patching twice is a no-op
+    assert db._build_where(arrangements_has=["Lead"], naming_mode="smart") == ("WHERE title != '' AND HAS(?)", ["Lead"])
+    assert routes.allow_drums_library_filter() is True
+    assert db._build_where(arrangements_has=["Drums"], naming_mode="smart")[1] == ["Drums"]

@@ -109,8 +109,67 @@ def find_kit_mapping():
     return {"mapping": None, "reason": "No Clone Hero MIDI profile with drum mappings"}
 
 
+_DRUMS_CLAUSE = "EXISTS (SELECT 1 FROM json_each(songs.arrangements) WHERE json_extract(value, '$.name') = ?)"
+
+
+def allow_drums_library_filter():
+    """Let the library's arrangement filter handle "Drums".
+
+    Core whitelists arrangement filter names (MetadataDB._ALLOWED_ARRANGEMENT_NAMES =
+    Lead/Rhythm/Bass/Combo) and silently drops others, so ?arrangements_has=Drums returned
+    every song. Adding "Drums" is enough in legacy naming mode. In smart mode (the default)
+    the SQL matches smart_name, which the scanner stores as an explicit null for Drums, so
+    _build_where is wrapped: Drums is taken out of the smart lists and matched by its plain
+    arrangement name (has -> EXISTS, lacks -> NOT EXISTS), ANDed with the other filters.
+    Returns True when MetadataDB was found and patched.
+    """
+    import inspect
+    import sys
+    done = False
+    for mod_name in ("server", "__main__"):
+        cls = getattr(sys.modules.get(mod_name), "MetadataDB", None)
+        allowed = getattr(cls, "_ALLOWED_ARRANGEMENT_NAMES", None)
+        if not isinstance(allowed, set):
+            continue
+        allowed.add("Drums")
+        orig = getattr(cls, "_build_where", None)
+        if orig is None or getattr(orig, "_drums_patched", False):
+            done = True
+            continue
+        sig = inspect.signature(orig)
+
+        def _build_where(self, *args, _orig=orig, _sig=sig, **kwargs):
+            bound = _sig.bind(self, *args, **kwargs)
+            bound.apply_defaults()
+            a = bound.arguments
+            if a.get("naming_mode") != "smart":
+                return _orig(*bound.args, **bound.kwargs)
+            has = list(a.get("arrangements_has") or [])
+            lacks = list(a.get("arrangements_lacks") or [])
+            want_has, want_lacks = "Drums" in has, "Drums" in lacks
+            if not (want_has or want_lacks):
+                return _orig(*bound.args, **bound.kwargs)
+            a["arrangements_has"] = [x for x in has if x != "Drums"]
+            a["arrangements_lacks"] = [x for x in lacks if x != "Drums"]
+            where, params = _orig(*bound.args, **bound.kwargs)
+            params = list(params)
+            if want_has:
+                where += " AND " + _DRUMS_CLAUSE
+                params.append("Drums")
+            if want_lacks:
+                where += " AND NOT " + _DRUMS_CLAUSE
+                params.append("Drums")
+            return where, params
+
+        _build_where._drums_patched = True
+        cls._build_where = _build_where
+        done = True
+    return done
+
+
 def setup(app, context):
     log = context.get("log") if isinstance(context, dict) else None
+    allow_drums_library_filter()
 
     @app.get("/api/plugins/drums/sounds/{name}")
     def drums_sound(name: str):

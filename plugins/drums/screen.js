@@ -86,6 +86,10 @@ const STORE_KEYS = {
     // are separate lanes); false = non-pro, no cymbal gems and either pad
     // of a colour hits. Per browser, like difficulty.
     proCymbals:     'drums_pro_cymbals_v1',
+    // '1' when the MIDI input was picked by hand in the dropdown. Auto picks
+    // (first start, hotplug) never set it, so a later start can still move
+    // an auto-picked non-kit device (e.g. a Loupedeck) to the drum kit.
+    midiManual:     'drums_midi_manual',
 };
 
 // Valid preset ids — kept here so _saveCfg can validate before persisting
@@ -437,9 +441,10 @@ let _kitInfo = null;         // {device, source} for the settings panel
 function _baseMapping() {
     return _cfg.customMapping || _kitMap;
 }
+let _kitMappingPromise = null;
 function _loadKitMapping() {
     if (typeof fetch !== 'function') return;
-    fetch('/api/plugins/drums/kit-mapping').then(r => (r.ok ? r.json() : null)).then((d) => {
+    _kitMappingPromise = fetch('/api/plugins/drums/kit-mapping').then(r => (r.ok ? r.json() : null)).then((d) => {
         const map = d && d.mapping ? _validateCustomMapping(d.mapping) : null;
         _kitMap = map;
         _kitMinVel = {};
@@ -699,7 +704,97 @@ function _synthSetVolume(vol) {
 // The core midi-input domain, if present (it ships with core).
 function _mi() {
     const m = window.slopsmith && window.slopsmith.midiInput;
-    return (m && m.version === 1) ? m : null;
+    if (m && m.version === 1) return m;
+    // Cores without the midi-input domain (Slopsmith desktop 0.2.x) get a
+    // minimal Web MIDI provider with the same surface, so the kit still works.
+    return _webMidiShim();
+}
+
+// ── Web MIDI fallback provider ───────────────────────────────────────
+// Implements the subset of the core midi-input domain this plugin uses:
+// discover / listSources / select / open (-> handle.addListener /
+// removeListener, raw MIDI bytes) / close, plus 'midi-input:sources-changed'
+// on plug/unplug. One MIDIAccess for the page; inputs are opened on demand.
+let _shim = null;
+function _webMidiShim() {
+    if (_shim) return _shim;
+    if (typeof navigator === 'undefined' || typeof navigator.requestMIDIAccess !== 'function') return null;
+    let access = null;
+    const listeners = new Map();   // logicalSourceKey -> Set<fn(data)>
+    const keyOf = (id) => 'web-midi::' + id;
+    const inputFor = (key) => {
+        if (!access) return null;
+        for (const inp of access.inputs.values()) if (keyOf(inp.id) === key) return inp;
+        return null;
+    };
+    const sourcesChanged = () => {
+        try {
+            if (window.slopsmith && typeof window.slopsmith.emit === 'function') window.slopsmith.emit('midi-input:sources-changed', {});
+            else _midiReconcileSources();
+        } catch (_) { /* ignore */ }
+    };
+    _shim = {
+        version: 1,
+        shim: true,
+        async discover() {
+            if (!access) {
+                access = await navigator.requestMIDIAccess({ sysex: false });
+                access.onstatechange = (e) => { if (e && e.port && e.port.type === 'input') sourcesChanged(); };
+            }
+            return { outcome: 'handled' };
+        },
+        listSources() {
+            if (!access) return [];
+            return Array.from(access.inputs.values())
+                .filter(inp => inp.state !== 'disconnected')
+                .map(inp => ({ sourceId: inp.id, label: inp.name || inp.manufacturer || inp.id, logicalSourceKey: keyOf(inp.id) }));
+        },
+        async select() { /* selection lives in the plugin */ },
+        async open({ logicalSourceKey }) {
+            const inp = inputFor(logicalSourceKey);
+            if (!inp) return { handle: null };
+            // Throws if another program holds the port (Windows MIDI is exclusive).
+            await inp.open();
+            let set = listeners.get(logicalSourceKey);
+            if (!set) {
+                set = new Set();
+                listeners.set(logicalSourceKey, set);
+                inp.onmidimessage = (e) => { for (const fn of set) { try { fn(e.data); } catch (err) { console.warn('[Drums] MIDI listener failed:', err); } } };
+            }
+            return {
+                handle: {
+                    addListener(fn) { set.add(fn); },
+                    removeListener(fn) { set.delete(fn); },
+                },
+            };
+        },
+        close({ logicalSourceKey }) {
+            const set = listeners.get(logicalSourceKey);
+            const inp = inputFor(logicalSourceKey);
+            if (set && set.size) return;     // still in use by another listener
+            listeners.delete(logicalSourceKey);
+            if (inp) { inp.onmidimessage = null; try { inp.close(); } catch (_) { /* ignore */ } }
+        },
+    };
+    return _shim;
+}
+
+// MIDI status for the settings panel: device, hits received, last error.
+const _midiDiag = { hits: 0, last: '', error: '' };
+function _midiStatusText() {
+    if (!_mi()) return 'MIDI not available in this browser (use Chrome, Edge or Brave; Safari has no Web MIDI).';
+    if (_midiDiag.error) return 'MIDI problem: ' + _midiDiag.error;
+    if (!_midiInput) return 'No MIDI input selected.';
+    return 'Listening to ' + (_midiInput.name || 'MIDI input') + ' · ' + _midiDiag.hits + ' hits received'
+        + (_midiDiag.last ? ' · last: ' + _midiDiag.last : '');
+}
+let _midiStatusTimer = null;
+function _refreshMidiStatus() {
+    if (_midiStatusTimer) return;
+    _midiStatusTimer = setTimeout(() => {
+        _midiStatusTimer = null;
+        try { document.querySelectorAll('.drums-midi-status').forEach((el) => { el.textContent = _midiStatusText(); }); } catch (_) { /* no DOM */ }
+    }, 150);
 }
 
 // Domain sources shaped like the old MIDIInput list: { id, name, key }.
@@ -734,6 +829,7 @@ async function _midiInit() {
             // outcome must NOT latch, or reopening the panel never retries.
             if (!r || r.outcome !== 'handled') return;
             _midiReady = true;
+            _midiDiag.error = '';
             // Refresh device lists on plug/unplug (replaces MIDIAccess.onstatechange).
             if (!_midiStateSub && window.slopsmith && typeof window.slopsmith.on === 'function') {
                 _midiStateSub = true;
@@ -744,6 +840,8 @@ async function _midiInit() {
             _midiUpdateAllDeviceLists();
         } catch (e) {
             console.warn('[Drums] MIDI access denied:', e);
+            _midiDiag.error = 'MIDI access was denied (' + ((e && (e.message || e.name)) || 'unknown') + ')';
+            _refreshMidiStatus();
         } finally {
             // On success future calls short-circuit on `_midiReady`; on
             // rejection, releasing the slot lets a later init() retry.
@@ -781,9 +879,8 @@ function _midiReconcileSources() {
         if (raw === '') {
             // explicit None — stay disconnected.
         } else {
-            const key = _midiResolveSaved(raw, sources);
-            if (key) _midiConnect(key);                              // saved device present → reconnect
-            else if (raw == null && sources.length) _midiConnect(sources[0].key);  // never picked → first-hotplug
+            const key = _midiAutoChoice(raw, sources);
+            if (key) _midiConnect(key);                              // saved device (or the kit) present → connect
             // else: a saved pick exists but is absent → preserve (reconnect on replug)
         }
     }
@@ -800,33 +897,50 @@ function _midiResolveSaved(saved, sources) {
     return m ? m.key : null;
 }
 
-function _midiAutoConnect() {
+async function _midiAutoConnect() {
+    // Wait (briefly) for Clone Hero's device name so the kit can be recognised.
+    if (_kitMappingPromise) { try { await Promise.race([_kitMappingPromise, new Promise(r => setTimeout(r, 1500))]); } catch (_) { /* ignore */ } }
     const inputs = _midiSources();
     if (!inputs.length) return;
+    const key = _midiAutoChoice(_readStore(STORE_KEYS.midiInputId), inputs);
+    if (key) _midiConnect(key);
+}
 
-    // Distinguish "never picked a device" from "explicitly picked None".
-    // _readStore returns null for the never-set case and '' for an explicit-None
-    // save via _midiConnect. Only respect the explicit-None sentinel; otherwise
-    // resolve the saved selection (logicalSourceKey, or a legacy sourceId) and
-    // fall back to the first input when it's absent.
-    const raw = _readStore(STORE_KEYS.midiInputId);
-    if (raw === '') return;
-
-    _midiConnect(_midiResolveSaved(raw, inputs) || _preferredKitSource(inputs).key);
+// Which input to open without asking. Explicit "None" ('') stays off and a
+// device picked by hand is kept. Otherwise the drum kit wins: an auto-picked
+// device that isn't the kit is replaced by the kit when the kit is present.
+// A saved device that is absent (unplugged) is kept for its return unless
+// the kit is here. Returns a logicalSourceKey or null.
+function _midiAutoChoice(raw, inputs) {
+    if (raw === '' || !inputs.length) return null;
+    const saved = _midiResolveSaved(raw, inputs);
+    const manual = _readStore(STORE_KEYS.midiManual) === '1';
+    if (saved && manual) return saved;
+    const kit = _kitSource(inputs);
+    if (kit) return kit.key;
+    if (saved) return saved;
+    return raw == null ? inputs[0].key : null;      // never picked: something rather than nothing
 }
 
 // No saved pick: the kit Clone Hero is set up for (its MIDI profile is
 // named after the device, sometimes with a " 0"-style index), then
 // anything that looks like a drum module, then the first input.
 function _preferredKitSource(inputs, kitDevice) {
+    return _kitSource(inputs, kitDevice) || inputs[0];
+}
+
+// The drum kit among the inputs, or null: the device Clone Hero's profile is
+// named after (exact match, ignoring case and Clone Hero's " 0" index suffix),
+// then a name that looks like a drum module.
+const _DRUM_NAME = /\bdrums?\b|alesis|\btd-?\d|e-?kit|roland td|yamaha dtx|\bdtx\b/i;
+function _kitSource(inputs, kitDevice) {
     const norm = (x) => String(x || '').toLowerCase().replace(/\s+\d+$/, '').trim();
     const want = norm(kitDevice !== undefined ? kitDevice : (_kitInfo && _kitInfo.device));
     if (want) {
-        const m = inputs.find(s => norm(s.name) === want)
-            || inputs.find(s => norm(s.name).includes(want) || (norm(s.name) && want.includes(norm(s.name))));
+        const m = inputs.find(s => norm(s.name) === want);
         if (m) return m;
     }
-    return inputs.find(s => /drum|alesis|td-?\d|e-?kit/i.test(s.name || '')) || inputs[0];
+    return inputs.find(s => _DRUM_NAME.test(s.name || '')) || null;
 }
 
 async function _midiConnect(key) {
@@ -886,6 +1000,7 @@ async function _midiConnect(key) {
             return;
         }
         if (res && res.handle) {
+            _midiDiag.error = '';
             _midiHandle = res.handle;
             // The domain handle delivers raw MIDI data; adapt to the old
             // MIDIMessageEvent shape so _midiOnMessage stays unchanged.
@@ -902,6 +1017,11 @@ async function _midiConnect(key) {
         }
     } catch (e) {
         console.warn('[Drums] MIDI open failed:', e);
+        if (myGen === _midiConnectSeq) {
+            _midiDiag.error = (e && e.name === 'InvalidAccessError')
+                ? 'the kit is in use by another program (close Clone Hero or other apps using it, then pick it again)'
+                : ((e && (e.message || e.name)) || 'unknown error');
+        }
         // Only clear if we're still the current connect — a stale older open's
         // rejection (rapid switch / autoconnect racing a manual pick) must not
         // wipe a newer connect's already-installed _midiInput/_midiHandle (which
@@ -973,13 +1093,21 @@ function _midiOnMessage(e) {
     // _activeInstance is the routing slot; it points at null when
     // no instance is focused (splitscreen toggled off mid-session
     // between teardowns, or no instance initialised yet).
-    if (!_activeInstance) return;
-
     const [status, note, velocity] = e.data;
     const ch = status & 0x0F;
+    const cmd = status & 0xF0;
+    if (cmd === 0x90 && velocity > 0) {
+        // Counted before routing so the settings status shows whether the
+        // kit reaches Slopsmith at all, and why a hit was dropped.
+        _midiDiag.hits++;
+        _midiDiag.last = 'note ' + note + ' vel ' + velocity + ' ch ' + (ch + 1)
+            + (!_activeInstance ? ' (no drum view focused)'
+                : (_cfg.midiChannel >= 0 && ch !== _cfg.midiChannel) ? ' (ignored: Ch filter is ' + (_cfg.midiChannel + 1) + ')' : '');
+        _refreshMidiStatus();
+    }
+    if (!_activeInstance) return;
     if (_cfg.midiChannel >= 0 && ch !== _cfg.midiChannel) return;
 
-    const cmd = status & 0xF0;
     if (cmd === 0x90 && velocity > 0) {
         _activeInstance._handleDrumHit(note, velocity);
     }
@@ -988,6 +1116,7 @@ function _midiOnMessage(e) {
 
 function _midiUpdateAllDeviceLists() {
     const inputs = _midiSources();
+    _refreshMidiStatus();
 
     // Every instance's settings panel (if open) has a
     // `.drums-midi-select` node. Iterate all of them so a
@@ -2119,6 +2248,7 @@ function createFactory(forceView) {
         // collide on getElementById lookups. Handlers bind via
         // panel.querySelector scoped to this specific panel.
         panel.innerHTML = `
+            <div class="drums-midi-status" style="font-size:10px;color:#8ab;margin-bottom:4px;">${_midiStatusText()}</div>
             <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
                 <div style="display:flex;align-items:center;gap:4px;">
                     <span style="font-size:10px;color:#666;">MIDI</span>
@@ -2219,6 +2349,7 @@ function createFactory(forceView) {
         _settingsPanel = panel;
 
         panel.querySelector('.drums-midi-select').onchange = function () {
+            _saveCfg('midiManual', this.value ? '1' : '');
             _midiConnect(this.value);
             _synthInit();
         };
@@ -3011,6 +3142,44 @@ window.slopsmithViz_drums3d.matchesArrangement = createFactory.matchesArrangemen
 window.slopsmithViz_drums2d = function () { return createFactory('2d'); };
 window.slopsmithViz_drums2d.matchesArrangement = createFactory.matchesArrangement;
 
+// ── Library: filter by Drums ──────────────────────────────────────────
+// The library Filters drawer builds its arrangement pills from core's
+// _getArrangements() (Lead / Rhythm / Bass [/ Combo]); add Drums so songs
+// can be required / excluded by a Drums arrangement. routes.py adds
+// "Drums" to the server's filter whitelist. Drum badges on song cards get
+// their own colour instead of the grey fallback.
+function _addDrumsLibraryFilter() {
+    if (typeof window === 'undefined') return;
+    const orig = window._getArrangements;
+    if (typeof orig === 'function' && !orig.__drums) {
+        const wrapped = function () {
+            const list = orig.apply(this, arguments);
+            return Array.isArray(list) && !list.includes('Drums') ? list.concat('Drums') : list;
+        };
+        wrapped.__drums = true;
+        window._getArrangements = wrapped;
+        try { if (typeof window._renderLibFilterDrawer === 'function') window._renderLibFilterDrawer(); } catch (_) { /* drawer not built yet */ }
+    }
+    const badge = window._arrangementBadgeHtml;
+    if (typeof badge === 'function' && !badge.__drums) {
+        const wrappedBadge = function (arrangement, nm) {
+            const html = badge.apply(this, arguments);
+            const label = arrangement && ((nm === 'smart' && arrangement.smart_name) || arrangement.name) || '';
+            return DRUMS_PATTERNS.test(label) ? html.replace('bg-dark-600 text-gray-400', 'bg-orange-900/40 text-orange-300') : html;
+        };
+        wrappedBadge.__drums = true;
+        window._arrangementBadgeHtml = wrappedBadge;
+    }
+}
+try {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined' && document.querySelectorAll) {
+        _addDrumsLibraryFilter();
+        // app.js may define these after this plugin's script runs.
+        let tries = 0;
+        const t = setInterval(() => { _addDrumsLibraryFilter(); if (++tries > 30 || (window._getArrangements && window._getArrangements.__drums)) clearInterval(t); }, 500);
+    }
+} catch (_) { /* non-browser */ }
+
 // ── Retire the stock "3D Drum Highway" (drum_highway_3d) ──────────────
 // The desktop app bundles an older drum view that this plugin replaces.
 // It's marked bundled, so a user copy can't shadow it server-side, and in
@@ -3142,7 +3311,9 @@ if (typeof module !== 'undefined' && module.exports) {
         _difficultyPref: () => _cfg.difficulty,
         _setDifficulty,
         matchesArrangement: createFactory.matchesArrangement,
-        _isDrumsArrangement, _preferredKitSource,
+        _isDrumsArrangement, _preferredKitSource, _kitSource, _midiAutoChoice,
+        _webMidiShim: () => _webMidiShim(), _resetWebMidiShim: () => { _shim = null; },
+        _midiOnMessage, _midiDiag,
     };
 }
 

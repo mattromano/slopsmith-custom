@@ -183,3 +183,89 @@ test('_preferredKitSource: Clone Hero device name, then a drum module, then the 
     assert.equal(m._preferredKitSource(ins, '').key, 'b', 'no Clone Hero name: anything drum-like');
     assert.equal(m._preferredKitSource([{ name: 'Keys', key: 'k' }], 'Nope').key, 'k');
 });
+
+// Node 24 has a read-only global navigator: swap it via its descriptor.
+function fakeNavigator(value) {
+    const orig = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'navigator', { value, configurable: true, writable: true });
+    return () => {
+        if (orig) Object.defineProperty(globalThis, 'navigator', orig);
+        else delete globalThis.navigator;
+    };
+}
+
+test('Web MIDI fallback: used when the core has no midi-input domain; delivers raw bytes', async () => {
+    const m = freshPlugin();
+    m._resetWebMidiShim();
+    let opened = 0;
+    const kit = { id: 'k1', name: 'Alesis Drum Module', type: 'input', state: 'connected',
+        open: async () => { opened++; }, close: () => {}, onmidimessage: null };
+    const restore = fakeNavigator({ requestMIDIAccess: async () => ({ inputs: new Map([['k1', kit]]), onstatechange: null }) });
+    try {
+        const mi = m._webMidiShim();
+        assert.ok(mi && mi.version === 1 && mi.shim);
+        assert.deepEqual(mi.listSources(), [], 'nothing before discover');
+        assert.equal((await mi.discover()).outcome, 'handled');
+        const src = mi.listSources();
+        assert.deepEqual(src, [{ sourceId: 'k1', label: 'Alesis Drum Module', logicalSourceKey: 'web-midi::k1' }]);
+        const res = await mi.open({ requester: 'drums', logicalSourceKey: 'web-midi::k1' });
+        const got = [];
+        res.handle.addListener((d) => got.push(Array.from(d)));
+        kit.onmidimessage({ data: new Uint8Array([0x99, 38, 100]) });   // snare, ch 10
+        assert.deepEqual(got, [[0x99, 38, 100]]);
+        assert.equal(opened, 1);
+        assert.equal((await mi.open({ logicalSourceKey: 'web-midi::nope' })).handle, null);
+    } finally {
+        restore();
+        m._resetWebMidiShim();
+    }
+});
+
+test('Web MIDI fallback: a busy device (Windows MIDI is exclusive) rejects open', async () => {
+    const m = freshPlugin();
+    m._resetWebMidiShim();
+    const busy = Object.assign(new Error('Port in use'), { name: 'InvalidAccessError' });
+    const kit = { id: 'k1', name: 'Kit', type: 'input', state: 'connected', open: async () => { throw busy; }, close: () => {} };
+    const restore = fakeNavigator({ requestMIDIAccess: async () => ({ inputs: new Map([['k1', kit]]) }) });
+    try {
+        const mi = m._webMidiShim();
+        await mi.discover();
+        await assert.rejects(mi.open({ logicalSourceKey: 'web-midi::k1' }), { name: 'InvalidAccessError' });
+    } finally {
+        restore();
+        m._resetWebMidiShim();
+    }
+});
+
+test('_midiAutoChoice: the drum kit beats an auto-picked device; a hand pick or explicit None is kept', () => {
+    const m = freshPlugin();
+    const store = {};
+    global.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } };
+    const ins = [{ name: 'Loupedeck Live', key: 'web-midi::loupe' }, { name: 'Alesis Drum Module', key: 'web-midi::kit' }];
+    // auto-picked Loupedeck saved earlier -> the kit
+    assert.equal(m._midiAutoChoice('web-midi::loupe', ins), 'web-midi::kit');
+    // never picked -> the kit
+    assert.equal(m._midiAutoChoice(null, ins), 'web-midi::kit');
+    // explicit None stays off
+    assert.equal(m._midiAutoChoice('', ins), null);
+    // picked by hand in the dropdown -> kept
+    store.drums_midi_manual = '1';
+    assert.equal(m._midiAutoChoice('web-midi::loupe', ins), 'web-midi::loupe');
+    delete store.drums_midi_manual;
+    // no kit connected: keep the saved device; never picked -> first input
+    const noKit = [{ name: 'Loupedeck Live', key: 'web-midi::loupe' }, { name: 'Arturia KeyStep', key: 'web-midi::keys' }];
+    assert.equal(m._midiAutoChoice('web-midi::keys', noKit), 'web-midi::keys');
+    assert.equal(m._midiAutoChoice(null, noKit), 'web-midi::loupe');
+    // saved device unplugged and no kit -> wait for it (null)
+    assert.equal(m._midiAutoChoice('web-midi::gone', noKit), null);
+});
+
+test('_kitSource: exact Clone Hero name, drum-looking names, no loose substring matches', () => {
+    const m = freshPlugin();
+    // "CH 2" must not loosely match unrelated names containing "ch"
+    const ins = [{ name: 'Launch Control XL', key: 'a' }, { name: 'Loupedeck Live', key: 'b' }];
+    assert.equal(m._kitSource(ins, 'CH 2'), null);
+    assert.equal(m._kitSource([...ins, { name: 'CH 2', key: 'c' }], 'CH 2').key, 'c');
+    assert.equal(m._kitSource([...ins, { name: 'Roland TD-17', key: 'd' }], '').key, 'd');
+    assert.equal(m._kitSource([...ins, { name: 'Yamaha DTX-PRO', key: 'e' }], '').key, 'e');
+});
