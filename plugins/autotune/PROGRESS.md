@@ -1,0 +1,45 @@
+# Auto-Tuner build progress
+
+Update after each task: check the box, add a one-line note. See `PLAN.md` for full task descriptions.
+
+## State
+- **Last completed:** T12 (highway tuning badge) — **Phase 4 done, full retune coupled end-to-end**
+- **Next task:** T13 (keyboard shortcuts: `[`/`]` step, `\` reset)
+- **Cron loop set up:** yes — CronCreate job `417464d3`, every 5h (`0 */5 * * *`); delete when Phase 5 done
+
+## Tasks
+### Phase 1 — Plugin scaffold
+- [x] T1 plugin.json + LICENSE(MIT) + README + .gitignore + git init
+- [x] T2 screen.js skeleton + localStorage persistence
+- [x] T3 TUNE pill + semitone preset popover
+
+### Phase 2 — Web real-time path
+- [x] T4 real-time pitch-shift AudioWorklet (authored MIT, not vendored — see assets/NOTICE.md)
+- [x] T5 audio→MediaElementSource→worklet→destination + re-seek on swap
+- [x] T6 presets→setPitch, persist, auto-apply  ← web MVP demoable
+
+### Phase 3 — Desktop real-time path (slopsmith-desktop)
+- [x] T7 signalsmith-stretch on JUCE backing bus (slopsmith-desktop @ feat/backing-pitch-shift)
+- [x] T8 IPC setBackingPitchSemitones / getBackingPitchSemitones / getBackingPitchLatencyMs
+- [x] T9 rebuilt native addon (build OK, addon exports verified under Electron, tsc clean); plugin feature-detects engine path
+
+### Phase 4 — Full retune coupling (note_detect)
+- [x] T10 note_detect consumes retune:offset → shift expected MIDI (note_detect @ feat/retune-offset)
+- [x] T11 autotune emits retune:offset on change + song load (deferred to beat ND's clear)
+- [x] T12 highway tuning badge (effective tuning = base+offset)
+
+### Phase 5 — Polish & contribution
+- [ ] T13 keyboard shortcuts
+- [ ] T14 tests (semitone→factor math; pytest if server route added)
+- [ ] T15 README/CHANGELOG/DCO; open 3 PRs
+
+## Notes
+- 2026-05-20 T1: scaffolded plugin.json (id `autotune`), MIT LICENSE, README, .gitignore. Added minimal valid stubs for screen.js/routes.py/settings.html so the plugin loads cleanly at every commit (skeleton/UI come in T2/T3). `git init` + initial signed commit. Resume cron `417464d3` set as first action.
+- 2026-05-21 T10–T12: full-retune coupling + badge (Phase 4). T10 (note_detect repo, branch `feat/retune-offset`): consume `retune:offset` and add the offset inside `_ndMidiFromStringFret` — the single (string,fret)→MIDI chokepoint every expected MIDI / derived expectedFreq / per-string band flows through, so single + chord matching both follow the retune; module-global (a detuned guitar is global, not per-arrangement), bound once boot-order-safe, cleared on `song:loaded`. T11 (autotune): emit `{semitones,cents:0,tuningName}` on every preset change (sync) and on song load (**deferred via queueMicrotask** so it lands AFTER note_detect's synchronous song:loaded clear — verified by integration scenario: clear→0 then re-emit→−2 wins). T12: read-only `#autotune-badge` in `#player-controls` showing `_effectiveTuningName(base+offset)` (proper standard-tuning names; signed-shift fallback for drop/open base), shown only when offset≠0. Added a 4-check coupling scenario to `test/integration.test.js` (16 checks total, all green). Manual confirm pending: detune guitar to E♭, set E♭ preset, play E-standard chart → hits score green.
+- 2026-05-21 T9: rebuilt the native addon — `bash scripts/build-audio.sh Release` with CMake on PATH + `CMAKE_POLICY_VERSION_MINIMUM=3.5`. Compiles + links clean (signalsmith template + engine changes; only benign JUCE warnings) → `build/Release/slopsmith_audio.node` (6.3M). `tsc --noEmit` clean (preload/audio-bridge). Verified the addon **exports** `setBackingPitchSemitones`/`getBackingPitchSemitones`/`getBackingPitchLatencyMs` by `require()`-ing it under Electron's ABI (all `function`). Plugin `_engine()` feature-detects this path (covered by integration test scenarios 2–4). **Remaining: manual end-to-end audio test** — launch `npm run dev`, play a CDLC, pick a preset, confirm the native backing track shifts (same manual-confirmation category as the web MVP). Phase 3 done; desktop is now the preferred path on the user's setup.
+- 2026-05-21 T7+T8: native desktop path in **slopsmith-desktop** (branch `feat/backing-pitch-shift`, 2 signed commits). T7: vendored signalsmith-stretch (MIT) as a submodule pinned to **tag 1.0.0** (self-contained — bundles dsp/, no transitive deps; main branch needs external signalsmith-linear, avoided). `BackingPitchShifter` pImpl wrapper (RT-safe `setSemitones`/`process`, off-thread `prepare`/`reset`); integrated into `AudioEngine` backing render path (process-in-place before mix, configure on device start, reset on seek). **Latency note:** signalsmith presetDefault window ≈120ms; engine reports backing position **minus** shifter latency while active so the chart stays aligned with the delayed audio; `getBackingPitchLatencyMs` exposed for finer A/V compensation later. **Stems caveat:** native engine has a single backing track (no separate stem voices), so v1 desktop retune covers the backing track only. T8: N-API `setBackingPitchSemitones`/getters in NodeAddon, `audio:` IPC handlers in audio-bridge, `window.slopsmithDesktop.audio.setBackingPitchSemitones` in preload — the exact capability `_engine()` probes. **Not yet built — T9 builds + verifies.**
+- 2026-05-20 T6: wired `_setOffset`→`_setPitch` (presets now apply to audio) and `_onSongLoaded` auto-applies the persisted offset (desktop re-asserts incl. 0-reset; web no-ops 0, builds lazily for non-zero). Added `test/integration.test.js` (12 checks, all pass): loads real screen.js under stubbed DOM/WebAudio, verifies persistence round-trip, engine detection, desktop IPC dispatch, web worklet param driving, auto-apply on load, and InvalidStateError degradation. **Web MVP complete & validated headlessly** — only the visual/audible "pick E♭, hear it drop" browser confirmation remains a manual step (run the desktop app or Docker, pick a preset). Test suite: `node test/*.test.js` all green.
+- 2026-05-20 T5: web audio graph + `_setPitch` engine dispatch. `_engine()` feature-detects `window.slopsmithDesktop.audio.setBackingPitchSemitones` → desktop IPC, else web. **Investigated audio routing first:** core does NOT route song `<audio>` through Web Audio, but `highway_3d` already calls `createMediaElementSource(audio)` (irrevocable, once-per-element) for its analyser, with no sharing API. On the user's **desktop** path autotune uses native IPC and never taps `<audio>`, so the conflict only exists in the Docker/browser fallback — handled gracefully: on InvalidStateError we disable web retune with a clear message (desktop unaffected), and we publish our own source on `window.slopsmith.audio.getMediaElementSource` for future cooperators. Web graph built **lazily on first non-zero shift** (so we don't tap/break the shared source unless retune is used), with autoplay-resume + a re-seek guard. **Asset-serving blocker:** core serves only `screen.js`/`settings.html` (no generic plugin-asset route, and adding one is outside the 3-repo scope), so the worklet is **inlined in screen.js and loaded via Blob URL**; `assets/pitch-shift-worklet.js` stays canonical/tested and `test/worklet-sync.test.js` enforces byte-identity. Not yet wired to `_setOffset` (T6). `node --check` + both tests green.
+- 2026-05-20 T4: authored `assets/pitch-shift-worklet.js` — MIT, original work, a constant-overlap-add granular pitch shifter (two Hann taps, COLA sum = 1.0, no FFT, streaming-safe, tempo-preserving). **Deviation from PLAN "vendor SoundTouch/rubberband":** evaluated `@soundtouchjs/audio-worklet` (MPL-2.0) + `soundtouchjs` (LGPL) — both are buffer-oriented (decode-whole-song), can't filter the live `<audio>`→MediaElementSource stream the plan's graph needs, and add mixed licensing + build chain. Authored worklet better satisfies Constitution II ("bundled asset, no build step"), keeps the plugin all-MIT, and exposes a stable `pitchSemitones` param so a higher-quality engine can swap in later. Rationale + alternatives table in `assets/NOTICE.md`. Validated offline (`node test/pitch-shift.test.js`): 0 st = sample-accurate passthrough; +12/−12/−1/−5/+2 st all hit 2^(n/12) within tolerance; length (tempo) preserved; stereo per-channel. **Acceptance for T6 pre-confirmed at DSP level.**
+- 2026-05-20 T3: TUNE pill injected into `#player-controls` (nam_tone-style, shares Tailwind classes; gold when active, shows target note + signed semitones). Anchored preset popover (F♯ +2 … B −5, descending; E=std/reset) appended to `<body>`, fixed-positioned above the pill, deferred doc-click + Escape dismiss (mirrors audio-mixer), closes on screen change. Self-contained inline styling (no reliance on undefined Tailwind shades). `node --check` clean. Phase 1 done.
+- 2026-05-20 T2: screen.js skeleton — state object, per-song offset persistence (djb2-hashed `autotune.<hash>` localStorage keys, ±7 st clamp), `song:loaded` hook (verified against highway.js: payload is `currentSong` on `event.detail`), late-attach retry, `_setOffset` central mutation point, `window.autotune` debug handle. No audio/UI yet.

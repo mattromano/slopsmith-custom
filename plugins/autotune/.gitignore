@@ -1,0 +1,12 @@
+.env
+node_modules/
+
+# Runtime artifacts — never commit.
+__pycache__/
+*.pyc
+.slopsmith-installed.json
+
+# OS / editor junk
+.DS_Store
+Thumbs.db
+*.swp

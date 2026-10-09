@@ -1,0 +1,9 @@
+{
+  "id": "autotune",
+  "name": "Auto-Tuner",
+  "version": "0.1.0",
+  "private": false,
+  "script": "screen.js",
+  "routes": "routes.py",
+  "settings": { "html": "settings.html" }
+}
