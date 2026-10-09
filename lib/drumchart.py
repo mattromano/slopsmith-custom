@@ -653,7 +653,11 @@ def reduce_level(hits, beats, level: str) -> list[DrumHit]:
     still leave a full grid step to both neighbours; caps gems per chord (snare and cymbals
     before toms; a kick is kept with one hand gem except on Easy).  ``beats``: [(time, m)]."""
     grid, max_gems, kick_with_hands = REDUCE[level]
-    bt = [t for t, _ in beats] if beats else []
+    # strictly increasing grid: built songs' beat maps can repeat a time (zero-length beat)
+    bt = []
+    for t in sorted(t for t, _ in beats or []):
+        if not bt or t - bt[-1] > 1e-6:
+            bt.append(t)
     chords: dict[float, list] = {}
     for h in hits:
         if h.kick2x or h.dyn == "ghost":

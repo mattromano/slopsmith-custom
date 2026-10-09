@@ -12,6 +12,11 @@ For every *.sloppak in LIBRARY_DIR (no Drums arrangement yet, unless --redo):
   3. nothing is written without --write, and never before the song has an identical copy
      in --backup-dir (created on the spot with an APFS clone / plain copy if missing).
 Progress is resumable: STATE.json records every finished song; re-running skips them.
+
+--upgrade: instead, songs that already have Drums but fewer than three hand-charted lower levels
+(Easy/Medium/Hard reduced by software, or none at all). A chart replaces theirs only when it has
+more hand-charted levels than the current one AND passes the same validation; the song is backed
+up to --backup-dir first (a dated copy when the pre-drums original is already there).
 A CSV report (STATE.csv) lists source, chart, offset and validation numbers per song.
 """
 from __future__ import annotations
@@ -78,6 +83,44 @@ def clean_title(t: str) -> str:
         t = n
 
 
+LOWER = ("easy", "medium", "hard")
+
+
+def chart_levels(r: dict) -> int:
+    """Hand-charted lower drum levels (Easy/Medium/Hard with notes) in a Chorus search result."""
+    counts = (r.get("notesData") or {}).get("noteCounts") or []
+    have = {c.get("difficulty") for c in counts if c.get("instrument") == "drums" and (c.get("count") or 0) > 0}
+    return sum(lv in have for lv in LOWER)
+
+
+def current_levels(p: Path) -> int:
+    """Hand-charted lower levels in the song's Drums arrangement (-1: no Drums arrangement)."""
+    import zipfile
+    man = manifest_of(p)
+    e = next((x for x in man.get("arrangements", []) if re.search(r"\bdrums?\b", x.get("name", ""), re.I)), None)
+    if not e:
+        return -1
+    if p.is_dir():
+        d = json.loads((p / e["file"]).read_text(encoding="utf-8"))
+    else:
+        with zipfile.ZipFile(p) as z:
+            d = json.loads(z.read(e["file"]))
+    blk = d.get("drums") or {}
+    lv, gen = blk.get("levels") or {}, set(blk.get("levels_generated") or [])
+    return sum(1 for k in LOWER if lv.get(k) and k not in gen)
+
+
+def folder_levels(folder: Path) -> int:
+    """Hand-charted lower levels in a downloaded / local chart folder."""
+    import drumchart
+    try:
+        chart, _ = drumchart.load_song_folder(Path(folder), levels=True)
+    except Exception:
+        return 0
+    gen = set(chart.levels_generated or [])
+    return sum(1 for k in LOWER if chart.levels.get(k) and k not in gen)
+
+
 def online_candidates(artist, title, duration, min_match, n=3) -> list[dict]:
     import chorus
     import drumjoin
@@ -99,11 +142,12 @@ def online_candidates(artist, title, duration, min_match, n=3) -> list[dict]:
             dlen = abs(ln - duration) / duration if duration and ln else 0.5
             out.append({"kind": "online", "md5": r["md5"], "artist": r.get("artist"), "name": r.get("name"),
                         "charter": r.get("charter"), "score": round(s, 3), "len_diff": round(dlen, 3),
-                        "pro": bool(r.get("pro_drums"))})
+                        "pro": bool(r.get("pro_drums")), "levels": chart_levels(r)})
         if out:
             break
-    # name match first, then length (live/edit versions), then pro drums
-    out.sort(key=lambda c: (-round(c["score"], 1), c["len_diff"] > 0.08, c["len_diff"], not c["pro"]))
+    # name match first, then length (live/edit versions), then charts with all four difficulties
+    # (hand-charted Easy/Medium/Hard beat software-reduced ones), then pro drums
+    out.sort(key=lambda c: (-round(c["score"], 1), c["len_diff"] > 0.08, -c["levels"], c["len_diff"], not c["pro"]))
     return out[:n]
 
 
@@ -139,9 +183,16 @@ def process(path_str: str) -> dict:
         cands.sort(key=lambda c: -c["score"])
         cands = cands[:2]
         if a.online and artist and title:
-            cands += online_candidates(artist, title, dur, a.min_match, a.max_candidates)
+            # upgrade: look further down the list, only charts with more levels count
+            cands += online_candidates(artist, title, dur, a.min_match,
+                                       a.max_candidates * (3 if a.upgrade else 1))
+        cur = None
+        if a.upgrade:
+            cur = current_levels(p)
+            res["levels_before"] = cur
+            cands = [c for c in cands if c["kind"] == "local" or c.get("levels", 0) > cur][:a.max_candidates + 2]
         if not cands:
-            res["status"] = "no-chart"
+            res["status"] = "no-better" if a.upgrade else "no-chart"
             return res
         tried = []
         for c in cands[:a.max_candidates + 2]:
@@ -152,6 +203,11 @@ def process(path_str: str) -> dict:
             else:
                 folder = Path(c["path"])
                 label = f"local:{folder}"
+            if cur is not None:
+                lv = folder_levels(folder)
+                if lv <= cur:
+                    continue
+                c["levels"] = lv
             if a.write:
                 ensure_backup(p, Path(a.backup_dir))
             lines = []
@@ -166,11 +222,15 @@ def process(path_str: str) -> dict:
                           "offset": al.get("offset"), "reasons": v.get("reasons"),
                           "error": next((x.get("error") for x in rep["candidates"] if x.get("error")), None)})
             if v.get("ok"):
-                res.update(status="joined" if a.write else "would-join", chart=label, **{
+                done = ("upgraded" if a.write else "would-upgrade") if cur is not None else \
+                    ("joined" if a.write else "would-join")
+                if cur is not None:
+                    res["levels_after"] = c.get("levels")
+                res.update(status=done, chart=label, **{
                     k: tried[-1][k] for k in ("within_30ms", "kick", "median_ms", "method", "offset")})
                 break
         else:
-            res["status"] = "flagged"
+            res["status"] = "flagged" if tried else ("no-better" if a.upgrade else "no-chart")
         res["tried"] = tried
     except Exception as e:
         res["error"] = f"{type(e).__name__}: {e}"
@@ -200,7 +260,7 @@ def build_local_index(dirs) -> list[tuple]:
 
 def write_report(state: dict, csv_path: Path):
     cols = ["file", "artist", "title", "status", "chart", "method", "offset", "median_ms", "within_30ms", "kick",
-            "secs", "error"]
+            "levels_before", "levels_after", "secs", "error"]
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols, extrasaction="ignore")
         w.writeheader()
@@ -230,6 +290,9 @@ def main():
     ap.add_argument("--state", default=str(Path.home() / "drums-work" / "library" / "drums_state.json"))
     ap.add_argument("--min-match", type=float, default=0.86)
     ap.add_argument("--max-candidates", type=int, default=3)
+    ap.add_argument("--upgrade", action="store_true",
+                    help="songs WITH Drums but < 3 hand-charted lower levels: replace only with a chart "
+                         "that has more hand-charted levels and validates")
     a = ap.parse_args()
 
     lib = Path(a.library).expanduser()
@@ -248,6 +311,18 @@ def main():
     for p in songs:
         prev = state.get(p.name)
         retry = {x.strip() for x in a.retry.split(",") if x.strip()}
+        if a.upgrade:
+            if prev and prev.get("status") not in retry and not a.redo:
+                continue
+            if a.only and not re.search(a.only, p.name, re.I):
+                continue
+            try:
+                lv = current_levels(p)
+            except Exception:
+                continue
+            if 0 <= lv < 3:
+                todo.append(p)
+            continue
         if prev and not a.redo and prev.get("status") not in retry:
             if not (prev.get("status") == "would-join" and a.write):
                 continue
@@ -283,8 +358,10 @@ def main():
             done += 1
             counts[r["status"]] = counts.get(r["status"], 0) + 1
             extra = ""
-            if r["status"] in ("joined", "would-join"):
+            if r["status"] in ("joined", "would-join", "upgraded", "would-upgrade"):
                 extra = f"{r['chart'][:60]}  {r.get('within_30ms')} within30, kick {r.get('kick')}, {r.get('method')}"
+                if "levels_before" in r:
+                    extra += f", levels {r['levels_before']}->{r.get('levels_after')}"
             elif r["status"] == "flagged":
                 extra = "; ".join(f"{t.get('within_30ms')}" for t in r.get("tried", []))
             elif r.get("error"):

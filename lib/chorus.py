@@ -25,7 +25,16 @@ def _lock(f, on: bool):
     if sys.platform == "win32":                 # no fcntl on Windows; lock byte 0 with msvcrt
         import msvcrt
         f.seek(0)
-        msvcrt.locking(f.fileno(), msvcrt.LK_LOCK if on else msvcrt.LK_UNLCK, 1)
+        if not on:
+            msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+            return
+        # LK_LOCK gives up after ~10 s (EDEADLK) while other workers queue: keep trying.
+        while True:
+            try:
+                msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+                return
+            except OSError:
+                time.sleep(0.2)
     else:
         import fcntl
         fcntl.flock(f, fcntl.LOCK_EX if on else fcntl.LOCK_UN)

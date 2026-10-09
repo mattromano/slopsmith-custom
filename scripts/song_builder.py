@@ -10,7 +10,10 @@ tab_check.py and writes a quality report.
   python scripts/song_builder.py check ALBUM.yaml            # (re)grade existing builds
   python scripts/song_builder.py tune  ALBUM.yaml            # settle close DTW-vs-constant-tempo calls by lift
   python scripts/song_builder.py survey TAB.gp|.gp5          # list a tab's tracks
-  python scripts/song_builder.py drums ALBUM.yaml --chart-dir PATH   # add Drums from YARG/CH charts or the GP drums
+  python scripts/song_builder.py drums ALBUM.yaml [--chart-dir PATH] # add Drums: a Clone Hero chart (local, then
+                                                                    #   Chorus Encore online), else the GP drums
+
+build and tune end with the drums step for the songs they built (--no-drums skips it).
 
 Run with _build/.mirvenv/Scripts/python.exe (has basic-pitch + refiner + the host packages).
 
@@ -342,6 +345,27 @@ def tune(cfg_path: Path, jobs):
         tuning_file.write_text(json.dumps(tuning, indent=1), encoding="utf-8")
 
 
+def online_chart(artist: str, title: str, sloppak: Path, min_match: float):
+    """Best Chorus Encore drum chart for the song (name, then length, then most hand-charted
+    difficulties), downloaded to the drums cache; None when nothing matches or the search fails."""
+    import drums_library
+    try:
+        dur = float(drums_library.manifest_of(sloppak).get("duration") or 0)
+        cands = drums_library.online_candidates(artist, title, dur, min_match, n=1)
+        if not cands:
+            print(f"  no Chorus chart for {artist} - {title}", flush=True)
+            return None
+        c = cands[0]
+        import chorus
+        folder = chorus.fetch(c["md5"], drums_library.CACHE / "chorus" / c["md5"])
+        print(f"  Chorus chart {c['artist']} - {c['name']} ({c.get('charter')}), "
+              f"{c['levels']} hand-charted lower levels", flush=True)
+        return folder
+    except Exception as e:
+        print(f"  Chorus search failed: {e}", flush=True)
+        return None
+
+
 def drums(cfg_path: Path, jobs, a):
     """Attach a Drums arrangement to every built song: a matching YARG/Clone Hero chart
     from --chart-dir (aligned to our audio), else the tab's drum track via the stored sync
@@ -359,6 +383,8 @@ def drums(cfg_path: Path, jobs, a):
         print(f"\n{j['title']}", flush=True)
         title = re.sub(r"\s*\([^)]*\)\s*$", "", j["title"])  # drop "(Songsterr)"-style variants
         chart = drums_join.find_chart(index, j["artist"], title, a.min_match) if index else None
+        if chart is None and getattr(a, "drums_online", True) and "chart" in a.source:
+            chart = online_chart(j["artist"], title, j["out"], a.min_match)
         rep = drumjoin.join(j["out"], chart_folder=chart, gp_path=j["tab"],
                             sources=[s.strip() for s in a.source.split(",") if s.strip()],
                             transcriber=a.transcriber, force=a.force, dry_run=a.dry_run,
@@ -390,6 +416,9 @@ def main():
     ap.add_argument("--notation-only", action="store_true",
                     help="rebuild charts only: reuse each existing build's stems + sync map (seconds per song)")
     ap.add_argument("--chart-dir", help="drums: folder of YARG/Clone Hero song folders to match against")
+    ap.add_argument("--no-online-charts", dest="drums_online", action="store_false",
+                    help="drums: don't search Chorus Encore for a chart (use --chart-dir / the GP drums only)")
+    ap.add_argument("--no-drums", action="store_true", help="build/tune: skip the drums step at the end")
     import drums_join
     drums_join.add_common_args(ap)
     a = ap.parse_args()
@@ -432,6 +461,11 @@ def main():
             results[j["title"]] = r
             print(json.dumps(r), flush=True)
     report(cfg, jobs, results)
+    if a.cmd in ("build", "tune") and not a.no_drums:
+        # Full builds and tune's rebuilds replace the sloppak, so drums are (re)attached here.
+        # --notation-only keeps the existing Drums arrangement, but re-running is harmless.
+        print("\n== drums", flush=True)
+        drums(cfg, jobs, a)
 
 
 if __name__ == "__main__":
