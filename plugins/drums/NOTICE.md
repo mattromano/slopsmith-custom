@@ -20,3 +20,12 @@ public API (`window.DrumsEngine` / `require('./engine.js')`), so they remain sep
 distribute changes to `engine.js`, they must stay under LGPL-3.0 and their source must stay available.
 
 The header of `engine.js` lists every behaviour that deviates from YARG ("Deviations from YARG").
+
+## Bundled drum sounds (`sounds/`)
+
+| Files | License |
+|-------|---------|
+| `sounds/WebAudioFontPlayer.js` | **GPL-3.0**. WebAudioFont player, unmodified, by Sergey Surikov (https://github.com/surikov/webaudiofont). It is a separate script the synth loads at runtime; the rest of the plugin only calls its public `WebAudioFontPlayer` API. |
+| `sounds/128*_0_JCLive_sf2_file.js` | **MIT**. General MIDI drum samples (JCLive set) from https://github.com/surikov/webaudiofontdata, unmodified. |
+
+See `sounds/README.md`.

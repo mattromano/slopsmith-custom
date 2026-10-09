@@ -609,8 +609,10 @@ function _resolveView(view, canWebGL2) {
 // WebAudioFont drum kit synthesizer (module-level — one audio context per tab)
 // ═══════════════════════════════════════════════════════════════════════
 
-const WAF_BASE = 'https://surikov.github.io/webaudiofontdata/sound/';
-const WAF_PLAYER_URL = 'https://surikov.github.io/webaudiofont/npm/dist/WebAudioFontPlayer.js';
+// Bundled in sounds/ and served by routes.py (works offline, nothing from
+// third-party sites). Same files as surikov.github.io/webaudiofont(data).
+const WAF_BASE = '/api/plugins/drums/sounds/';
+const WAF_PLAYER_URL = '/api/plugins/drums/sounds/WebAudioFontPlayer.js';
 const WAF_SF = 'JCLive_sf2_file';
 
 // MIDI notes that the WebAudioFont synth preloads samples for. Includes

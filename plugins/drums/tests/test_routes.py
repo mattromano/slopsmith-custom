@@ -99,3 +99,23 @@ def test_find_kit_mapping_without_clone_hero(tmp_path, monkeypatch):
     monkeypatch.delenv("CLONE_HERO_DIR", raising=False)
     monkeypatch.setattr(routes.Path, "home", staticmethod(lambda: tmp_path))
     assert routes.find_kit_mapping()["mapping"] is None
+
+
+def test_bundled_drum_sounds_are_served_locally():
+    c = _client()
+    r = c.get("/api/plugins/drums/sounds/WebAudioFontPlayer.js")
+    assert r.status_code == 200 and "WebAudioFontPlayer" in r.text
+    r = c.get("/api/plugins/drums/sounds/12838_0_JCLive_sf2_file.js")
+    assert r.status_code == 200 and "_drum_38_0_JCLive_sf2_file" in r.text
+    # every note the synth preloads is bundled
+    notes = [35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 57, 58, 59]
+    for n in notes:
+        assert (PLUGIN_DIR / "sounds" / f"128{n}_0_JCLive_sf2_file.js").is_file(), n
+    # nothing else from the plugin folder
+    for bad in ("README.md", "..%2Froutes.py", "routes.py", "12838_0_JCLive_sf2_file.js.bak"):
+        assert c.get(f"/api/plugins/drums/sounds/{bad}").status_code == 404, bad
+
+
+def test_screen_js_loads_no_third_party_sound_urls():
+    src = (PLUGIN_DIR / "screen.js").read_text(encoding="utf-8")
+    assert "surikov.github.io" not in src.replace("Same files as surikov.github.io", "")

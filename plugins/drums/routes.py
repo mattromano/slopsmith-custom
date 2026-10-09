@@ -4,6 +4,10 @@ GET /api/plugins/drums/static/{name}
     Serves the plugin's extra browser modules that screen.js loads on demand for the 3D view
     (plugin.json can only name one script). Only the whitelisted files below are served.
 
+GET /api/plugins/drums/sounds/{name}
+    The drum synth's player and General MIDI drum samples (sounds/, see sounds/README.md), served
+    locally so drum sounds work offline and nothing loads from third-party sites.
+
 GET /api/plugins/drums/kit-mapping
     The e-kit's pad mapping from Clone Hero's active MIDI profile (read live, so remapping the kit
     in Clone Hero carries over). screen.js uses it as the default MIDI map when no Learn map is saved.
@@ -11,11 +15,13 @@ GET /api/plugins/drums/kit-mapping
 
 import configparser
 import os
+import re
 from pathlib import Path
 
 from fastapi.responses import Response
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
+_SOUND_NAME = re.compile(r"WebAudioFontPlayer\.js|128\d{2}_0_JCLive_sf2_file\.js")
 _ASSETS = {
     "engine.js": "application/javascript",
     "highway3d.js": "application/javascript",
@@ -105,6 +111,18 @@ def find_kit_mapping():
 
 def setup(app, context):
     log = context.get("log") if isinstance(context, dict) else None
+
+    @app.get("/api/plugins/drums/sounds/{name}")
+    def drums_sound(name: str):
+        if not _SOUND_NAME.fullmatch(name):
+            return Response("", status_code=404)
+        try:
+            body = (_PLUGIN_DIR / "sounds" / name).read_bytes()
+        except OSError:
+            return Response("", status_code=404)
+        # Content never changes for a given file name: let the browser keep it.
+        return Response(body, media_type="application/javascript",
+                        headers={"Cache-Control": "public, max-age=604800"})
 
     @app.get("/api/plugins/drums/kit-mapping")
     def drums_kit_mapping():
