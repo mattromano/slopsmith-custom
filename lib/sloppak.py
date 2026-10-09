@@ -217,6 +217,15 @@ def load_song(
                 )
         song.arrangements.append(arr)
 
+    # Same order as extract_meta() (Lead > Combo > Rhythm > Bass > other,
+    # stable) so a library arrangement index addresses the same arrangement
+    # on the highway WebSocket's `?arrangement=N` — as it already does for
+    # PSARCs, whose loader sorts identically. Callers that pick by library
+    # index (e.g. the multiplayer plugin) would otherwise load the wrong
+    # part when a manifest lists e.g. Drums before Lead.
+    priority = {"Lead": 0, "Combo": 1, "Rhythm": 2, "Bass": 3}
+    song.arrangements.sort(key=lambda a: priority.get(a.name, 99))
+
     # Optional shared lyrics file.
     lyrics_rel = manifest.get("lyrics")
     if lyrics_rel:
