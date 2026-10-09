@@ -77,8 +77,10 @@ async function setRenderer(r) {
 }
 
 // Fire fake MIDI for every chart note the playhead crossed (a perfect player).
+// The notes the fake player plays: the chart of the difficulty under test (playDifficulty), else Expert+.
+let playNotes = chart.notes;
 function playMidiUpTo(t) {
-    const notes = chart.notes;
+    const notes = playNotes;
     while (midiCursor < notes.length && notes[midiCursor].t <= t) {
         const n = notes[midiCursor++];
         if (window.__skipMidi && window.__skipMidi(n)) continue;
@@ -87,7 +89,7 @@ function playMidiUpTo(t) {
 }
 function resetMidiCursor(t) {
     midiCursor = 0;
-    while (midiCursor < chart.notes.length && chart.notes[midiCursor].t < t) midiCursor++;
+    while (midiCursor < playNotes.length && playNotes[midiCursor].t < t) midiCursor++;
 }
 
 function frame() {
@@ -115,6 +117,18 @@ window.__harness = {
     get time() { return time; },
     frame,
     setTime(t) { time = t; resetMidiCursor(t); },
+    // Play the chart of one difficulty from now on: 'expert_plus' (all wire notes), 'expert' (no 2x kick)
+    // or a level from the drums block. Returns the number of notes.
+    playDifficulty(id) {
+        if (id === 'expert_plus') playNotes = chart.notes;
+        else if (id === 'expert') playNotes = chart.notes.filter(n => n.s * 24 + n.f !== 35);
+        else {
+            playNotes = (chart.levels[id] || []).map(([t, gm, f]) => Object.assign({ t, s: Math.floor(gm / 24), f: gm % 24 },
+                f === 1 ? { ac: true } : (f === 2 ? { mt: true } : {})));
+        }
+        resetMidiCursor(time);
+        return playNotes.length;
+    },
     // Fast-forward synchronously to T - tail at 60 fps with perfect MIDI, then play the tail in real time.
     async play(T, tail) {
         tail = tail == null ? 0.6 : tail;
@@ -122,7 +136,7 @@ window.__harness = {
         const end = T - tail;
         // Step to each chart time (at most 0.1 s apart) so every hit lands on its note.
         while (time < end) {
-            const next = midiCursor < chart.notes.length ? chart.notes[midiCursor].t : Infinity;
+            const next = midiCursor < playNotes.length ? playNotes[midiCursor].t : Infinity;
             time = Math.min(end, time + 0.1, Math.max(next, time + 0.001));
             frame();
             frame();   // second frame at the same time: the renderer sees a paused clock, so hits land exactly

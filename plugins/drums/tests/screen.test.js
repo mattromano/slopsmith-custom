@@ -138,3 +138,29 @@ test('PIECE_DEFAULT_MIDI covers the canonical piece set used by _drumTabHitsToNo
     assert.equal(mod.PIECE_DEFAULT_MIDI.kick, 36);
     assert.equal(mod.PIECE_DEFAULT_MIDI.snare, 38);
 });
+
+test('difficulty preference: drums_difficulty_v1, default Expert, junk ignored, same ids as highway3d.js', () => {
+    const H = require(path.join(__dirname, '..', 'highway3d.js'));
+    let mod = freshPlugin();
+    assert.deepEqual(mod.DIFFICULTY_IDS, Array.from(H.DIFFICULTIES));
+    assert.equal(mod.STORE_KEYS.difficulty, 'drums_difficulty_v1');
+    assert.equal(mod._difficultyPref(), 'expert');
+    const store = { drums_difficulty_v1: 'hard' };
+    const load = () => {
+        global.window = {};
+        global.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); } };
+        global.document = { addEventListener: () => {}, querySelectorAll: () => [] };
+        const file = path.join(__dirname, '..', 'screen.js');
+        delete require.cache[require.resolve(file)];
+        return require(file);
+    };
+    mod = load();
+    assert.equal(mod._difficultyPref(), 'hard');
+    store.drums_difficulty_v1 = 'insane';
+    assert.equal(load()._difficultyPref(), 'expert');
+    mod = load();
+    mod._setDifficulty('expert_plus');
+    assert.equal(store.drums_difficulty_v1, 'expert_plus');
+    mod._setDifficulty('<script>');
+    assert.equal(store.drums_difficulty_v1, 'expert', 'invalid ids are not persisted');
+});

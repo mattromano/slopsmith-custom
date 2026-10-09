@@ -1,6 +1,7 @@
 // Preview harness for the 3D drum highway (see preview.html). Builds a synthetic pro-drums chart in the
 // Slopsmith wire format (midi = s*24 + f), plays it perfectly up to a chosen time through the real
-// DrumsEngine + DrumsHighway3D session, and renders one frame (or runs live with ?live=1).
+// DrumsEngine + DrumsHighway3D session, and renders one frame (or runs live with ?live=1). The chart is the
+// one for ?difficulty= (default Expert; scenario=levels plays the auto-generated Medium level).
 
 const params = new URLSearchParams(location.search);
 const THREE_URL = params.get('three') || '../../../slopsmith/static/vendor/three/three.module.min.js';
@@ -11,10 +12,16 @@ const E = window.DrumsEngine;
 const { makeChart, START, BEAT, MEASURE } = await import('./chart.js');
 
 const chart = makeChart();
+const meta = H.parseDrumsMeta({ drums: chart.drums });
 let simWall = 0;
 const session = H.createSession(E, { now: () => simWall });
-session.load({ notes: chart.notes, chords: [], beats: chart.beats });
-session.setMeta(H.parseDrumsMeta({ drums: chart.drums }));
+const scenario = params.get('scenario') || 'play';
+// Difficulty (?difficulty=easy|medium|hard|expert|expert_plus; the `levels` scenario plays Medium).
+const options = H.difficultyOptions({ meta, has2x: H.hasKick2x(chart.notes, []) });
+const difficulty = H.resolveDifficulty(params.get('difficulty') || (scenario === 'levels' ? 'medium' : 'expert'), options);
+const badge = H.difficultyBadge(difficulty, options);
+session.load({ notes: H.difficultyChart(difficulty.id, chart.notes, [], meta).notes, chords: [], beats: chart.beats });
+session.setMeta(meta);
 
 // Perfect play (with a couple of deliberate mistakes) up to time T.
 function simulate(T, mistakes) {
@@ -37,10 +44,11 @@ function simulate(T, mistakes) {
     simWall = T * 1000;
 }
 
-const scenario = params.get('scenario') || 'play';
 const presets = {
     // normal play: x4, SP phrase gems approaching, a fresh red tint from an overhit on blue
     play: { t: START + 9 * MEASURE + 2.3 * BEAT },
+    // the auto-generated Medium level (difficulty badge "MEDIUM · AUTO")
+    levels: { t: START + 6 * MEASURE + 2.3 * BEAT },
     // a fresh overhit on blue (red lane tint, combo reset) and a skipped kick
     miss: { t: START + 9 * MEASURE + 1.62 * BEAT,
         mistakes: { overhitAt: START + 9 * MEASURE + 1.5 * BEAT, skip: [Math.round((START + 9 * MEASURE + BEAT) * 1000) + ':1'] } },
@@ -78,13 +86,13 @@ if (params.get('live')) {
         simWall = performance.now();
         const t = now();
         session.update(t);
-        view.render({ time: t, session, wallNow: simWall, hint: 'Hit the marked note to activate' });
+        view.render({ time: t, session, wallNow: simWall, hint: 'Hit the marked note to activate', difficulty: badge });
         requestAnimationFrame(loop);
     };
     requestAnimationFrame(loop);
 } else {
     simulate(T, preset.mistakes);
-    const frame = () => view.render({ time: T, session, wallNow: T * 1000 + 30, hint: 'Hit the marked note to activate' });
+    const frame = () => view.render({ time: T, session, wallNow: T * 1000 + 30, hint: 'Hit the marked note to activate', difficulty: badge });
     frame();
     requestAnimationFrame(() => { frame(); document.title = 'ready'; window.__previewState = session.getState(); });
 }

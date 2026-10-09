@@ -20,7 +20,8 @@
   window.slopsmith event bus, a fake core midi-input domain (window.__midi(note, velocity) plays a pad)
   and a fetch shim that serves the synthetic chart's drums block as arrangements/drums.json.
   Serve with tools/dev_server.py (it mounts routes.py and core /static), then open
-    /plugins/drums/tools/app.html            (?view=2d|3d|auto, ?t=<start seconds>)
+    /plugins/drums/tools/app.html            (?view=2d|3d|auto, ?t=<start seconds>, ?difficulty=<id>,
+                                              ?levels=0 for a drums block without lower difficulties)
 -->
 <div id="player">
   <canvas id="highway"></canvas>
@@ -33,6 +34,7 @@
         if (params.has('view')) localStorage.setItem('drums_view_v1', params.get('view'));
         if (params.has('keys')) localStorage.setItem('drums_kbd', params.get('keys'));
         localStorage.setItem('drums_midi_input', 'fake-kit');
+        localStorage.setItem('drums_difficulty_v1', params.get('difficulty') || 'expert');
     } catch (_) { /* storage blocked */ }
 
     // window.slopsmith event bus (CustomEvent payload on event.detail, like core).
@@ -66,7 +68,14 @@
         if (typeof url === 'string' && url.startsWith('/api/sloppak/')) {
             window.__metaRequests.push(url);
             if (url.endsWith('/file/arrangements/drums.json') && window.__chart) {
-                return Promise.resolve(new Response(JSON.stringify({ name: 'Drums', drums: window.__chart.drums }),
+                // ?levels=0: an old sloppak whose drums block has no lower difficulties
+                let drums = window.__chart.drums;
+                if (params.get('levels') === '0') {
+                    drums = Object.assign({}, drums);
+                    delete drums.levels;
+                    delete drums.levels_generated;
+                }
+                return Promise.resolve(new Response(JSON.stringify({ name: 'Drums', drums }),
                     { status: 200, headers: { 'Content-Type': 'application/json' } }));
             }
             return Promise.resolve(new Response('{"error":"not found"}', { status: 404 }));

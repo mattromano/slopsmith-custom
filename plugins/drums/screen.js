@@ -78,6 +78,10 @@ const STORE_KEYS = {
     view:           'drums_view_v1',
     keyboard:       'drums_kbd',
     inputOffsetMs:  'drums_input_offset_ms',
+    // Drum difficulty (both views): easy | medium | hard | expert |
+    // expert_plus. Per browser, so each player keeps their own; songs
+    // without that level play Expert without overwriting the choice.
+    difficulty:     'drums_difficulty_v1',
 };
 
 // Valid preset ids — kept here so _saveCfg can validate before persisting
@@ -85,6 +89,10 @@ const STORE_KEYS = {
 // in this plugin).
 const _VALID_LANE_PRESETS = new Set(['phase_shift_8', 'rb4']);
 const _VALID_VIEWS = new Set(['auto', '3d', '2d']);
+// Same ids as DrumsHighway3D.DIFFICULTIES (highway3d.js loads lazily).
+const DIFFICULTY_IDS = ['easy', 'medium', 'hard', 'expert', 'expert_plus'];
+const DIFFICULTY_NAMES = { easy: 'Easy', medium: 'Medium', hard: 'Hard', expert: 'Expert', expert_plus: 'Expert+' };
+const _VALID_DIFFICULTIES = new Set(DIFFICULTY_IDS);
 
 // Safe localStorage reader — getItem can throw SecurityError in
 // sandboxed iframes, under Safari on file://, or when storage is
@@ -166,6 +174,10 @@ const _cfg = {
     })(),
     keyboard:       _readStore(STORE_KEYS.keyboard) !== 'false',
     inputOffsetMs:  Math.round(_readNum(STORE_KEYS.inputOffsetMs, 0, -250, 250)),
+    difficulty:     (function () {
+        const raw = _readStore(STORE_KEYS.difficulty);
+        return _VALID_DIFFICULTIES.has(raw) ? raw : 'expert';
+    })(),
     // Transient: which lane is in learn mode. Module-scope across
     // panels — the Learn-mode UX is "click Learn in any panel, then
     // hit a pad on the focused MIDI device." The next focused-panel
@@ -191,6 +203,9 @@ function _saveCfg(key, val) {
     }
     if (key === 'view' && !_VALID_VIEWS.has(val)) {
         val = 'auto';
+    }
+    if (key === 'difficulty' && !_VALID_DIFFICULTIES.has(val)) {
+        val = 'expert';
     }
     if (key === 'inputOffsetMs') {
         const n = Math.round(Number(val));
@@ -234,6 +249,20 @@ let _activeInstance = null;
 const _instances = new Set();
 // Monotonic id for per-instance DOM tagging (useful for debugging).
 let _nextInstanceId = 0;
+
+// Save the drum difficulty (per browser) and apply it to every live
+// instance: each one resolves it against its own chart (falling back to
+// Expert for that song when the level is missing) and, mid-song, rebuilds
+// its chart from the current position on its next frame.
+function _setDifficulty(id) {
+    _saveCfg('difficulty', id);
+    try {
+        document.querySelectorAll('.drums-difficulty-select').forEach((sel) => { sel.value = _cfg.difficulty; });
+    } catch (_) { /* no DOM */ }
+    for (const inst of _instances) {
+        try { inst._difficultyChanged(); } catch (e) { console.warn('[Drums] difficulty update failed:', e); }
+    }
+}
 
 // ── Synth ─────────────────────────────────────────────────────────────
 let _audioCtx = null;
@@ -466,9 +495,26 @@ function _loadScript(url) {
 // module, the same file the bundled 3D guitar highway imports.
 
 const PLUGIN_ID = 'drums';
-const ASSET_VERSION = '5.0.0';   // cache-buster for the lazily loaded files
+const ASSET_VERSION = '5.1.0';   // cache-buster for the lazily loaded files
 const THREE_URL = '/static/vendor/three/three.module.min.js';
 const PLUGIN_STATIC = '/api/plugins/' + PLUGIN_ID + '/static/';
+
+// highway3d.js alone: its pure helpers (drums.json URL / parsing,
+// difficulty levels) are also used by the 2D view. One shared promise,
+// so the 2D and 3D loaders never race on the same <script> tag.
+let _helpersPromise = null;
+function _loadHelpers() {
+    if (window.DrumsHighway3D) return Promise.resolve(window.DrumsHighway3D);
+    if (_helpersPromise) return _helpersPromise;
+    _helpersPromise = _loadScript(PLUGIN_STATIC + 'highway3d.js?v=' + ASSET_VERSION).then(() => {
+        if (!window.DrumsHighway3D) throw new Error('highway3d.js did not register');
+        return window.DrumsHighway3D;
+    }).catch((e) => {
+        _helpersPromise = null;
+        throw e;
+    });
+    return _helpersPromise;
+}
 
 let _libsPromise = null;
 function _load3DLibs() {
@@ -479,7 +525,7 @@ function _load3DLibs() {
     _libsPromise = Promise.all([
         import(THREE_URL),
         want('engine.js', 'DrumsEngine'),
-        want('highway3d.js', 'DrumsHighway3D'),
+        _loadHelpers(),
     ]).then(([THREE]) => {
         if (!window.DrumsEngine || !window.DrumsHighway3D) throw new Error('drums 3D modules did not register');
         return { THREE, E: window.DrumsEngine, H: window.DrumsHighway3D };
@@ -1163,6 +1209,23 @@ function createFactory(forceView) {
     const _clock = { time: NaN, wall: NaN, prevTime: NaN, prevWall: NaN };
     let _onVisibility = null, _onCanvasReplaced = null, _onKeyDown = null;
 
+    // ── Difficulty (both views) ──
+    // The wire notes are the Expert chart; Easy/Medium/Hard come from the
+    // drums.json `levels` block (see highway3d.js "difficulty levels").
+    let _h = null;                  // DrumsHighway3D (pure helpers), loaded in both views
+    let _metaState = 'none';        // drums.json for the loaded song: 'pending' | 'loaded' | 'none'
+    let _diffOptions = null;        // _h.difficultyOptions(...) for the loaded chart
+    let _diff = null;               // _h.resolveDifficulty(...) in use: {id, requested, fallback, reason}
+    let _badge = null;              // _h.difficultyBadge(...) drawn in the HUD
+    let _diffUiKey = '';            // last difficulty state written to the DOM
+    let _lvlMemo = null;            // {notes, chords, id, src, chart}: chart for the difficulty
+    let _has2xMemo = null;          // {notes, chords, val}
+    let _scoreFromT = -Infinity;    // 2D view: no miss marks before a mid-song difficulty switch
+    let _badgeBtn = null;           // clickable button over the HUD badge
+    let _badgeRectKey = '';
+    let _diffMenu = null;           // difficulty pop-up menu
+    let _onDiffKey = null, _onMenuOutside = null;
+
     function _now() { return performance.now(); }
 
     // Song time for an input arriving now (between frames), minus the
@@ -1207,24 +1270,6 @@ function createFactory(forceView) {
         _hwVisible = canvas.offsetParent !== null;
         _hudCanvas.style.display = _hwVisible ? '' : 'none';
 
-        const bus = window.slopsmith;
-        if (bus && typeof bus.on === 'function' && typeof bus.off === 'function') {
-            // The HUD is sibling DOM, so hide it with the highway canvas
-            // (splitscreen display:none's #highway). Filter by canvas:
-            // every highway instance emits on the shared bus.
-            _onVisibility = (e) => {
-                if (!e || !e.detail || e.detail.canvas !== _highwayCanvas) return;
-                _hwVisible = e.detail.visible !== false;
-                if (_hudCanvas) _hudCanvas.style.display = _hwVisible ? '' : 'none';
-            };
-            _onCanvasReplaced = (e) => {
-                if (!e || !e.detail || e.detail.oldCanvas !== _highwayCanvas) return;
-                _highwayCanvas = e.detail.newCanvas;
-            };
-            try { bus.on('highway:visibility', _onVisibility); } catch (_) { _onVisibility = null; }
-            try { bus.on('highway:canvas-replaced', _onCanvasReplaced); } catch (_) { _onCanvasReplaced = null; }
-        }
-
         // Keyboard drumming (capture phase, so drum keys don't reach other
         // shortcuts while this view is focused and Keys is on). Space is
         // deliberately not a drum key: it stays play/pause.
@@ -1248,11 +1293,11 @@ function createFactory(forceView) {
         return _load3DLibs().then((libs) => {
             if (token !== _initToken || _instanceDestroyed) throw new Error('superseded');
             _libs = libs;
+            _h = libs.H;
             _view3d = libs.H.createView(libs.THREE, canvas, { hudCanvas: _hudCanvas, context: gl });
             _session = libs.H.createSession(libs.E);
             _chartRefs = null;
-            _metaUrl = undefined;
-            _metaCache = null;
+            _resetMeta();
             _resize3D();
             if (!_lastHwW) {
                 // Panel not laid out yet (splitscreen sizes after init).
@@ -1265,9 +1310,28 @@ function createFactory(forceView) {
         });
     }
 
-    function _teardown3D() {
-        _initToken++;
-        if (_onKeyDown) { window.removeEventListener('keydown', _onKeyDown, true); _onKeyDown = null; }
+    // Shared bus wiring (both views). The HUD canvas and the difficulty
+    // badge are sibling DOM, so hide them with the highway canvas
+    // (splitscreen display:none's #highway). Filter by canvas: every
+    // highway instance emits on the shared bus.
+    function _wireBus() {
+        const bus = window.slopsmith;
+        if (!bus || typeof bus.on !== 'function' || typeof bus.off !== 'function') return;
+        _onVisibility = (e) => {
+            if (!e || !e.detail || e.detail.canvas !== _highwayCanvas) return;
+            _hwVisible = e.detail.visible !== false;
+            if (_hudCanvas) _hudCanvas.style.display = _hwVisible ? '' : 'none';
+            if (!_hwVisible) { _placeBadge(null); _toggleDiffMenu(false); }
+        };
+        _onCanvasReplaced = (e) => {
+            if (!e || !e.detail || e.detail.oldCanvas !== _highwayCanvas) return;
+            _highwayCanvas = e.detail.newCanvas;
+        };
+        try { bus.on('highway:visibility', _onVisibility); } catch (_) { _onVisibility = null; }
+        try { bus.on('highway:canvas-replaced', _onCanvasReplaced); } catch (_) { _onCanvasReplaced = null; }
+    }
+
+    function _unwireBus() {
         const bus = window.slopsmith;
         if (bus && typeof bus.off === 'function') {
             if (_onVisibility) { try { bus.off('highway:visibility', _onVisibility); } catch (_) { /* ignore */ } }
@@ -1275,25 +1339,38 @@ function createFactory(forceView) {
         }
         _onVisibility = null;
         _onCanvasReplaced = null;
+    }
+
+    function _resetMeta() {
+        _metaUrl = undefined;
+        _metaCache = null;
+        _metaState = 'none';
+        _metaSeq++;
+    }
+
+    function _teardown3D() {
+        _initToken++;
+        if (_onKeyDown) { window.removeEventListener('keydown', _onKeyDown, true); _onKeyDown = null; }
         if (_view3d) { try { _view3d.dispose(); } catch (e) { console.warn('[Drums] 3D dispose failed:', e); } }
         _view3d = null;
         _session = null;
         _libs = null;
         if (_hudCanvas) { _hudCanvas.remove(); _hudCanvas = null; }
         _chartRefs = null;
-        _metaUrl = undefined;
-        _metaCache = null;
-        _metaSeq++;
+        _resetMeta();
         _lastHwW = _lastHwH = 0;
         _clock.time = _clock.wall = _clock.prevTime = _clock.prevWall = NaN;
     }
 
-    // Star power / fill phrases live in the arrangement JSON's `drums`
-    // block, not in the wire stream. Fetch arrangements/drums.json from
-    // the sloppak (core route) once per song; no file / not a sloppak /
-    // not a Drums arrangement -> no star power phrases.
+    // Star power / fill phrases and the lower difficulty levels live in
+    // the arrangement JSON's `drums` block, not in the wire stream. Fetch
+    // arrangements/drums.json from the sloppak (core route) once per song
+    // (both views; called on every ready frame, cheap while the URL is
+    // unchanged); no file / not a sloppak / not a Drums arrangement -> no
+    // star power phrases and Expert only.
     function _syncMeta(bundle) {
-        const H = _libs.H;
+        const H = _h;
+        if (!H) return;
         const si = bundle.songInfo || {};
         let arrName = si.arrangement || '';
         if (!arrName && Array.isArray(si.arrangements)) {
@@ -1302,20 +1379,305 @@ function createFactory(forceView) {
         }
         const url = (DRUMS_PATTERNS.test(arrName) && !bundle.drumTab)
             ? H.drumsMetaUrl(si, window.slopsmith && window.slopsmith.currentSong) : null;
-        if (url === _metaUrl) {
-            if (_metaCache) _session.setMeta(_metaCache);
-            return;
-        }
+        if (url === _metaUrl) return;
         _metaUrl = url;
         _metaCache = null;
         const seq = ++_metaSeq;
-        if (!url || typeof fetch !== 'function') return;
+        if (!url || typeof fetch !== 'function') { _metaState = 'none'; return; }
+        _metaState = 'pending';
         fetch(url).then(r => (r.ok ? r.json() : null)).then((json) => {
-            if (seq !== _metaSeq || !_session) return;
+            if (seq !== _metaSeq || _instanceDestroyed) return;
             const meta = H.parseDrumsMeta(json);
             _metaCache = meta;
-            if (meta) _session.setMeta(meta);
-        }).catch(() => { /* no drums.json: play without star power */ });
+            _metaState = meta ? 'loaded' : 'none';
+            if (meta && _session) _session.setMeta(meta);
+        }).catch(() => {
+            // no drums.json: play without star power, Expert only
+            if (seq === _metaSeq) _metaState = 'none';
+        });
+    }
+
+    // ── Difficulty ──
+
+    // Chart for the selected difficulty, memoised on the source arrays so
+    // identities stay stable across frames (the 3D view reloads its
+    // session only when they change). Before the helpers load (2D view,
+    // first frames) the arrangement's notes are used as they are.
+    function _applyDifficulty(bundle, notes, chords) {
+        const H = _h;
+        if (!H) return { notes, chords };
+        const chordKey = (Array.isArray(chords) && chords.length) ? chords : null;
+        if (!_has2xMemo || _has2xMemo.notes !== notes || _has2xMemo.chords !== chordKey) {
+            _has2xMemo = { notes, chords: chordKey, val: H.hasKick2x(notes, chordKey) };
+        }
+        _diffOptions = H.difficultyOptions({
+            meta: _metaCache, metaPending: _metaState === 'pending',
+            has2x: _has2xMemo.val, drumTab: !!bundle.drumTab,
+        });
+        _diff = H.resolveDifficulty(_cfg.difficulty, _diffOptions);
+        const id = _diff.id;
+        const src = _metaCache && _metaCache.levels ? (_metaCache.levels[id] || null) : null;
+        const m = _lvlMemo;
+        if (!m || m.notes !== notes || m.chords !== chordKey || m.id !== id || m.src !== src) {
+            const switched = !!(m && m.notes === notes && m.chords === chordKey && m.id !== id);
+            const chart = H.difficultyChart(id, notes, chordKey || chords, _metaCache);
+            _lvlMemo = { notes, chords: chordKey, id, src, chart };
+            if (switched) {
+                // Same song, other difficulty: the 3D view reloads its
+                // session (scores from the current time, like a seek); the
+                // 2D counter restarts from here.
+                _resetScoring();
+                _scoreFromT = +bundle.currentTime || 0;
+            }
+        }
+        _refreshDifficultyUI();
+        return _lvlMemo.chart;
+    }
+
+    function _difficultyChanged() {
+        if (_h && _diffOptions) _diff = _h.resolveDifficulty(_cfg.difficulty, _diffOptions);
+        _refreshDifficultyUI(true);
+    }
+
+    function _optionsHtml() {
+        const H = _h;
+        const opts = _diffOptions || (H ? H.difficultyOptions({}) : null);
+        const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+        return DIFFICULTY_IDS.map((id) => {
+            const o = opts ? opts.find(x => x.id === id) : null;
+            const off = !!(o && !o.available);
+            const text = DIFFICULTY_NAMES[id] + (o && o.generated ? ' (auto)' : '') + (off ? ' – n/a' : '');
+            return `<option value="${id}"${id === _cfg.difficulty ? ' selected' : ''}${off ? ' disabled' : ''}`
+                + `${off && o.reason ? ` title="${esc(o.reason)}"` : ''}>${esc(text)}</option>`;
+        }).join('');
+    }
+
+    function _difficultyNote() {
+        if (!_diff) return '';
+        if (_diff.fallback) {
+            return 'Playing Expert: ' + (_diff.reason || (DIFFICULTY_NAMES[_diff.requested] + ' is not available'));
+        }
+        const o = _diffOptions ? _diffOptions.find(x => x.id === _diff.id) : null;
+        return o && o.generated ? DIFFICULTY_NAMES[_diff.id] + ' is auto-generated from Expert' : '';
+    }
+
+    // Push the difficulty state into the DOM (badge tooltip, settings
+    // panel, open menu) when it changed.
+    function _refreshDifficultyUI(force) {
+        const H = _h;
+        if (!H || !_diff || !_diffOptions) return;
+        const key = _cfg.difficulty + '|' + _diff.id + '|' + _diff.fallback + '|'
+            + _diffOptions.map(o => (o.available ? 1 : 0) + (o.generated ? 'g' : '') + o.reason).join(',');
+        if (!force && key === _diffUiKey) return;
+        _diffUiKey = key;
+        _badge = H.difficultyBadge(_diff, _diffOptions);
+        if (_badgeBtn) {
+            _badgeBtn.title = _badge.title + '. Click, or press D / Shift+D, to change.';
+            _badgeBtn.setAttribute('aria-label', 'Drum difficulty: ' + _badge.text
+                + (_badge.sub ? ' ' + _badge.sub : '') + '. Change difficulty');
+            _badgeBtn.dataset.difficulty = _badge.id;
+            _badgeBtn.dataset.fallback = _badge.fallback ? '1' : '0';
+        }
+        if (_settingsPanel) {
+            const sel = _settingsPanel.querySelector('.drums-difficulty-select');
+            if (sel) { sel.innerHTML = _optionsHtml(); sel.value = _cfg.difficulty; }
+            const note = _settingsPanel.querySelector('.drums-difficulty-note');
+            if (note) note.textContent = _difficultyNote();
+        }
+        if (_diffMenu && _diffMenu.style.display !== 'none') _renderDiffMenu();
+    }
+
+    // Clickable (transparent) button over the HUD difficulty badge.
+    function _ensureBadge() {
+        if (_badgeBtn || !_highwayCanvas || !_highwayCanvas.parentNode) return;
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'drums-diff-badge';
+        b.dataset.drumsInstance = String(_instanceId);
+        b.setAttribute('aria-haspopup', 'menu');
+        b.setAttribute('aria-label', 'Change drum difficulty');
+        b.style.cssText = 'position:absolute;z-index:3;display:none;margin:0;padding:0;border:0;'
+            + 'background:transparent;cursor:pointer;border-radius:999px;';
+        b.onclick = (e) => {
+            e.stopPropagation();
+            b.blur();   // keep Space = play/pause rather than "click the badge again"
+            _toggleDiffMenu();
+        };
+        const after = _hudCanvas || _highwayCanvas;
+        after.parentNode.insertBefore(b, after.nextSibling);
+        _badgeBtn = b;
+        _diffUiKey = '';
+        _refreshDifficultyUI();
+    }
+
+    // rect: the badge in canvas css px (from the HUD / 2D draw), or null to hide.
+    function _placeBadge(rect) {
+        if (!_badgeBtn) return;
+        if (!rect || !_hwVisible || !_highwayCanvas) {
+            if (_badgeRectKey !== '') { _badgeBtn.style.display = 'none'; _badgeRectKey = ''; }
+            return;
+        }
+        const x = Math.round(_highwayCanvas.offsetLeft + rect.x);
+        const y = Math.round(_highwayCanvas.offsetTop + rect.y);
+        const w = Math.round(rect.w), h = Math.round(rect.h);
+        const key = x + '|' + y + '|' + w + '|' + h;
+        if (key === _badgeRectKey) return;
+        _badgeRectKey = key;
+        const st = _badgeBtn.style;
+        st.left = x + 'px'; st.top = y + 'px'; st.width = w + 'px'; st.height = h + 'px';
+        st.display = '';
+    }
+
+    function _renderDiffMenu() {
+        const menu = _diffMenu;
+        if (!menu) return;
+        menu.textContent = '';
+        const head = document.createElement('div');
+        head.textContent = 'Difficulty';
+        head.style.cssText = 'font:700 10px system-ui,sans-serif;color:#7a84a6;padding:2px 8px 4px;'
+            + 'letter-spacing:0.08em;text-transform:uppercase;';
+        menu.appendChild(head);
+        const colors = (_h && _h.DIFFICULTY_COLORS) || {};
+        for (const o of (_diffOptions || [])) {
+            const item = document.createElement('button');
+            item.type = 'button';
+            item.className = 'drums-diff-option';
+            item.dataset.diff = o.id;
+            item.setAttribute('role', 'menuitemradio');
+            const current = !!(_diff && _diff.id === o.id);
+            item.setAttribute('aria-checked', current ? 'true' : 'false');
+            item.disabled = !o.available;
+            if (!o.available) item.title = o.reason;
+            item.style.cssText = 'display:block;width:100%;text-align:left;border:0;border-radius:6px;padding:4px 8px;'
+                + 'font:700 12px system-ui,sans-serif;background:' + (current ? 'rgba(255,255,255,0.09)' : 'transparent') + ';'
+                + 'color:' + (o.available ? (colors[o.id] || '#ddd') : '#5a6078') + ';'
+                + 'cursor:' + (o.available ? 'pointer' : 'not-allowed') + ';';
+            const label = document.createElement('span');
+            label.textContent = (current ? '▸ ' : ' ') + o.name;
+            item.appendChild(label);
+            const tag = (text) => {
+                const g = document.createElement('span');
+                g.textContent = ' ' + text;
+                g.style.cssText = 'font:800 9px system-ui,sans-serif;color:#9aa4c4;';
+                item.appendChild(g);
+            };
+            if (o.generated) tag('AUTO');
+            if (_diff && _diff.fallback && _diff.requested === o.id) tag('(saved)');
+            if (!o.available && o.reason) {
+                const r = document.createElement('div');
+                r.textContent = o.reason;
+                r.style.cssText = 'font:400 10px system-ui,sans-serif;color:#5a6078;padding-left:1.3em;white-space:normal;';
+                item.appendChild(r);
+            }
+            item.onclick = (e) => {
+                e.stopPropagation();
+                item.blur();
+                _toggleDiffMenu(false);
+                _setDifficulty(o.id);
+            };
+            menu.appendChild(item);
+        }
+    }
+
+    function _toggleDiffMenu(open) {
+        const isOpen = !!(_diffMenu && _diffMenu.style.display !== 'none');
+        if (open === undefined) open = !isOpen;
+        if (!open) {
+            if (_diffMenu) _diffMenu.style.display = 'none';
+            if (_onMenuOutside) { document.removeEventListener('pointerdown', _onMenuOutside, true); _onMenuOutside = null; }
+            return;
+        }
+        if (!_badgeBtn || !_badgeBtn.parentNode) return;
+        if (!_diffMenu) {
+            const m = document.createElement('div');
+            m.className = 'drums-diff-menu';
+            m.dataset.drumsInstance = String(_instanceId);
+            m.setAttribute('role', 'menu');
+            m.style.cssText = 'position:absolute;z-index:26;display:none;min-width:150px;max-width:260px;padding:4px;'
+                + 'background:rgba(8,10,24,0.96);border:1px solid #2a3150;border-radius:8px;'
+                + 'box-shadow:0 6px 20px rgba(0,0,0,0.5);';
+            _badgeBtn.parentNode.insertBefore(m, _badgeBtn.nextSibling);
+            _diffMenu = m;
+        }
+        _renderDiffMenu();
+        const bx = _badgeBtn.offsetLeft, by = _badgeBtn.offsetTop, bh = _badgeBtn.offsetHeight;
+        _diffMenu.style.left = bx + 'px';
+        _diffMenu.style.top = (by + bh + 4) + 'px';
+        _diffMenu.style.display = '';
+        // Open upward when it would run off the bottom of the highway.
+        if (_highwayCanvas) {
+            const mh = _diffMenu.offsetHeight;
+            const bottom = _highwayCanvas.offsetTop + _highwayCanvas.offsetHeight;
+            if (by + bh + 4 + mh > bottom && by - mh - 4 >= _highwayCanvas.offsetTop) {
+                _diffMenu.style.top = (by - mh - 4) + 'px';
+            }
+        }
+        if (!_onMenuOutside) {
+            _onMenuOutside = (e) => {
+                if (_diffMenu && _diffMenu.contains(e.target)) return;
+                if (_badgeBtn && _badgeBtn.contains(e.target)) return;
+                _toggleDiffMenu(false);
+            };
+            document.addEventListener('pointerdown', _onMenuOutside, true);
+        }
+    }
+
+    function _removeDifficultyUI() {
+        _toggleDiffMenu(false);
+        if (_diffMenu) { _diffMenu.remove(); _diffMenu = null; }
+        if (_badgeBtn) { _badgeBtn.remove(); _badgeBtn = null; }
+        _badgeRectKey = '';
+        if (_onDiffKey) { window.removeEventListener('keydown', _onDiffKey, true); _onDiffKey = null; }
+    }
+
+    // D = harder, Shift+D = easier (focused, visible panel only; not while typing).
+    function _wireDifficultyKey() {
+        if (_onDiffKey) return;
+        _onDiffKey = (e) => {
+            if (_instanceDestroyed || !_isReady || !_isFocused || !_hwVisible || !_h) return;
+            const H = _h;
+            if (H.isTypingTarget(e.target) || H.isTypingTarget(document.activeElement)) return;
+            const k = H.isDifficultyKey(e);
+            if (!k) return;
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            if (e.repeat) return;
+            _setDifficulty(H.nextDifficulty(_diff ? _diff.id : _cfg.difficulty, _diffOptions, k.dir));
+        };
+        window.addEventListener('keydown', _onDiffKey, true);
+    }
+
+    // 2D view: the badge is drawn on the lane canvas, top-left.
+    function _drawDifficulty2D(ctx) {
+        const b = _badge;
+        if (!b) { _placeBadge(null); return; }
+        const x = 10, y = 6, h = 20, padX = 8, gap = 5;
+        ctx.save();
+        ctx.font = 'italic bold 11px sans-serif';
+        const tw = ctx.measureText(b.text).width;
+        ctx.font = 'bold 8px sans-serif';
+        const sw = b.sub ? ctx.measureText(b.sub).width + gap : 0;
+        const w = tw + sw + padX * 2;
+        ctx.fillStyle = 'rgba(8,8,20,0.8)';
+        _roundRect(ctx, x, y, w, h, h / 2);
+        ctx.fill();
+        ctx.globalAlpha = b.fallback ? 0.55 : 1;
+        ctx.strokeStyle = b.color;
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'italic bold 11px sans-serif';
+        ctx.fillStyle = b.color;
+        ctx.fillText(b.text, x + padX, y + h / 2 + 0.5);
+        if (b.sub) {
+            ctx.font = 'bold 8px sans-serif';
+            ctx.fillStyle = '#9aa4c4';
+            ctx.fillText(b.sub, x + padX + tw + gap, y + h / 2 + 0.5);
+        }
+        ctx.restore();
+        _placeBadge({ x, y, w, h });
     }
 
     function _draw3D(bundle, notes, chords, isReady) {
@@ -1327,16 +1689,19 @@ function createFactory(forceView) {
         const wall = _now();
         if (!isReady) {
             _view3d.render({ time: t, session: null, wallNow: wall, message: 'Loading drums...' });
+            _placeBadge(null);
             return;
         }
         // Reload when the chart arrays change identity (new song /
-        // arrangement / difficulty). Empty chord lists are compared as
-        // "none": the drum_tab path builds a fresh [] every frame.
+        // arrangement / difficulty: draw() hands in the selected level's
+        // chart). Empty chord lists are compared as "none": the drum_tab
+        // path builds a fresh [] every frame. A reload mid-song scores
+        // from the current time (session.update), like a seek.
         const chordKey = (Array.isArray(chords) && chords.length) ? chords : null;
         if (!_chartRefs || _chartRefs[0] !== notes || _chartRefs[1] !== chordKey || _chartRefs[2] !== bundle.beats) {
             _chartRefs = [notes, chordKey, bundle.beats];
             _session.load({ notes, chords, beats: bundle.beats });
-            _syncMeta(bundle);
+            _session.setMeta(_metaCache);   // this song's drums block (null until fetched)
             _clock.time = _clock.wall = _clock.prevTime = _clock.prevWall = NaN;
         }
         _clock.prevTime = _clock.time;
@@ -1348,7 +1713,8 @@ function createFactory(forceView) {
         const hint = meta && meta.activation.length
             ? 'Hit the marked note at the end of the fill to activate'
             : (_cfg.keyboard ? 'Press Enter to activate star power' : null);
-        _view3d.render({ time: t, session: _session, wallNow: wall, hint });
+        _view3d.render({ time: t, session: _session, wallNow: wall, hint, difficulty: _badge });
+        _placeBadge(_view3d.difficultyRect);
         const hctx = _view3d.hudContext;
         if (hctx && window.highway && typeof window.highway.fireDrawHooks === 'function') {
             const sz = _view3d.size;
@@ -1529,7 +1895,7 @@ function createFactory(forceView) {
         if (notes) {
             for (const n of notes) {
                 if (n.t > cutoff) break;
-                if (n.t < cutoff - 2) continue;
+                if (n.t < cutoff - 2 || n.t < _scoreFromT) continue;
                 // Skip visual-only notes (e.g. flam leading ghost glyph) — the
                 // user is expected to hit the main note, not the grace ornament.
                 if (n._noScore) continue;
@@ -1543,7 +1909,7 @@ function createFactory(forceView) {
         if (chords) {
             for (const c of chords) {
                 if (c.t > cutoff) break;
-                if (c.t < cutoff - 2) continue;
+                if (c.t < cutoff - 2 || c.t < _scoreFromT) continue;
                 for (const cn of (c.notes || [])) {
                     const songMidi = noteToMidi(cn.s, cn.f);
                     const key = _noteKey(c.t, songMidi);
@@ -1577,6 +1943,7 @@ function createFactory(forceView) {
     function _resetForNewChart() {
         _resetScoring();
         _heldPads.clear();
+        _scoreFromT = -Infinity;
         // Drop the drum_tab → notes memo so a song-change replay
         // doesn't keep showing the previous chart's drum hits while
         // the new bundle is still loading.
@@ -1739,6 +2106,18 @@ function createFactory(forceView) {
                 </label>
                 <span class="drums-view-note" style="font-size:10px;color:#666;">${_view === '3d' ? '3D view active' : '2D view active'}</span>
             </div>
+            <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:6px;">
+                <label style="display:flex;align-items:center;gap:4px;font-size:10px;color:#666;"
+                    title="Drum difficulty, saved in this browser. Expert+ adds the 2x kick notes. Easy/Medium/Hard need a chart that has them; otherwise the song plays Expert. While playing: click the difficulty badge, or press D (harder) / Shift+D (easier).">
+                    Difficulty
+                    <select class="drums-difficulty-select" aria-label="Drum difficulty"
+                        style="background:#1a1a2e;border:1px solid #333;border-radius:6px;
+                        padding:3px 6px;font-size:11px;color:#ccc;outline:none;width:128px;">
+                        ${_optionsHtml()}
+                    </select>
+                </label>
+                <span class="drums-difficulty-note" style="font-size:10px;color:#a8946a;">${_difficultyNote()}</span>
+            </div>
             <details style="margin-top:2px;">
                 <summary style="font-size:10px;color:#666;cursor:pointer;">MIDI Mapping</summary>
                 <table class="drums-map-table" style="font-size:11px;margin-top:4px;">${_buildMappingRows()}</table>
@@ -1816,6 +2195,9 @@ function createFactory(forceView) {
         panel.querySelector('.drums-chk-keys').onchange = function () {
             _saveCfg('keyboard', this.checked);
             document.querySelectorAll('.drums-chk-keys').forEach(el => { el.checked = _cfg.keyboard; });
+        };
+        panel.querySelector('.drums-difficulty-select').onchange = function () {
+            _setDifficulty(this.value);
         };
         panel.querySelector('.drums-offset-input').onchange = function () {
             _saveCfg('inputOffsetMs', this.value);
@@ -1978,6 +2360,8 @@ function createFactory(forceView) {
             ctx.textBaseline = 'middle';
             ctx.fillText('MIDI', W - 28, 16);
         }
+
+        _drawDifficulty2D(ctx);
     }
 
     function _drawScrollingNotes(ctx, notes, chords, t, laneLayout, nowLineY, topY /* , W, H */) {
@@ -2222,8 +2606,17 @@ function createFactory(forceView) {
         }
         _drumCanvas = null;
         _drumCtx = null;
+        _removeDifficultyUI();
+        _unwireBus();
         _teardown3D();
         _highwayCanvas = null;
+        _hwVisible = true;
+        _diffOptions = null;
+        _diff = null;
+        _badge = null;
+        _diffUiKey = '';
+        _lvlMemo = null;
+        _has2xMemo = null;
 
         _removeSettingsPanel();
         _removeSettingsGear();
@@ -2316,6 +2709,15 @@ function createFactory(forceView) {
             _injectSettingsGear();
             _applyCanvasDims();
             window.addEventListener('resize', _onWinResize);
+            _wireBus();
+            _ensureBadge();
+            _wireDifficultyKey();
+            if (_view !== '3d') {
+                // 2D view: highway3d.js for the drums.json / difficulty
+                // helpers only (no three.js, no engine).
+                _loadHelpers().then((H) => { if (!_instanceDestroyed && !_h) _h = H; })
+                    .catch((e) => console.warn('[Drums] difficulty helpers unavailable:', e));
+            }
 
             const ss = window.slopsmithSplitscreen;
             // Subscribe only when splitscreen is FULLY supported and
@@ -2401,6 +2803,15 @@ function createFactory(forceView) {
                 drumNotes = bundle.notes;
                 drumChords = bundle.chords;
             }
+            if (isReady) {
+                // Difficulty: Expert+ = the wire notes as they are, Expert
+                // drops the 2x kick notes, Easy/Medium/Hard come from the
+                // drums.json levels (both views render + score this chart).
+                _syncMeta(bundle);
+                const lv = _applyDifficulty(bundle, drumNotes, drumChords);
+                drumNotes = lv.notes;
+                drumChords = lv.chords;
+            }
             _latestNotes = drumNotes;
             _latestChords = drumChords;
             _latestTime = bundle.currentTime;
@@ -2464,6 +2875,12 @@ function createFactory(forceView) {
         // 3D view: engine state snapshot (DrumsEngine.getState()) or null.
         // Read-only; used by the harness in tools/ and for debugging.
         _engineState() { return _session ? _session.getState() : null; },
+        // Difficulty in use ({id, requested, fallback, reason, options}) and
+        // the size of the chart being drawn/scored. Read-only, for tools/.
+        _difficulty() { return _diff ? Object.assign({ options: _diffOptions }, _diff) : null; },
+        _chartNoteCount() { return Array.isArray(_latestNotes) ? _latestNotes.length : 0; },
+        // Called by the module-level _setDifficulty for every live instance.
+        _difficultyChanged,
     };
 
     return instance;
@@ -2511,6 +2928,9 @@ if (typeof module !== 'undefined' && module.exports) {
         _applyLanePreset, _getActiveDrumMap, _midiToLaneIdx, _songNoteToLaneIdx,
         _midiResolveSaved, DRUM_LANES, PIECE_DEFAULT_MIDI,
         _resolveView, _VALID_VIEWS,
+        DIFFICULTY_IDS, STORE_KEYS,
+        _difficultyPref: () => _cfg.difficulty,
+        _setDifficulty,
         matchesArrangement: createFactory.matchesArrangement,
     };
 }

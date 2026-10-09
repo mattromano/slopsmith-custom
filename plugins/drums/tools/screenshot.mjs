@@ -3,8 +3,9 @@
 //   python -m http.server 8765 --bind 127.0.0.1           # repository root, separate shell
 //   node plugins/drums/tools/screenshot.mjs [outDir] [baseUrl] [scenario ...]
 //
-// Defaults: outDir plugins/drums/docs, baseUrl http://127.0.0.1:8765, scenarios play fill sp.
-// Writes highway3d.png (play), highway3d-fill.png (star power ready + fill) and highway3d-sp.png (active).
+// Defaults: outDir plugins/drums/docs, baseUrl http://127.0.0.1:8765, scenarios play fill sp levels.
+// Writes highway3d.png (play), highway3d-fill.png (star power ready + fill), highway3d-sp.png (active) and
+// highway3d-levels.png (the auto-generated Medium level, difficulty badge).
 // Needs Playwright: either `npm i playwright` anywhere on the module path, or slopsmith's dev deps
 // (`cd slopsmith && npm ci && npx playwright install chromium`), which this script falls back to.
 import { createRequire } from 'node:module';
@@ -21,8 +22,8 @@ async function loadChromium() {
 }
 
 const [, , outDir = path.join(here, '..', 'docs'), base = 'http://127.0.0.1:8765', ...scen] = process.argv;
-const scenarios = scen.length ? scen : ['play', 'fill', 'sp'];
-const names = { play: 'highway3d.png', fill: 'highway3d-fill.png', sp: 'highway3d-sp.png' };
+const scenarios = scen.length ? scen : ['play', 'fill', 'sp', 'levels'];
+const names = { play: 'highway3d.png', fill: 'highway3d-fill.png', sp: 'highway3d-sp.png', levels: 'highway3d-levels.png' };
 
 const chromium = await loadChromium();
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
