@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drum Highway app harness</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05060c; overflow: hidden; font-family: system-ui, sans-serif; }
+  #player { position: relative; width: 100vw; height: 100vh; }
+  #highway { display: block; }
+  #player-controls { position: absolute; left: 0; right: 0; bottom: 0; height: 44px; display: flex; gap: 8px;
+    align-items: center; padding: 0 12px; background: #0b0d18; border-top: 1px solid #1d2238; color: #8890aa; font-size: 12px; }
+  #player-controls button { background: #1a1d30; color: #aab; border: 1px solid #2a2f48; border-radius: 6px; padding: 4px 10px; }
+</style>
+</head>
+<body>
+<!--
+  Runs the real screen.js renderer inside a minimal stand-in for Slopsmith's player: a fake highway that
+  follows the setRenderer contract (contextType canvas swap, readyPromise, rAF draw with a bundle), the
+  window.slopsmith event bus, a fake core midi-input domain (window.__midi(note, velocity) plays a pad)
+  and a fetch shim that serves the synthetic chart's drums block as arrangements/drums.json.
+  Serve with tools/dev_server.py (it mounts routes.py and core /static), then open
+    /plugins/drums/tools/app.html            (?view=2d|3d|auto, ?t=<start seconds>)
+-->
+<div id="player">
+  <canvas id="highway"></canvas>
+  <div id="player-controls"><span id="clock">0.00</span><span style="flex:1"></span><button type="button">Close</button></div>
+</div>
+<script>
+(function () {
+    const params = new URLSearchParams(location.search);
+    try {
+        if (params.has('view')) localStorage.setItem('drums_view_v1', params.get('view'));
+        if (params.has('keys')) localStorage.setItem('drums_kbd', params.get('keys'));
+        localStorage.setItem('drums_midi_input', 'fake-kit');
+    } catch (_) { /* storage blocked */ }
+
+    // window.slopsmith event bus (CustomEvent payload on event.detail, like core).
+    const bus = new EventTarget();
+    bus.on = (n, fn, o) => bus.addEventListener(n, fn, o);
+    bus.off = (n, fn) => bus.removeEventListener(n, fn);
+    bus.emit = (n, detail) => bus.dispatchEvent(new CustomEvent(n, { detail }));
+    window.slopsmith = bus;
+
+    // Fake core midi-input domain with one source.
+    const listeners = new Set();
+    const src = { sourceId: 'fake-kit', label: 'Fake Kit', logicalSourceKey: 'fake-kit' };
+    bus.midiInput = {
+        version: 1,
+        discover: async () => ({ outcome: 'handled' }),
+        listSources: () => [src],
+        select: async () => ({}),
+        open: async () => ({ handle: { addListener: (fn) => listeners.add(fn), removeListener: (fn) => listeners.delete(fn) } }),
+        close: () => {},
+    };
+    window.__midi = (note, velocity) => {
+        for (const fn of Array.from(listeners)) fn([0x99, note, velocity == null ? 100 : velocity]);
+        return listeners.size;
+    };
+    window.__midiListeners = () => listeners.size;
+
+    // The synthetic chart's drums block stands in for the sloppak's arrangements/drums.json.
+    const realFetch = window.fetch.bind(window);
+    window.__metaRequests = [];
+    window.fetch = (url, opts) => {
+        if (typeof url === 'string' && url.startsWith('/api/sloppak/')) {
+            window.__metaRequests.push(url);
+            if (url.endsWith('/file/arrangements/drums.json') && window.__chart) {
+                return Promise.resolve(new Response(JSON.stringify({ name: 'Drums', drums: window.__chart.drums }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            }
+            return Promise.resolve(new Response('{"error":"not found"}', { status: 404 }));
+        }
+        return realFetch(url, opts);
+    };
+})();
+</script>
+<script src="../screen.js"></script>
+<script type="module" src="app.js"></script>
+</body>
+</html>

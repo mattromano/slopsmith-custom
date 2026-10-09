@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drum Highway 3D preview</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05060c; overflow: hidden; }
+  #stage { position: relative; width: 100vw; height: 100vh; }
+  #highway, #hud { position: absolute; left: 0; top: 0; width: 100%; height: 100%; display: block; }
+  #hud { pointer-events: none; }
+</style>
+</head>
+<body>
+<!--
+  Standalone preview of the 3D drum highway with a synthetic chart (no Slopsmith server needed).
+  Serve the repository root (python -m http.server) and open
+    /plugins/drums/tools/preview.html                    normal play (perfect hits up to t)
+    /plugins/drums/tools/preview.html?scenario=fill      star power ready, fill + activator shown
+    /plugins/drums/tools/preview.html?scenario=sp        star power active
+    /plugins/drums/tools/preview.html?live=1             plays the chart in real time; keyboard drums
+  Optional: &t=<seconds> to pick the frame, &three=<url> to override the three.js module URL.
+-->
+<div id="stage">
+  <canvas id="highway"></canvas>
+  <canvas id="hud"></canvas>
+</div>
+<script src="../engine.js"></script>
+<script src="../highway3d.js"></script>
+<script type="module" src="preview.js"></script>
+</body>
+</html>
