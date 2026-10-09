@@ -172,6 +172,8 @@ class DrumChart:
     source_format: str = ""
     five_lane: bool = False
     dynamics: bool = False
+    levels: dict = field(default_factory=dict)          # "easy"/"medium"/"hard" -> [DrumHit]
+    levels_generated: list = field(default_factory=list)  # which of those were reduced by software
 
     def beat_list(self) -> list[dict]:
         end = max((h.tick for h in self.hits), default=0)
@@ -512,7 +514,10 @@ def find_chart_file(folder: Path) -> Path | None:
     return hits[0] if hits else None
 
 
-def load_song_folder(folder: Path, difficulty: str = "expert") -> tuple[DrumChart, dict]:
+LOWER_LEVELS = ("easy", "medium", "hard")
+
+
+def load_song_folder(folder: Path, difficulty: str = "expert", levels: bool = True) -> tuple[DrumChart, dict]:
     folder = Path(folder)
     ini = load_song_ini(folder / "song.ini")
     chart_path = find_chart_file(folder)
@@ -535,6 +540,15 @@ def load_song_folder(folder: Path, difficulty: str = "expert") -> tuple[DrumChar
                     ini.setdefault("year", v.strip(", "))
     else:
         chart = parse_mid(chart_path, ini, difficulty)
+    if levels and difficulty == "expert":
+        parse = parse_chart if chart_path.suffix.lower() == ".chart" else parse_mid
+        for lv in LOWER_LEVELS:
+            try:
+                c = parse(chart_path, ini, lv)
+            except ValueError:      # no [EasyDrums] section etc.
+                continue
+            if c.hits:
+                chart.levels[lv] = c.hits
     return chart, ini
 
 
@@ -585,9 +599,103 @@ def drums_meta(chart: DrumChart, source: dict | None = None) -> dict:
     }
     if chart.solos:
         meta["solos"] = [[a, b] for a, b in chart.solos]
+    if chart.levels:
+        meta["levels"] = {lv: level_rows(chart.levels[lv]) for lv in LOWER_LEVELS if lv in chart.levels}
+        meta["levels_generated"] = [lv for lv in LOWER_LEVELS if lv in chart.levels_generated]
     if source:
         meta["source"] = source
     return meta
+
+
+def level_rows(hits) -> list[list]:
+    """Compact level notes for the drums block: [time, GM number, flag] (flag 1 accent, 2 ghost)."""
+    return sorted([[round(h.time, 3), h.gm, 1 if h.dyn == "accent" else 2 if h.dyn == "ghost" else 0]
+                   for h in hits], key=lambda r: (r[0], r[1]))
+
+
+def rows_to_hits(rows) -> list[DrumHit]:
+    out = []
+    for t, gm, f in rows:
+        pc = GM_TO_PAD.get(int(gm))
+        if pc:
+            out.append(DrumHit(float(t), pc[0], pc[1], kick2x=int(gm) == GM_KICK2X,
+                               dyn="accent" if f == 1 else "ghost" if f == 2 else None))
+    return out
+
+
+# ── difficulty reduction (for sources without hand-charted lower levels) ───
+
+# Fitted on 136 hand-authored Rock Band / Clone Hero charts (their Easy/Medium/Hard vs
+# their Expert): F1 of matching notes vs the human levels Easy 0.67, Medium 0.78, Hard 0.89,
+# note counts 1.12x / 0.98x / 1.05x the human charts.  Easy never pairs a kick with hands.
+REDUCE = {   # level: (grid in beats, max gems per chord, kick together with hands?)
+    "hard": (0.5, 3, True),
+    "medium": (1.0, 2, True),
+    "easy": (1.0, 2, False),
+}
+_HAND_PRIORITY = {("red", False): 0, ("yellow", True): 1, ("green", True): 2, ("blue", True): 3,
+                  ("yellow", False): 4, ("blue", False): 5, ("green", False): 6}
+
+
+def _beat_pos(bt, t):
+    """Fractional beat index of time t on beat grid bt."""
+    import bisect
+    if len(bt) < 2:
+        return t / 0.5
+    i = min(max(bisect.bisect_right(bt, t) - 1, 0), len(bt) - 2)
+    return i + (t - bt[i]) / (bt[i + 1] - bt[i])
+
+
+def reduce_level(hits, beats, level: str) -> list[DrumHit]:
+    """Slopsmith's own reduction of an Expert chart for sources without hand-charted levels
+    (not from YARG/Harmonix; rules fitted to authored charts, see REDUCE).  Drops 2x kicks and
+    ghost notes; keeps chords on the level's grid (8ths / 16ths) first, then off-grid ones that
+    still leave a full grid step to both neighbours; caps gems per chord (snare and cymbals
+    before toms; a kick is kept with one hand gem except on Easy).  ``beats``: [(time, m)]."""
+    grid, max_gems, kick_with_hands = REDUCE[level]
+    bt = [t for t, _ in beats] if beats else []
+    chords: dict[float, list] = {}
+    for h in hits:
+        if h.kick2x or h.dyn == "ghost":
+            continue
+        chords.setdefault(round(h.time, 3), []).append(h)
+    ts = sorted(chords)
+    pos = {t: _beat_pos(bt, t) for t in ts}
+    on = {t for t in ts if abs(pos[t] / grid - round(pos[t] / grid)) < 0.12}
+    kept = sorted(on)
+    import bisect
+    for t in ts:                       # off-grid chords where they don't crowd the grid
+        if t in on:
+            continue
+        i = bisect.bisect_left(kept, t)
+        prev_ok = i == 0 or pos[t] - pos[kept[i - 1]] >= grid - 0.05
+        next_ok = i == len(kept) or pos[kept[i]] - pos[t] >= grid - 0.05
+        if prev_ok and next_ok:
+            kept.insert(i, t)
+    out = []
+    for t in kept:
+        hs = sorted({(h.pad, h.cymbal): h for h in chords[t] if h.pad != "kick"}.values(),
+                    key=lambda h: _HAND_PRIORITY.get((h.pad, h.cymbal), 9))
+        kick = [h for h in chords[t] if h.pad == "kick"][:1]
+        if kick and hs and kick_with_hands:
+            out.extend(kick + hs[:max_gems - 1])
+        elif hs:
+            out.extend(hs[:max_gems])
+        else:
+            out.extend(kick)
+    return out
+
+
+def ensure_levels(chart: DrumChart, beats=None) -> DrumChart:
+    """Fill in every missing lower level by reducing Expert (marked as generated)."""
+    if beats is None:
+        beats = [(b["time"], b["measure"]) for b in chart.beat_list()] if chart.hits else []
+    for lv in LOWER_LEVELS:
+        if not chart.levels.get(lv):
+            chart.levels[lv] = reduce_level(chart.hits, beats, lv)
+            if lv not in chart.levels_generated:
+                chart.levels_generated.append(lv)
+    return chart
 
 
 def drums_arrangement(chart: DrumChart, *, name: str = "Drums", with_beats: bool = True,
@@ -612,6 +720,9 @@ def shift_chart(chart: DrumChart, warp) -> DrumChart:
     c.fills = [(round(float(warp(a)), 4), round(float(warp(b)), 4)) for a, b in c.fills]
     c.solos = [(round(float(warp(a)), 4), round(float(warp(b)), 4)) for a, b in c.solos]
     c.sections = [(round(float(warp(t)), 4), n) for t, n in c.sections]
+    for hits in c.levels.values():
+        for h in hits:
+            h.time = round(float(warp(h.time)), 4)
     return c
 
 

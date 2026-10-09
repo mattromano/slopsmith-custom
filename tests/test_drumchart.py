@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import drumchart  # noqa: E402
 from drum_fixtures import TPQ, click_track, write_audio, write_chart, write_ini, write_mid  # noqa: E402
+import numpy as np  # noqa: E402
 
 KICK, RED, YEL, BLU, ORG, GRN = 96, 97, 98, 99, 100, 101
 
@@ -232,3 +233,65 @@ def test_convert_maps_ch_stems(tmp_path):
     assert s["stems"] == ["drums", "other"]    # crowd dropped, song -> other
     with zipfile.ZipFile(out) as z:
         assert {"stems/drums.ogg", "stems/other.ogg"} <= set(z.namelist())
+
+
+# ── difficulty levels ───────────────────────────────────────────────────────
+
+def test_mid_lower_difficulties_are_read(tmp_path):
+    notes = [(0, KICK, 100, 10), (0, RED, 100, 10), (480, YEL, 100, 10),      # expert
+             (0, 84, 100, 10), (480, 86, 100, 10),                            # hard: kick + yellow
+             (0, 73, 100, 10),                                                # medium: red
+             (480, 62, 100, 10), (480, 110, 100, 10)]                         # easy: yellow tom
+    write_mid(tmp_path / "notes.mid", notes)
+    c, _ = drumchart.load_song_folder(tmp_path)
+    assert len(c.hits) == 3
+    assert [(h.pad, h.cymbal) for h in c.levels["hard"]] == [("kick", False), ("yellow", False)]
+    assert [(h.pad, h.cymbal) for h in c.levels["medium"]] == [("red", False)]
+    assert [(h.pad, h.cymbal) for h in c.levels["easy"]] == [("yellow", False)]   # tom markers apply to all
+    meta = drumchart.drums_meta(c)
+    assert meta["levels"]["hard"] == [[0.0, 36, 0], [0.5, 48, 0]] and meta["levels_generated"] == []
+
+
+def test_chart_lower_difficulties(tmp_path):
+    p = tmp_path / "notes.chart"
+    write_chart(p, [(0, "N", 1, 0), (192, "N", 2, 0), (192, "N", 66, 0)])
+    text = p.read_text() + "[EasyDrums]\n{\n  0 = N 1 0\n}\n"
+    p.write_text(text)
+    c, _ = drumchart.load_song_folder(tmp_path)
+    assert list(c.levels) == ["easy"] and len(c.levels["easy"]) == 1
+
+
+def test_reduce_levels_follow_charting_rules():
+    beats = [(0.5 * i, i // 4 + 1 if i % 4 == 0 else -1) for i in range(200)]
+    hits = []
+    for i in range(320):                                   # 16th-note groove at 120 BPM
+        t = 0.125 * i
+        hits.append(drumchart.DrumHit(t, "yellow", True))
+        if i % 8 == 0:
+            hits += [drumchart.DrumHit(t, "kick"), drumchart.DrumHit(t, "green", True)]
+        if i % 8 == 4:
+            hits.append(drumchart.DrumHit(t, "red"))
+        if i % 16 == 15:
+            hits += [drumchart.DrumHit(t, "kick", kick2x=True), drumchart.DrumHit(t, "red", dyn="ghost")]
+    out = {lv: drumchart.reduce_level(hits, beats, lv) for lv in drumchart.LOWER_LEVELS}
+    for lv, hs in out.items():
+        assert not any(h.kick2x or h.dyn == "ghost" for h in hs)
+        by_t = {}
+        for h in hs:
+            by_t.setdefault(h.time, []).append(h)
+        cap = drumchart.REDUCE[lv][1]
+        assert max(len(v) for v in by_t.values()) <= cap
+        gaps = np.diff(sorted(by_t))
+        assert gaps.min() >= drumchart.REDUCE[lv][0] * 0.5 - 1e-6 or lv == "hard"
+        if lv == "easy":
+            assert not any(len(v) > 1 and any(h.pad == "kick" for h in v) for v in by_t.values())
+    assert len(out["easy"]) <= len(out["medium"]) < len(out["hard"]) < len(hits)
+
+
+def test_ensure_levels_marks_generated_and_keeps_authored():
+    hits = [drumchart.DrumHit(0.25 * i, "red") for i in range(64)]
+    c = drumchart.DrumChart(hits=hits, tempo=drumchart.TempoMap(480), levels={"easy": hits[::4]})
+    drumchart.ensure_levels(c)
+    assert c.levels["easy"] == hits[::4] and sorted(c.levels_generated) == ["hard", "medium"]
+    back = drumchart.rows_to_hits(drumchart.level_rows(c.levels["hard"]))
+    assert [(h.time, h.pad) for h in back] == [(h.time, h.pad) for h in c.levels["hard"]]
