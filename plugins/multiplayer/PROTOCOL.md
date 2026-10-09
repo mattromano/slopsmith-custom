@@ -23,6 +23,8 @@ ws://<host>/ws/plugins/multiplayer/{code}?player_id={id}&session_id={sid}
 
 Carries all control messages. The message types used by the audio feature are documented under "Audio control messages" below; the existing playback/queue/recording messages are unchanged.
 
+`set_arrangement` / `arrangement_changed` carry a free-form arrangement **name** (e.g. `"Drums"`), stored and relayed verbatim; queue items carry the song's arrangement names as captured from the library when queued. Clients map the name to a highway `?arrangement=` index themselves (and keep a name the current song lacks — the highway then falls back to the user's default arrangement).
+
 **Rejection on auth failure:** the highway WS sends a JSON `{"type": "error", "message": "..."}` text frame and then closes the connection (existing behavior; preserves backward compatibility with already-shipped clients).
 
 ### Audio WS — binary peer-audio relay (NEW)

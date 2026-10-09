@@ -4053,12 +4053,9 @@ async function _doLoadSong(queueItem) {
     // Find arrangement index matching this player's chosen arrangement
     const myArrangement = (_room && _room.players[_playerId])
         ? _room.players[_playerId].arrangement : 'Lead';
-    let arrIndex;
-    const arrs = queueItem.arrangements || [];
-    const idx = arrs.findIndex(a =>
-        (typeof a === 'string' ? a : a.name) === myArrangement
-    );
-    if (idx >= 0) arrIndex = idx;
+    // (undefined when the song lacks it → server picks the user's default
+    // arrangement, else the one with most notes).
+    const arrIndex = _resolveArrangementIndex(_arrangementsFor(queueItem), myArrangement);
 
     let succeeded = false;
     try {
@@ -4077,6 +4074,14 @@ async function _doLoadSong(queueItem) {
         await playSong(queueItem.filename, arrIndex);
         // Give plugins time to finish async setup (stems, highway _onReady, etc.)
         await new Promise(r => setTimeout(r, 2000));
+        // song_info is authoritative: if the library index we passed landed
+        // on a different arrangement (stale/missing queue metadata), switch
+        // to this player's pick in place.
+        const fixIdx = _arrangementFixIndex(_currentSongInfo(), myArrangement);
+        if (fixIdx !== undefined && _loadGen === myLoadGen && typeof changeArrangement === 'function') {
+            changeArrangement(fixIdx);
+            await new Promise(r => setTimeout(r, 2000));
+        }
         succeeded = true;
     } finally {
         // Always clear _songLoading so heartbeats and the listener
@@ -4206,6 +4211,9 @@ window.mpVoteSkip = async function () {
 
 function _renderQueue() {
     if (!_room) return;
+    // The arrangement picker follows the queued song — refresh it on
+    // every queue / now-playing change.
+    _renderPlayers();
     const container = document.getElementById('mp-queue-list');
     const countEl = document.getElementById('mp-queue-count');
     if (!container) return;
@@ -4265,6 +4273,156 @@ function _findPlayerName(playerId) {
     return p ? p.name : '';
 }
 
+// ── Arrangement choices ────────────────────────────────────────────────
+//
+// The picker lists the queued song's real arrangements (e.g. "Drums" for
+// a drum chart) instead of a fixed Lead/Rhythm/Bass. Source: the queue
+// item's `arrangements` (library names, captured by mpAddToQueue), else a
+// one-off GET /api/song/{filename}, else DEFAULT_ARRANGEMENTS. A pick the
+// song lacks is kept (sticky, so a drummer stays on Drums for the next
+// drum chart) and shown as "(not in this song)"; loading then falls back
+// to the server's choice (user's default arrangement, else most notes).
+// Pure helpers are exported for Node tests (tests/arrangements.test.js).
+
+const DEFAULT_ARRANGEMENTS = ['Lead', 'Rhythm', 'Bass'];
+// Same order as the library + highway (server.py, lib/song.py, lib/sloppak.py).
+const ARRANGEMENT_PRIORITY = new Map([['Lead', 0], ['Combo', 1], ['Rhythm', 2], ['Bass', 3]]);
+
+function _arrangementName(a) {
+    if (typeof a === 'string') return a;
+    return (a && typeof a.name === 'string') ? a.name : '';
+}
+
+// Unique non-empty names in app order (Lead, Combo, Rhythm, Bass, then the
+// rest in their original order).
+function _arrangementNames(arrs) {
+    const seen = new Set();
+    const names = [];
+    for (const a of (Array.isArray(arrs) ? arrs : [])) {
+        const n = _arrangementName(a);
+        if (n && !seen.has(n)) { seen.add(n); names.push(n); }
+    }
+    const rank = n => (ARRANGEMENT_PRIORITY.has(n) ? ARRANGEMENT_PRIORITY.get(n) : 99);
+    return names
+        .map((n, i) => ({ n, i }))
+        .sort((x, y) => (rank(x.n) - rank(y.n)) || (x.i - y.i))
+        .map(x => x.n);
+}
+
+// [{ value, label, selected }] for the picker. `current` is this player's
+// pick; it is always present so the <select> reflects the real state.
+function _arrangementChoices(arrs, current) {
+    const names = _arrangementNames(arrs);
+    const known = names.length > 0;
+    const choices = (known ? names : DEFAULT_ARRANGEMENTS).map(n => ({ value: n, label: n }));
+    if (current && !choices.some(c => c.value === current)) {
+        choices.push({ value: current, label: known ? `${current} (not in this song)` : current });
+    }
+    return choices.map(c => ({ value: c.value, label: c.label, selected: c.value === current }));
+}
+
+function _escHtml(s) {
+    return String(s).replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    })[ch]);
+}
+
+function _arrangementOptionsHtml(choices) {
+    return choices.map(c =>
+        `<option value="${_escHtml(c.value)}"${c.selected ? ' selected' : ''}>${_escHtml(c.label)}</option>`
+    ).join('');
+}
+
+// Highway `?arrangement=` index for `name` in a song's arrangement list
+// (queue-item names, /api/song metadata, or song_info.arrangements). An
+// entry's own `index` wins; otherwise its position (library order, which
+// the highway shares). undefined = not found → let the server choose.
+function _resolveArrangementIndex(arrs, name) {
+    if (!Array.isArray(arrs) || !name) return undefined;
+    const pos = arrs.findIndex(a => _arrangementName(a) === name);
+    if (pos < 0) return undefined;
+    const a = arrs[pos];
+    return (a && typeof a === 'object' && Number.isInteger(a.index)) ? a.index : pos;
+}
+
+// Index to switch to when the loaded song (song_info) isn't on `wanted`
+// but has it; undefined when already right, unknown, or unavailable.
+function _arrangementFixIndex(songInfo, wanted) {
+    if (!songInfo || !wanted || songInfo.arrangement === wanted) return undefined;
+    const idx = _resolveArrangementIndex(songInfo.arrangements, wanted);
+    if (idx === undefined || idx === songInfo.arrangement_index) return undefined;
+    return idx;
+}
+
+// Queue item whose arrangements drive the picker: the current song, else
+// the next one up (queue[0] when nothing has played yet).
+function _arrangementSourceItem(room) {
+    if (!room || !Array.isArray(room.queue)) return null;
+    const np = typeof room.now_playing === 'number' ? room.now_playing : -1;
+    if (np >= 0 && np < room.queue.length) return room.queue[np];
+    return room.queue[Math.max(0, np + 1)] || null;
+}
+
+// filename → /api/song arrangements for queue items that arrived without
+// any (e.g. queued by an older client). 'pending' while in flight.
+const _songArrangementsCache = new Map();
+
+function _arrangementsFor(item) {
+    if (!item) return [];
+    if (Array.isArray(item.arrangements) && item.arrangements.length) return item.arrangements;
+    const fn = item.filename;
+    if (!fn) return [];
+    const cached = _songArrangementsCache.get(fn);
+    if (Array.isArray(cached)) return cached;
+    if (cached === undefined && typeof fetch === 'function') {
+        _songArrangementsCache.set(fn, 'pending');
+        fetch(`/api/song/${encodeURIComponent(fn)}`)
+            .then(r => (r.ok ? r.json() : null))
+            .then(meta => {
+                const arrs = (meta && Array.isArray(meta.arrangements)) ? meta.arrangements : [];
+                _songArrangementsCache.set(fn, arrs);
+                if (arrs.length) _renderPlayers();
+            })
+            // Network error: forget it so the next render retries.
+            .catch(() => { _songArrangementsCache.delete(fn); });
+    }
+    return [];
+}
+
+function _myArrangement() {
+    return (_room && _room.players && _room.players[_playerId])
+        ? _room.players[_playerId].arrangement : 'Lead';
+}
+
+function _currentSongInfo() {
+    return (typeof highway !== 'undefined' && highway && typeof highway.getSongInfo === 'function')
+        ? (highway.getSongInfo() || {}) : {};
+}
+
+// Apply a new pick to the song that's already loaded, in place, via core's
+// changeArrangement() (the player's own switcher: keeps position and
+// play/pause). Works for host and guests alike; heartbeats keep guests in
+// sync and the host's clock isn't reset. Not loaded yet → the pending/next
+// _loadSong reads the new pick.
+function _applyArrangementChange() {
+    if (!_room || !Array.isArray(_room.queue)) return;
+    if (_loadingPromise) {
+        _loadingPromise.then(_applyArrangementChange, _applyArrangementChange);
+        return;
+    }
+    const np = _room.now_playing;
+    const item = (typeof np === 'number' && np >= 0 && np < _room.queue.length) ? _room.queue[np] : null;
+    if (!item || item.filename !== _loadedFilename) return;
+    const wanted = _myArrangement();
+    if (wanted === _loadedArrangement) return;
+    const si = _currentSongInfo();
+    if (_resolveArrangementIndex(si.arrangements, wanted) === undefined) return; // song lacks it
+    if (typeof changeArrangement !== 'function') return;
+    _loadedArrangement = wanted;
+    const idx = _arrangementFixIndex(si, wanted);
+    if (idx !== undefined) changeArrangement(idx);
+}
+
 // ── Player List ────────────────────────────────────────────────────────
 
 function _renderPlayers() {
@@ -4288,9 +4446,7 @@ function _renderPlayers() {
             ${isMe
                 ? `<select onchange="mpSetArrangement(this.value)"
                     class="bg-dark-700 border border-gray-700 rounded px-2 py-1 text-xs text-gray-300 focus:outline-none focus:border-accent/50">
-                    <option value="Lead" ${p.arrangement === 'Lead' ? 'selected' : ''}>Lead</option>
-                    <option value="Rhythm" ${p.arrangement === 'Rhythm' ? 'selected' : ''}>Rhythm</option>
-                    <option value="Bass" ${p.arrangement === 'Bass' ? 'selected' : ''}>Bass</option>
+                    ${_arrangementOptionsHtml(_arrangementChoices(_arrangementsFor(_arrangementSourceItem(_room)), p.arrangement))}
                   </select>`
                 : `<span class="text-xs text-gray-500">${esc(p.arrangement)}</span>`
             }
@@ -4304,6 +4460,7 @@ window.mpSetArrangement = function (arr) {
     if (_room && _room.players[_playerId]) {
         _room.players[_playerId].arrangement = arr;
     }
+    _applyArrangementChange();
 };
 
 // ── Controls Visibility ────────────────────────────────────────────────
@@ -5114,5 +5271,15 @@ window.addEventListener('beforeunload', () => {
         _broadcastStop({});
     }
 });
+
+// Node-only export hook for tests (tests/arrangements.test.js); browsers
+// keep the window.mp* wiring above.
+if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+        DEFAULT_ARRANGEMENTS,
+        _arrangementNames, _arrangementChoices, _arrangementOptionsHtml,
+        _resolveArrangementIndex, _arrangementFixIndex, _arrangementSourceItem,
+    };
+}
 
 })();
