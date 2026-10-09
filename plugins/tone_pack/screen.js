@@ -37,13 +37,16 @@
                 presets[name] = Object.assign({}, p, { created: Date.now() });
                 added.push(name);
             } else if (cur.generatedBy === 'tone_pack' && cur.nativePreset !== p.nativePreset) {
-                // ours and the pack changed (new gear / Kilohearts installed): refresh, keep the
-                // user's level / gate tweaks
-                presets[name] = Object.assign({}, p, {
-                    created: cur.created || Date.now(),
-                    inputGain: cur.inputGain, outputGain: cur.outputGain,
-                    noiseGate: cur.noiseGate, tonePolish: cur.tonePolish,
-                });
+                // ours and the pack changed (new gear, level fix, Kilohearts installed): refresh.
+                // Keep level / gate settings only where the user changed them from what the pack
+                // set (packLevels); older pack presets have no record, so they take the new values.
+                const was = cur.packLevels || null;
+                const tweaked = (k) => !!was && JSON.stringify(cur[k]) !== JSON.stringify(was[k]);
+                const next = Object.assign({}, p, { created: cur.created || Date.now() });
+                for (const k of ['inputGain', 'outputGain', 'noiseGate', 'tonePolish']) {
+                    if (tweaked(k)) next[k] = cur[k];
+                }
+                presets[name] = next;
                 updated.push(name);
             }
             if (!seen.includes(name)) seen.push(name);
@@ -86,10 +89,82 @@
         }
     }
 
+    // ── Per-song categories from the song's gear ───────────────────────────
+    // Tone Automation classifies tone *names*. Names it can't place ("Tone 1", "Default",
+    // "George_Rhythm"...) fall back to Idle, every tone of a Bass arrangement whose name says
+    // "dist" got the guitar Dist preset, and single-tone arrangements classify the song's file
+    // name. For the loaded sloppak, routes.py classifies each tone from its amp / pedals; those
+    // become session overrides (the Audio plugin's own per-song mechanism, cleared on each song).
+
+    // Pure (tested): {toneName: presetName} overrides for one song.
+    function songOverrides(gearCats, classify, targets, opts) {
+        opts = opts || {};
+        const out = {};
+        for (const [name, cat] of Object.entries(gearCats || {})) {
+            const key = name === '$song' ? opts.songKey : name;
+            if (!key) continue;
+            const byName = name === '$song' ? null : classify(name);
+            // keep what the name says, except on a bass part, where everything is Bass
+            if (byName && !(opts.bass && byName !== 'bass')) continue;
+            const preset = targets[cat];
+            if (preset && preset !== targets[byName || 'idle']) out[key] = preset;
+        }
+        return out;
+    }
+
+    let _songSeq = 0;
+    async function applySongOverrides() {
+        const ta = window._aeToneAutomation;
+        if (!ta || !ta.isEnabled || !ta.isEnabled()) return;
+        const hw = window.highway;
+        const si = (hw && hw.getSongInfo && hw.getSongInfo()) || {};
+        const cs = (window.slopsmith && window.slopsmith.currentSong) || {};
+        const filename = window._currentSongFile || si.filename || cs.filename || '';
+        let arrangement = si.arrangement || '';
+        if (!arrangement && Array.isArray(si.arrangements)) {
+            const a = si.arrangements.find(x => x && x.index === si.arrangement_index);
+            if (a) arrangement = a.name || '';
+        }
+        if (!/\.sloppak\/?$/i.test(filename) || !arrangement) return;
+        const seq = ++_songSeq;
+        let cats = {};
+        try {
+            const r = await fetch('/api/plugins/tone_pack/song_tones?filename=' + encodeURIComponent(filename)
+                + '&arrangement=' + encodeURIComponent(arrangement));
+            if (!r.ok) return;
+            cats = (await r.json()).tones || {};
+        } catch (_) { return; }
+        if (seq !== _songSeq) return;
+        const cfg = ta.getConfig ? ta.getConfig() : {};
+        const ov = songOverrides(cats, (n) => ta.classify(n, cfg), cfg.targets || {},
+            { songKey: window._currentSongFile || filename, bass: /\bbass\b/i.test(arrangement) });
+        if (!Object.keys(ov).length) return;
+        const cur = window._aeTaSessionOverrides || {};
+        for (const [k, v] of Object.entries(ov)) {
+            if (!Object.prototype.hasOwnProperty.call(cur, k)) cur[k] = v;   // a manual pick wins
+        }
+        window._aeTaSessionOverrides = cur;
+        console.log('[tone-pack] gear-based tones for this song:', ov);
+        // re-apply the tone that's playing now (the switcher skips a preset that's already loaded)
+        const sw = window._toneSwitcher;
+        if (sw && sw.taSwitcher && sw.activeTone) {
+            try { await sw.switchToTone(sw.activeTone); } catch (_) { /* ignore */ }
+        }
+    }
+
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { mergePack };
+        module.exports = { mergePack, songOverrides };
         return;
     }
+    try {
+        if (window.slopsmith && typeof window.slopsmith.on === 'function') {
+            // song:ready, then once more after the Audio plugin's own (debounced) tone setup
+            window.slopsmith.on('song:ready', () => {
+                applySongOverrides();
+                setTimeout(applySongOverrides, 2500);
+            });
+        }
+    } catch (_) { /* no host */ }
     // Run once the Audio plugin has had a chance to start (its UI reads localStorage on render).
     setTimeout(install, 1500);
 })();

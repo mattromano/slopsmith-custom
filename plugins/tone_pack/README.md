@@ -15,10 +15,26 @@ cab IRs already on this computer (Rig Builder's `slopsmith-config/nam_models` an
 | Idle | your own preset (e.g. Main Lead) | — |
 
 - Missing files fall back to alternatives (see `RECIPES` in `routes.py`); a preset without any capture is skipped.
-- Output gain is level-matched from each amp capture's NAM loudness metadata (to about Main Lead's level).
+- **Levels** are matched to Main Lead (an amp+cab capture at unity gain, NAM loudness -19.3): chain
+  loudness = amp capture loudness + the IRs' level after the engine's IR normalization (JUCE
+  `Normalise::yes` costs a guitar-band signal 16-22 dB; measured per IR in `ir_gains.json`). The make-up
+  gain goes on the amp stage's own output level (NAM slot state, JUCE base64), since the preset output
+  slider stops at +12 dB. Your own level / gate changes to an Auto preset survive pack updates.
 - `screen.js` merges at startup: adds missing pack presets, refreshes pack presets when the pack changes
   (keeping your gain / gate tweaks), never touches presets you made, never overrides targets you set,
   and keeps a pack preset you deleted deleted. First run with no Tone Automation config turns it on.
 - No knob state is stored: NAM / IR stages have none, and the Kilohearts plugins start at their defaults.
 
 Tests: `node --test plugins/tone_pack/tests/merge.test.js`.
+
+## Every song: categories from the song's gear
+
+Tone Automation sorts tones by *name*. For a sloppak, `GET /api/plugins/tone_pack/song_tones` classifies
+each tone of the playing arrangement from its gear (`gear_class.py`: amp gain >= 70 or a distortion/fuzz
+pedal = Dist, gain >= 55 or a drive pedal = OD, chorus/phaser/trem/wah on a clean amp = Mod, acoustic
+emulator = Acoustic, Bass amp or a Bass arrangement = Bass, "lead"/"solo" anywhere in the name = Solo;
+thresholds fitted on tones whose names say clean / crunch / dist). On `song:ready` those become the Audio
+plugin's session overrides for tones the name classifier can't place (they'd fall back to Idle), for all
+tones of a Bass part, and for single-tone arrangements (keyed by the song file, which is what Tone
+Automation classifies when there's no tone base). Manual per-tone picks in the Chain panel win.
+PSARC songs keep name-only classification.

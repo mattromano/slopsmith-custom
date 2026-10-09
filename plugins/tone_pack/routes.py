@@ -19,8 +19,14 @@ import math
 import os
 from pathlib import Path
 
-VERSION = 1
-TARGET_LOUDNESS_DB = -19.0      # Main Lead's capture sits here; level-match the rest to it
+VERSION = 2
+# Main Lead (an amp+cab capture, no IR stage) sits at about -19.3 dB NAM loudness; every preset is
+# matched to that.
+TARGET_LOUDNESS_DB = -19.3
+# The engine loads IRs with JUCE Convolution Normalise::yes (energy scaled to 0.125), which costs a
+# guitar-band signal ~16-22 dB depending on the cab. ir_gains.json has that loss per IR file
+# (measured with band-limited pink noise, tools in README); other IRs use the median.
+IR_GAIN_DEFAULT_DB = -18.1
 VST3_DIRS = [Path(os.environ.get("COMMONPROGRAMFILES", r"C:\Program Files\Common Files")) / "VST3"]
 
 # Stage kinds -> engine slot type (ProcessorSlot::Type: VST 0, NAM 1, IR 2)
@@ -66,6 +72,14 @@ RECIPES = [
 KILOHEARTS_MOD = ["kHs Chorus", "kHs Delay", "kHs Reverb"]
 
 
+def _ir_gains() -> dict:
+    try:
+        with open(Path(__file__).with_name("ir_gains.json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
 def _find_vst3(name: str) -> Path | None:
     for root in VST3_DIRS:
         if not root.is_dir():
@@ -99,13 +113,32 @@ def _stage(kind: str, path: Path, sid: int) -> dict:
     return {"id": sid, "type": _TYPES[kind], "name": f"{label}: {path.stem}", "path": str(path), "bypassed": False}
 
 
+_JUCE_B64 = ".ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+"
+
+
+def juce_base64(data: bytes) -> str:
+    """juce::MemoryBlock::toBase64Encoding: "<size>." + 6-bit groups taken little-endian from the
+    data (not RFC 4648). The engine's loadPreset reads slot state with fromBase64Encoding."""
+    n = int.from_bytes(data, "little")
+    chars = ((len(data) * 8) + 5) // 6
+    return f"{len(data)}." + "".join(_JUCE_B64[(n >> (6 * i)) & 63] for i in range(chars))
+
+
+def _nam_state(path: Path, output_level: float) -> str:
+    """NAMProcessor state: the level-matching gain goes on the amp's own output level, since the
+    preset output slider tops out at +12 dB."""
+    js = json.dumps({"modelPath": str(path), "inputLevel": 1.0, "outputLevel": round(output_level, 4)}, indent=2)
+    return juce_base64(js.encode("utf-8"))
+
+
 def build_presets(config_dir: Path) -> dict:
     models, irs = config_dir / "nam_models", config_dir / "nam_irs"
     presets, targets, missing = {}, {}, []
     kh = [_find_vst3(n) for n in KILOHEARTS_MOD]
+    ir_gain = _ir_gains()
     have_kh = all(kh)
     for rec in RECIPES:
-        chain, level_db = [], None
+        chain, level_db, amp_stage, ir_db = [], None, None, 0.0
         stages = rec["stages"]
         if rec["category"] == "mod" and have_kh:
             # real modulation: clean amp + cab, then chorus / delay / reverb VSTs
@@ -116,11 +149,13 @@ def build_presets(config_dir: Path) -> dict:
                 missing.append(f"{rec['name']}: {rel}")
                 continue
             chain.append(_stage(kind, p, len(chain) + 1))
+            if kind == "IR":
+                ir_db += float(ir_gain.get(p.name, IR_GAIN_DEFAULT_DB))
             # output level follows the amp capture (else the first capture in the chain)
             if kind == "NAM" and (level_db is None or p.parent.name in ("amps", "other")):
                 lv = _loudness(p)
                 if lv is not None and (level_db is None or p.parent.name in ("amps", "other")):
-                    level_db = lv
+                    level_db, amp_stage = lv, chain[-1]
         if not any(s["type"] == _TYPES["NAM"] for s in chain):
             chain = None
         if not chain:
@@ -130,17 +165,25 @@ def build_presets(config_dir: Path) -> dict:
             name = "Auto · Clean Chorus + Delay (Kilohearts)"
             for p in kh:
                 chain.append(_stage("VST", p, len(chain) + 1))
+        # chain loudness ~ amp capture loudness + the IRs' normalized gain; make up the rest on the amp
+        make_up_db = 0.0 if level_db is None else max(-24.0, min(30.0, TARGET_LOUDNESS_DB - (level_db + ir_db)))
+        if amp_stage is not None:
+            amp_stage["state"] = _nam_state(Path(amp_stage["path"]), 10 ** (make_up_db / 20.0))
         native = {"version": 1, "chain": chain}
-        out_db = 0.0 if level_db is None else max(-12.0, min(12.0, TARGET_LOUDNESS_DB - level_db))
         presets[name] = {
             "nativePreset": json.dumps(native, indent=2),
             "items": [{"type": k, "path": s["path"], "name": s["name"]}
                       for s in chain for k in [next(t for t, v in _TYPES.items() if v == s["type"])]],
             "inputGain": 1.0,
-            "outputGain": round(10 ** (out_db / 20.0), 4),
+            "outputGain": 1.0,
+            "makeUpDb": round(make_up_db, 1),
             "noiseGate": {"enabled": "gate" in rec, "thresholdDb": rec.get("gate", -60),
                           "releaseMs": 120, "depthDb": -60},
             "generatedBy": "tone_pack",
+            # what the pack set, so a refresh can tell the user's own tweaks apart
+            "packLevels": {"inputGain": 1.0, "outputGain": 1.0,
+                           "noiseGate": {"enabled": "gate" in rec, "thresholdDb": rec.get("gate", -60),
+                                         "releaseMs": 120, "depthDb": -60}},
             "toneFormVersion": VERSION,
             "created": 0,
         }
@@ -148,9 +191,75 @@ def build_presets(config_dir: Path) -> dict:
     return {"version": VERSION, "presets": presets, "targets": targets, "missing": missing, "kilohearts": have_kh}
 
 
+def song_tone_categories(song: Path, arrangement: str) -> dict:
+    """{tone name: category} for the tones an arrangement uses, from each tone's gear
+    (gear_class.classify). Every tone of a Bass arrangement is 'bass'."""
+    import re
+    import zipfile
+
+    import yaml
+
+    from gear_class import classify
+
+    def read(rel):
+        if song.is_dir():
+            return (song / rel).read_bytes()
+        with zipfile.ZipFile(song) as z:
+            return z.read(rel)
+
+    man = yaml.safe_load(read("manifest.yaml")) or {}
+    out = {}
+    for a in man.get("arrangements", []):
+        if (a.get("name") or "") != arrangement or not a.get("file"):
+            continue
+        try:
+            t = (json.loads(read(a["file"])) or {}).get("tones") or {}
+        except (KeyError, ValueError, OSError):
+            continue
+        defs = {}
+        for d in t.get("definitions") or []:
+            if isinstance(d, dict):
+                for k in (d.get("Key"), d.get("Name")):
+                    if k:
+                        defs[str(k).lower()] = d          # names differ in case from the definitions
+        names = [t.get("base")] + [c.get("name") for c in (t.get("changes") or []) if isinstance(c, dict)]
+        is_bass = bool(re.search(r"\bbass\b", arrangement, re.I))
+        if not any(names) and defs:
+            # single-tone arrangement (no base / changes): the player's Tone Automation classifies
+            # the song file name instead, so report that tone under "$song"
+            d = next(iter(defs.values()))
+            cat = classify(d, d.get("Name") or "", is_bass)
+            if cat:
+                out.setdefault("$song", cat)
+        for n in names:
+            if n and n not in out:
+                cat = classify(defs.get(n.lower()), n, is_bass)
+                if cat:
+                    out[n] = cat
+    return out
+
+
 def setup(app, context):
+    import sys
     config_dir = Path(context["config_dir"])
+    get_dlc_dir = context.get("get_dlc_dir")
+    here = str(Path(__file__).resolve().parent)
+    if here not in sys.path:
+        sys.path.insert(0, here)          # gear_class.py next to this file
 
     @app.get("/api/plugins/tone_pack/presets")
     def tone_pack_presets():
         return build_presets(config_dir)
+
+    @app.get("/api/plugins/tone_pack/song_tones")
+    def tone_pack_song_tones(filename: str, arrangement: str):
+        dlc = Path(get_dlc_dir()) if callable(get_dlc_dir) else None
+        if dlc is None:
+            return {"tones": {}}
+        song = (dlc / filename).resolve()
+        if dlc.resolve() not in song.parents or song.suffix.lower() != ".sloppak" or not song.exists():
+            return {"tones": {}}          # outside the library / not a sloppak (PSARCs: names only)
+        try:
+            return {"tones": song_tone_categories(song, arrangement)}
+        except Exception as e:            # malformed song: no overrides
+            return {"tones": {}, "error": str(e)}
