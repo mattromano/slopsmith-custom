@@ -11,6 +11,7 @@ param(
 $ErrorActionPreference = "Stop"
 $repo = Split-Path -Parent $MyInvocation.MyCommand.Path
 Push-Location $repo
+if (git status --porcelain) { throw "Commit or stash changes in this repo first (git subtree needs a clean tree)." }
 
 git subtree pull -q --prefix=slopsmith "$Desktop\slopsmith" custom -m "Sync slopsmith from local custom branch"
 git subtree pull -q --squash --prefix=plugins/note_detect "$Desktop\slopsmith\plugins\note_detect" feat/retune-offset -m "Sync note_detect"
@@ -22,7 +23,7 @@ $d = "$Desktop\slopsmith-desktop"
 $base = (git -C $d merge-base origin/main HEAD).Trim()
 Remove-Item "$repo\slopsmith-desktop\patches\*.patch" -ErrorAction SilentlyContinue
 git -C $d format-patch -q "$base..HEAD" -o "$repo\slopsmith-desktop\patches"
-Set-Content "$repo\slopsmith-desktop\BASE_COMMIT" $base -Encoding ascii
+[IO.File]::WriteAllText("$repo\slopsmith-desktop\BASE_COMMIT", "$base`n")  # LF, matches the committed file
 Copy-Item "$d\Launch Slopsmith.cmd" "$repo\slopsmith-desktop\" -Force
 
 # song-builder: skill, album recipes, notes
