@@ -111,6 +111,10 @@ def convert(folder: Path, out: Path, difficulty="expert", title=None, artist=Non
     chart, ini = drumchart.load_song_folder(folder, difficulty)
     if not chart.hits:
         raise SystemExit(f"{folder}: the {difficulty} drums part has no notes")
+    if chart.star_power and not chart.fills:   # YARG generates activation fills when a chart has none
+        chart.fills = drumchart.auto_fills([h.time for h in chart.hits],
+                                           [(b["time"], b["measure"]) for b in chart.beat_list()],
+                                           chart.star_power, chart.solos, [t for t, _ in chart.sections])
     work = Path(tempfile.mkdtemp(prefix="ch2slop_"))
     try:
         (work / "arrangements").mkdir()

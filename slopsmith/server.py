@@ -3717,6 +3717,25 @@ def serve_sloppak_file(filename: str, rel_path: str):
     return FileResponse(str(target), media_type=mt) if mt else FileResponse(str(target))
 
 
+# Drum arrangements (Drums / Percussion / Drum Kit) — same pattern as the drums plugin.
+_DRUMS_ARR_RE = re.compile(r"\b(?:drums|percussion|drum\s*kit)\b", re.I)
+
+
+def _most_notes_arrangement(arrangements) -> int:
+    """Default arrangement when nothing was requested: the one with the most notes.
+    Drum charts (GM-encoded notes) usually out-count the guitar parts, so they only
+    win when the song has nothing else - otherwise every player would land on Drums."""
+    only_drums = all(_DRUMS_ARR_RE.search(a.name or "") for a in arrangements)
+    best, best_count = 0, 0
+    for i, a in enumerate(arrangements):
+        if not only_drums and _DRUMS_ARR_RE.search(a.name or ""):
+            continue
+        c = len(a.notes) + sum(len(ch.notes) for ch in a.chords)
+        if c > best_count:
+            best_count, best = c, i
+    return best
+
+
 @app.websocket("/ws/highway/{filename:path}")
 async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1):
     """Stream song data for the highway renderer over WebSocket."""
@@ -3817,14 +3836,7 @@ async def highway_ws(websocket: WebSocket, filename: str, arrangement: int = -1)
                         best = i
                         break
         if best < 0:
-            # Fallback: most notes
-            best = 0
-            best_count = 0
-            for i, a in enumerate(song.arrangements):
-                c = len(a.notes) + sum(len(ch.notes) for ch in a.chords)
-                if c > best_count:
-                    best_count = c
-                    best = i
+            best = _most_notes_arrangement(song.arrangements)
         arr = song.arrangements[best]
 
         # Convert audio with unique filename (check cache first)

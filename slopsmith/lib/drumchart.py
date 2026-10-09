@@ -613,3 +613,89 @@ def shift_chart(chart: DrumChart, warp) -> DrumChart:
     c.solos = [(round(float(warp(a)), 4), round(float(warp(b)), 4)) for a, b in c.solos]
     c.sections = [(round(float(warp(t)), 4), n) for t, n in c.sections]
     return c
+
+
+# ── star power / activation generation (for sources without them) ──────────
+
+def _lower_bound(xs, v) -> int:
+    """Index of the last element <= v, -1 if none (YARG ChartEventExtensions.LowerBound)."""
+    import bisect
+    return bisect.bisect_right(xs, v + 1e-9) - 1
+
+
+def auto_star_power(note_times, beats, every_measures: int = 8, length_measures: int = 1,
+                    first_measure: int = 4, min_notes: int = 4) -> list[tuple[float, float]]:
+    """Slopsmith's own rule (not from YARG, which never invents star power): a one-measure
+    phrase every ``every_measures`` measures, starting at measure ``first_measure``,
+    skipping measures with fewer than ``min_notes`` hits.  ``beats``: [(time, measure|-1)]."""
+    import bisect
+    measures = [t for t, m in beats if m != -1]
+    nt = sorted(note_times)
+    out = []
+    i = first_measure
+    while i + length_measures < len(measures):
+        a, b = measures[i], measures[i + length_measures]
+        n = bisect.bisect_left(nt, b - 1e-6) - bisect.bisect_left(nt, a - 1e-6)
+        if n >= min_notes:
+            out.append((round(a, 4), round(b - 0.001, 4)))
+            i += every_measures
+        else:
+            i += 1
+    return out
+
+
+def auto_fills(note_times, beats, star_power, solos=(), sections=()) -> list[tuple[float, float]]:
+    """Drum fill (star power activation) phrases, ported from YARG.Core
+    SongChart.AutoGeneration.ParseForActivationPhrases: every 4 measures (2 if that's more
+    than 10 s away), snapped to section starts, at least 2 s after the last SP/solo/fill,
+    only where 16+ notes follow within 4 measures; the fill spans the measure before the
+    activation bar line.  (Time-signature snapping is skipped: sloppak beats carry no
+    time signatures.)  Returns nothing when there is no star power, like YARG."""
+    MIN_SPACING, MAX_SPACING, SP_MIN_NOTES = 2.0, 10.0, 16
+    measures = [t for t, m in beats if m != -1]
+    sp = sorted(star_power)
+    if not sp or len(measures) < 6:
+        return []
+    solos = sorted(solos)
+    sections = sorted(sections)
+    sp_starts = [a for a, _ in sp]
+    solo_starts = [a for a, _ in solos]
+    last_solo = solos[-1][1] if solos else 0.0
+    nt = sorted(note_times)
+    import bisect
+    spacing_ref = sp[0][1]
+    cur = max(0, _lower_bound(measures, spacing_ref))
+    sec_i = _lower_bound(sections, spacing_ref)
+    sp_i, solo_i = 0, _lower_bound(solo_starts, spacing_ref)
+    out = []
+    total = len(measures)
+    while cur < total - 4:
+        per = 4
+        if measures[cur + per] - spacing_ref > MAX_SPACING:
+            per = 2
+        cur += per
+        mt = measures[cur]
+        new_sec = _lower_bound(sections, mt)
+        if new_sec > sec_i:
+            sec_i = new_sec
+            cur = max(0, _lower_bound(measures, sections[sec_i]))
+            mt = measures[cur]
+        new_sp = _lower_bound(sp_starts, mt)
+        if new_sp > sp_i:
+            sp_i = new_sp
+            spacing_ref = max(sp[sp_i][1], spacing_ref)
+        if solos and mt < last_solo:
+            new_solo = _lower_bound(solo_starts, mt)
+            if new_solo > solo_i:
+                solo_i = new_solo
+                spacing_ref = max(solos[solo_i][1], spacing_ref)
+        if mt - spacing_ref < MIN_SPACING:
+            continue
+        end = measures[min(cur + 4, total - 1)]
+        n = bisect.bisect_right(nt, end + 1e-6) - bisect.bisect_right(nt, mt + 1e-6)
+        if n < SP_MIN_NOTES:
+            continue
+        spacing_ref = mt
+        if cur >= 1:
+            out.append((round(measures[cur - 1], 4), round(mt, 4)))
+    return out

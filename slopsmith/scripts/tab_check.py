@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import re
 import sys
 import tempfile
 import zipfile
@@ -32,6 +33,8 @@ from pathlib import Path
 
 import numpy as np
 import yaml
+
+DRUMS_ARR = re.compile(r"\b(?:drums?|percussion)\b", re.I)
 
 logging.disable(logging.WARNING)  # basic_pitch warns about missing TF/CoreML backends
 
@@ -131,6 +134,8 @@ def check(path: Path) -> dict:
     out = {"file": path.name, "title": man.get("title"), "arrangements": {}}
     bar_times = None
     for ent in man.get("arrangements", []):
+        if DRUMS_ARR.search(f"{ent.get('name', '')} {ent.get('id', '')}"):
+            continue  # drum charts aren't pitched; drums_join validates them against stems/drums.ogg
         arr = json.loads(z.read(ent["file"]))
         is_bass = "bass" in (ent.get("name", "") + ent["id"]).lower()
         stem = "bass" if is_bass else "guitar"
