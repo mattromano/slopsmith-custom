@@ -131,6 +131,27 @@ Cheap 52 *Vermont*). Copy one to start a new album. The format is in song_builde
 - `hd` repeat chords draw as frames only. A slide's destination gem is hidden, and its trail shows instead.
 - Bend chevrons need `bn` > 0 (semitones). `gp7_to_gp5` must map GPIF bend 100 → 4 quarter-tones.
 
+## Exporting to Rocksmith 2014 CDLC (CustomsForge)
+
+CustomsForge needs a `.psarc` built with DLC Builder plus its `.rs2dlc` project file.
+`scripts/export_dlcbuilder.py SONG.sloppak... --out DIR` produces a DLC Builder project per song:
+- **Charts:** a notation-only rebuild with `--export-rs` writes the synced Rocksmith XML.
+- **Fix-ups:**
+  - an empty COUNT phrase and an END phrase;
+  - Rocksmith section names;
+  - `<bendValues>` on every bend;
+  - linkNext notes sustained to their target;
+  - tails on slide/bend notes;
+  - header fields, arrangementProperties and tonebase.
+- **Count-in:** if a song starts within 4 beats, the audio gets a 1-bar silent count-in and the charts shift to match.
+- **Media:** a WAV, a 30 s preview from the first chorus, and a 512px PNG cover.
+- **Project:** an `.rs2dlc` (DLC Builder 3.x JSON: `{"Case":"Instrumental","Fields":[...]}`; ArrangementName
+  Lead=0/Rhythm=2/Bass=3, RouteMask 1/2/4) with placeholder tones from DLC Builder's test project.
+- **Titles:** `(Songsterr)` variant tags are stripped.
+
+The user still builds the `.psarc` in DLC Builder (needs Wwise for the WAV→WEM conversion). The 10 best
+charts are exported in `Desktop\Slopsmith DLC - Best 10\DLC Builder\`.
+
 ## Hard-won rules
 
 - Keep the user's playtested builds. Rebuilds of an existing song from a different tab get a
