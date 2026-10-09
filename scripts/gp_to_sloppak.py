@@ -474,11 +474,20 @@ def load_reuse(path, map_path=None):
                 "report": {k: rep.get(k) for k in ("onset_score", "bar_hit", "method", "dtw", "linear_score")}}
     else:
         raise SystemExit(f"--reuse: {path} has no x_sync.json and no --reuse-map report was given")
+    # Drums (scripts/drums_join.py) aren't rebuilt from the tab here: keep them as they are
+    keep = [e for e in man.get("arrangements", []) if _is_drums_entry(e)]
+    keep_files = {(d / e["file"]).resolve() for e in keep}
     for f in (d / "arrangements").glob("*"):
-        f.unlink()
+        if f.resolve() not in keep_files:
+            f.unlink()
     return {"dir": d, "manifest": man, "tab_beats": np.array(sync["tab_beats"], dtype=float),
             "audio_beats": np.array(sync["audio_beats"], dtype=float), "report": sync.get("report") or {},
-            "duration": float(man.get("duration") or 0)}
+            "duration": float(man.get("duration") or 0), "keep_arrangements": keep}
+
+
+def _is_drums_entry(e):
+    import re
+    return bool(re.search(r"\b(?:drums?|percussion)\b", f"{e.get('name', '')} {e.get('id', '')}", re.I))
 
 
 def load_anchors(path):
@@ -849,8 +858,8 @@ def main():
         work = existing["dir"]
         used = {e["id"] for e in existing["manifest"].get("arrangements", [])}
     elif reuse is not None:
-        work = reuse["dir"]  # old stems/cover kept, old arrangements already removed
-        used = set()
+        work = reuse["dir"]  # old stems/cover kept, old arrangements already removed (drums kept)
+        used = {e["id"] for e in reuse["keep_arrangements"]}
     else:
         work = Path(tempfile.mkdtemp(prefix="gp2slop_"))
         (work / "arrangements").mkdir()
@@ -904,8 +913,13 @@ def main():
     elif reuse is not None:
         manifest = reuse["manifest"]
         manifest.update({"title": a.title, "artist": a.artist, "album": a.album, "year": a.year})
-        manifest["arrangements"] = arr_manifest
+        manifest["arrangements"] = arr_manifest + reuse["keep_arrangements"]
         manifest["x_build"] = _x_build(a)
+        if reuse["keep_arrangements"]:
+            src = (manifest.get("x_drums") or {}).get("source")
+            log(f"  kept the Drums arrangement ({src or 'unknown source'})")
+            if src == "gp" and a.anchors:
+                log("  NOTE: these drums were placed with the old sync map; re-run song_builder.py drums")
     else:
         manifest = _new_manifest(a, work, dur, arr_manifest)
     if report.get("beat_map"):

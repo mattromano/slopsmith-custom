@@ -10,6 +10,7 @@ tab_check.py and writes a quality report.
   python scripts/song_builder.py check ALBUM.yaml            # (re)grade existing builds
   python scripts/song_builder.py tune  ALBUM.yaml            # settle close DTW-vs-constant-tempo calls by lift
   python scripts/song_builder.py survey TAB.gp|.gp5          # list a tab's tracks
+  python scripts/song_builder.py drums ALBUM.yaml --chart-dir PATH   # add Drums from YARG/CH charts or the GP drums
 
 Run with _build/.mirvenv/Scripts/python.exe (has basic-pitch + refiner + the host packages).
 
@@ -341,15 +342,56 @@ def tune(cfg_path: Path, jobs):
         tuning_file.write_text(json.dumps(tuning, indent=1), encoding="utf-8")
 
 
+def drums(cfg_path: Path, jobs, a):
+    """Attach a Drums arrangement to every built song: a matching YARG/Clone Hero chart
+    from --chart-dir (aligned to our audio), else the tab's drum track via the stored sync
+    map.  Joins that fail validation are flagged, not written (--force overrides)."""
+    import drums_join
+    import drumjoin
+    index = drumjoin.index_chart_dir(Path(a.chart_dir)) if a.chart_dir else []
+    if a.chart_dir:
+        print(f"{len(index)} chart folders under {a.chart_dir}")
+    rows = []
+    for j in jobs:
+        if not j["out"].exists():
+            print(f"{j['title'][:40]:<41} not built yet; skipping")
+            continue
+        print(f"\n{j['title']}", flush=True)
+        title = re.sub(r"\s*\([^)]*\)\s*$", "", j["title"])  # drop "(Songsterr)"-style variants
+        chart = drums_join.find_chart(index, j["artist"], title, a.min_match) if index else None
+        rep = drumjoin.join(j["out"], chart_folder=chart, gp_path=j["tab"],
+                            sources=[s.strip() for s in a.source.split(",") if s.strip()],
+                            transcriber=a.transcriber, force=a.force, dry_run=a.dry_run,
+                            force_method=None if a.method == "auto" else a.method,
+                            thresholds=drums_join.thresholds(a), backup_dir=ROOT / "_build" / "backup",
+                            report_path=LOGS / f"{j['slug']}_drums.json", log=lambda *x: print(*x, flush=True))
+        best = next((c for c in rep["candidates"] if c.get("source") == rep["written"]), None) or \
+            next((c for c in rep["candidates"] if "validation" in c), {})
+        v = best.get("validation", {})
+        rows.append((j["title"], rep["written"] or ("dry-run" if a.dry_run else "FLAGGED"), best.get("source", "-"),
+                     v.get("median_offset_ms"), v.get("within_30ms"), v.get("drift_span_ms")))
+    print(f"\n{'title':<42}{'result':<10}{'source':<8}{'median':>8}{'<30ms':>7}{'drift':>7}")
+    for t, r, s, m, w, d in rows:
+        print(f"{t[:41]:<42}{r:<10}{s:<8}{(m if m is not None else 0):>7.0f}ms{(w or 0):>6.0%}{(d or 0):>5.0f}ms")
+    LOGS.mkdir(parents=True, exist_ok=True)
+    out = cfg_path.with_name(cfg_path.stem + "_drums.json")
+    out.write_text(json.dumps([dict(zip(("title", "result", "source", "median_ms", "within_30ms", "drift_ms"), r))
+                               for r in rows], indent=1), encoding="utf-8")
+    print(f"\nreport: {out}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("cmd", choices=["plan", "build", "check", "tune", "survey"])
+    ap.add_argument("cmd", choices=["plan", "build", "check", "tune", "survey", "drums"])
     ap.add_argument("target", help="album YAML (or a tab file for survey)")
     ap.add_argument("--only", help='comma-separated titles ("Hollow, As You Figured" works)')
     ap.add_argument("--refine-beats", action="store_true")
     ap.add_argument("--no-stems", action="store_true")
     ap.add_argument("--notation-only", action="store_true",
                     help="rebuild charts only: reuse each existing build's stems + sync map (seconds per song)")
+    ap.add_argument("--chart-dir", help="drums: folder of YARG/Clone Hero song folders to match against")
+    import drums_join
+    drums_join.add_common_args(ap)
     a = ap.parse_args()
 
     if a.cmd == "survey":
@@ -369,6 +411,9 @@ def main():
         print(f"{j['title'][:40]:<41}{j['tracks']:<30}{j['tab'].name[:40]}")
         print(f"{'':<41}" + ", ".join(f"{i}={n}" for i, n in j["names"].items()))
     if a.cmd == "plan":
+        return
+    if a.cmd == "drums":
+        drums(cfg, jobs, a)
         return
     results = {}
     if a.cmd == "tune":

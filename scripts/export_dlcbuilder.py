@@ -326,10 +326,12 @@ def export(sloppak: Path, out_root: Path, author: str) -> Path:
             raise SystemExit(f"{title}: converter failed\n{r.stdout[-1500:]}\n{r.stderr[-1500:]}")
 
     meta = {"title": title, "artist": artist, "album": rec.get("album", ""), "year": rec.get("year", 0)}
-    pad = count_in_pad([xml_dir / f"{e['id']}_RS2.xml" for e in man["arrangements"]])
+    # Rocksmith has no drums: Drums arrangements (drums_join / ch_to_sloppak) stay out of the CDLC
+    rs_arrs = [e for e in man["arrangements"] if not re.search(r"\b(?:drums?|percussion)\b", e["name"], re.I)]
+    pad = count_in_pad([xml_dir / f"{e['id']}_RS2.xml" for e in rs_arrs])
     arrangements, report = [], {}
-    names = [a["name"] for a in man["arrangements"]]
-    for ent in man["arrangements"]:
+    names = [a["name"] for a in rs_arrs]
+    for ent in rs_arrs:
         src = xml_dir / f"{ent['id']}_RS2.xml"
         name = ent["name"] if ent["name"] in ARR_ENUM else "Lead"
         dst = d / f"arr_{name.lower()}_RS2.xml"
