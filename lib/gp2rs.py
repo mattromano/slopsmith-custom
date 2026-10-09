@@ -71,6 +71,49 @@ class RsNote:
     link_next: bool = False
 
 
+def _compute_anchors(rs_notes, rs_chords, audio_offset, width=4):
+    """Hand-position anchors (RS fret window = index-finger fret .. +width-1).
+
+    Each onset (single note or whole chord) is one event spanning its lowest..
+    highest fretted note, so a chord never splits the window and its repeats
+    can't flip the anchor back and forth (the old per-note pass moved the
+    window by two frets between a chord and its repeats).  When an event falls
+    outside the current window, the new anchor sits on the lowest fret that
+    keeps as many *upcoming* events in one window as possible - on the index
+    finger, with no "fret - 1" pad (that pushed chord frames a fret left)."""
+    by_t: dict[float, list[int]] = {}
+    for n in rs_notes:
+        if n.fret > 0:
+            by_t.setdefault(round(n.time, 4), []).append(n.fret)
+    for c in rs_chords:
+        for cn in c.notes:
+            if cn.fret > 0:
+                by_t.setdefault(round(c.time, 4), []).append(cn.fret)
+    events = [(t, min(fs), max(fs)) for t, fs in sorted(by_t.items())]
+    if not events:
+        return [RsAnchor(time=audio_offset, fret=1, width=width)]
+
+    def window_for(i):
+        """Lowest fret + width covering events i.. for as long as they fit together."""
+        lo, hi = events[i][1], events[i][2]
+        for _, elo, ehi in events[i + 1:]:
+            nlo, nhi = min(lo, elo), max(hi, ehi)
+            if nhi - nlo + 1 > width:
+                break
+            lo, hi = nlo, nhi
+        return max(1, lo), max(width, hi - lo + 1)  # a single wide stretch widens it
+
+    fret, w = window_for(0)
+    anchors = [RsAnchor(time=audio_offset, fret=fret, width=w)]
+    for i, (t, lo, hi) in enumerate(events):
+        cur = anchors[-1]
+        if lo < cur.fret or hi > cur.fret + cur.width - 1:
+            fret, w = window_for(i)
+            if (fret, w) != (cur.fret, cur.width):
+                anchors.append(RsAnchor(time=t, fret=fret, width=w))
+    return anchors
+
+
 @dataclass
 class RsChord:
     time: float
@@ -624,6 +667,14 @@ def convert_track(
     chord_templates: list[ChordTemplate] = []
     chord_template_map: dict[tuple, int] = {}  # fret tuple → index
 
+    # Per-string memory of the last sounded note, for techniques that GP
+    # stores on the *origin* note but Rocksmith wants resolved against the
+    # next note on that string: ties (extend the origin's sustain instead of
+    # re-picking), hammer-on/pull-off (flag the destination, H vs P by fret
+    # direction) and slides (origin gets the target fret).
+    last_on_string: dict[int, RsNote] = {}
+    pending: dict[int, str] = {}  # string -> "hammer" | "legato_slide" | "shift_slide"
+
     for entry in schedule:
         measure = track.measures[entry.mh_index]
         for voice in measure.voices:
@@ -647,6 +698,12 @@ def convert_track(
                     if note.type == guitarpro.NoteType.dead:
                         fret = max(fret, 0)
 
+                    prev = last_on_string.get(rs_str)
+                    if note.type == guitarpro.NoteType.tie and prev is not None:
+                        # tied note: keep ringing the origin note, don't re-pick
+                        prev.sustain = max(prev.sustain, t + dur - prev.time)
+                        continue
+
                     rn = RsNote(
                         time=t,
                         string=rs_str,
@@ -659,20 +716,32 @@ def convert_track(
                     eff = note.effect
                     if eff.bend and eff.bend.points:
                         max_bend = max(p.value for p in eff.bend.points)
-                        rn.bend = max_bend / 100.0  # GP uses 100 = 1 semitone
+                        # pyguitarpro bend values are quarter-tones (GP file 25 = 1/4 tone;
+                        # 2 = half step, 4 = full step); RS `bend` is in semitones
+                        rn.bend = max_bend / 2.0
+
+                    # resolve a hammer/slide started on the previous note of this string
+                    how = pending.pop(rs_str, None)
+                    if prev is not None and how == "hammer":
+                        rn.pull_off = fret < prev.fret
+                        rn.hammer_on = not rn.pull_off
+                    elif prev is not None and how in ("legato_slide", "shift_slide"):
+                        prev.slide_to = fret
+                        prev.link_next = how == "legato_slide"
 
                     if eff.hammer:
-                        # Determine H vs P from fret context
-                        rn.hammer_on = True  # simplified; ideally check prev note
+                        pending[rs_str] = "hammer"  # GP flags the origin; RS flags the destination
 
                     if eff.slides:
                         for slide in eff.slides:
-                            if slide in (
-                                guitarpro.SlideType.shiftSlideTo,
-                                guitarpro.SlideType.legatoSlideTo,
-                            ):
-                                rn.link_next = True
-                                # slide target fret determined from next note
+                            if slide == guitarpro.SlideType.legatoSlideTo:
+                                pending[rs_str] = "legato_slide"
+                            elif slide == guitarpro.SlideType.shiftSlideTo:
+                                pending[rs_str] = "shift_slide"
+                            elif slide == guitarpro.SlideType.outDownwards and fret > 1:
+                                rn.slide_unpitch_to = max(1, fret - 3)
+                            elif slide == guitarpro.SlideType.outUpwards:
+                                rn.slide_unpitch_to = min(24, fret + 3)
 
                     if eff.harmonic:
                         if isinstance(eff.harmonic, guitarpro.PinchHarmonic):
@@ -684,13 +753,13 @@ def convert_track(
                         rn.palm_mute = True
                     if eff.accentuatedNote or eff.heavyAccentuatedNote:
                         rn.accent = True
-                    if eff.ghostNote:
-                        rn.mute = True
+                    # ghost notes are quiet, not dead: leave them as normal notes
                     if getattr(eff, "vibrato", False):
                         rn.vibrato = True
                     if eff.tremoloPicking:
                         rn.tremolo = True
 
+                    last_on_string[rs_str] = rn
                     beat_notes.append(rn)
 
                 if not beat_notes:
@@ -740,25 +809,7 @@ def convert_track(
     # ── Compute anchors ───────────────────────────────────────────────────
     # Exclude open strings (fret 0) — they span the full highway and
     # shouldn't cause the fret range to shift
-    anchors = []
-    all_timed_frets = [(n.time, n.fret) for n in rs_notes if n.fret > 0]
-    for c in rs_chords:
-        for cn in c.notes:
-            if cn.fret > 0:
-                all_timed_frets.append((cn.time, cn.fret))
-    all_timed_frets.sort()
-
-    # Always start with an anchor at the beginning
-    first_fret = all_timed_frets[0][1] if all_timed_frets else 1
-    anchors.append(RsAnchor(time=audio_offset, fret=max(1, first_fret - 1), width=4))
-
-    for t, fret in all_timed_frets:
-        anchor_lo = anchors[-1].fret
-        anchor_hi = anchor_lo + anchors[-1].width
-        if fret < anchor_lo or fret > anchor_hi:
-            new_fret = max(1, fret - 1)
-            if new_fret != anchors[-1].fret:
-                anchors.append(RsAnchor(time=t, fret=new_fret, width=4))
+    anchors = _compute_anchors(rs_notes, rs_chords, audio_offset)
 
     # ── Compute song length ───────────────────────────────────────────────
     # End of the final scheduled measure in *output* time. After expansion

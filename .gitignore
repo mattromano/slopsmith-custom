@@ -24,3 +24,6 @@ test-results/
 playwright-report/
 
 /dlc
+# local song-builder workspace + machine config
+_build/
+.env
