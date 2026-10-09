@@ -18,12 +18,13 @@ A plugin for [Slopsmith](https://github.com/got-feedback/feedback) that replaces
 - **Auto-activate** — switches on automatically for Drums/Percussion arrangements
 - **MIDI drum pad input** — connect any MIDI drum pad, electronic kit, or controller via Web MIDI API
 - **Custom MIDI mapping** — "Learn" mode to assign any MIDI note to any lane, for non-standard drum pads
-- **Built-in drum sounds** — WebAudioFont-powered GM drum kit playback on MIDI hit
+- **Built-in drum sounds** — real sampled acoustic kits with velocity layers (or WebAudioFont GM kits) played on each pad hit
 - **Accuracy scoring** — hit detection with tight +/-50ms timing window, accuracy %, streak counter
 - **Inline settings** — MIDI device, volume, channel filter, lane labels, hit detection, and mapping table
 - **Drums settings page** — Plugins → **Drums**: every drum setting on one page, plus a pad tester. See [Settings page](#settings-page).
 - **Assists** — auto kick, auto cymbals (each up to a chosen difficulty) and hit-timing presets. See [Assists](#assists).
-- **Four drum kits** for the built-in sounds (JCLive, FluidR3 GM, Sound Blaster Live!, Chaos)
+- **Six drum kits** for the built-in sounds: two real multi-sampled kits — **Crocell** (rock, default) and
+  **Virtuosity** (jazz) — and four WebAudioFont GM kits (JCLive, FluidR3 GM, Sound Blaster Live!, Chaos)
 
 ## 3D view
 
@@ -170,7 +171,14 @@ changes apply right away to a song that is playing in another panel:
   hit counter. Changing it mid-song rescores from the current position, like a difficulty change.
 - **Hit timing** (`drums_timing_v1`, 3D view): Relaxed ±130 ms, Forgiving ±100 ms, Normal ±70 ms (YARG's
   default), Precision (YARG's dynamic window that tightens on fast notes).
-- **Kit** (`drums_kit_v1`): the WebAudioFont GM kit used for pad sounds; only the chosen kit is loaded.
+- **Kit** (`drums_kit_v1`): the sound set for pad hits; only the chosen kit is loaded. Default **Crocell
+  (rock)**: a real sampled kit (CrocellKit, CC BY 4.0) with 4 velocity layers × 2 round-robins per piece, so
+  soft and hard hits sound different and repeated hits don't sound identical; a closed / pedal hi-hat cuts a
+  ringing open hi-hat. **Virtuosity (jazz)** is the same kind of kit (Virtuosity Drums, CC0). The sampled
+  kits (`sounds/kits/`, ~4–5 MB each, Ogg Vorbis) are fetched and decoded when picked and play through
+  plain `AudioBufferSourceNode`s for low latency; the GM kits (JCLive, FluidR3 GM, SB Live!, Chaos) are one
+  WebAudioFont sample per note. A saved GM kit choice is kept; a missing kit folder falls back to JCLive.
+  Sources, licences and the build script: `sounds/README.md`, `NOTICE.md`, `tools/build_sample_kit.py`.
 
 ### Notes and limits
 

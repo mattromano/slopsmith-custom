@@ -125,15 +125,21 @@ const TIMING_PRESETS = {
 };
 const TIMING_IDS = ['relaxed', 'forgiving', 'normal', 'precision'];
 
-// Drum synth sound sets: WebAudioFont General MIDI drum kits bundled in
-// sounds/ (see sounds/README.md). Only the chosen kit is loaded.
+// Drum synth sound sets. type 'samples': a real multi-sampled kit with
+// velocity layers in sounds/kits/<dir>/ (kit.json + .ogg, built by
+// tools/build_sample_kit.py). The others are WebAudioFont General MIDI kits
+// in sounds/ (one sample per note). See sounds/README.md. Only the chosen
+// kit is loaded.
 const DRUM_KITS = {
-    jclive: { name: 'JCLive', sf: 'JCLive_sf2_file', note: 'tight, dry rock kit (default)' },
-    fluid:  { name: 'FluidR3 GM', sf: 'FluidR3_GM_sf2_file', note: 'full acoustic kit with room' },
-    sblive: { name: 'Sound Blaster Live!', sf: 'SBLive_sf2', note: 'punchy, bright' },
-    chaos:  { name: 'Chaos', sf: 'Chaos_sf2_file', note: 'lighter, softer kit' },
+    crocell:    { name: 'Crocell (rock)', type: 'samples', dir: 'crocell', note: 'real sampled rock kit, velocity layers (default)' },
+    virtuosity: { name: 'Virtuosity (jazz)', type: 'samples', dir: 'virtuosity', note: 'real sampled jazz kit, velocity layers' },
+    jclive: { name: 'JCLive', sf: 'JCLive_sf2_file', note: 'tight, dry GM rock kit' },
+    fluid:  { name: 'FluidR3 GM', sf: 'FluidR3_GM_sf2_file', note: 'full acoustic GM kit with room' },
+    sblive: { name: 'Sound Blaster Live!', sf: 'SBLive_sf2', note: 'punchy, bright GM kit' },
+    chaos:  { name: 'Chaos', sf: 'Chaos_sf2_file', note: 'lighter, softer GM kit' },
 };
-const KIT_IDS = ['jclive', 'fluid', 'sblive', 'chaos'];
+const KIT_IDS = ['crocell', 'virtuosity', 'jclive', 'fluid', 'sblive', 'chaos'];
+const DEFAULT_KIT = 'crocell';
 // Safe localStorage reader — getItem can throw SecurityError in
 // sandboxed iframes, under Safari on file://, or when storage is
 // disabled for the origin. An unguarded throw during the _cfg
@@ -233,7 +239,7 @@ const _cfg = {
     })(),
     kit:            (function () {
         const raw = _readStore(STORE_KEYS.kit);
-        return Object.prototype.hasOwnProperty.call(DRUM_KITS, raw) ? raw : 'jclive';
+        return Object.prototype.hasOwnProperty.call(DRUM_KITS, raw) ? raw : DEFAULT_KIT;
     })(),
     // Transient: which lane is in learn mode. Module-scope across
     // panels — the Learn-mode UX is "click Learn in any panel, then
@@ -271,7 +277,7 @@ function _saveCfg(key, val) {
         val = 'normal';
     }
     if (key === 'kit' && !Object.prototype.hasOwnProperty.call(DRUM_KITS, val)) {
-        val = 'jclive';
+        val = DEFAULT_KIT;
     }
     if (key === 'synthVolume') {
         const n = Number(val);
@@ -664,7 +670,7 @@ function _loadScript(url) {
 // module, the same file the bundled 3D guitar highway imports.
 
 const PLUGIN_ID = 'drums';
-const ASSET_VERSION = '5.4.0';   // cache-buster for the lazily loaded files
+const ASSET_VERSION = '5.5.0';   // cache-buster for the lazily loaded files
 const THREE_URL = '/static/vendor/three/three.module.min.js';
 const PLUGIN_STATIC = '/api/plugins/' + PLUGIN_ID + '/static/';
 
@@ -733,9 +739,13 @@ function _resolveView(view, canWebGL2) {
 // third-party sites). Same files as surikov.github.io/webaudiofont(data).
 const WAF_BASE = '/api/plugins/drums/sounds/';
 const WAF_PLAYER_URL = '/api/plugins/drums/sounds/WebAudioFontPlayer.js';
-function _kitSf(kitId) { return (DRUM_KITS[kitId] || DRUM_KITS.jclive).sf; }
+function _kitSf(kitId) {
+    const k = DRUM_KITS[kitId];
+    return (k && k.sf) || DRUM_KITS.jclive.sf;
+}
+function _kitIsSampled(kitId) { const k = DRUM_KITS[kitId]; return !!(k && k.type === 'samples'); }
 
-// MIDI notes that the WebAudioFont synth preloads samples for. Includes
+// MIDI notes that the synth preloads samples for. Includes
 // all notes that appear in any LANE_PRESETS midiNotes array so that
 // hits on cross-stick (37), china/splash cymbals (52/55), ride bell (53),
 // and alternate tom3 (58) produce audio rather than scoring silently.
@@ -744,56 +754,252 @@ const DRUM_MIDI_NOTES = [35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
 function _drumWafVar(note, sf)  { return '_drum_' + note + '_0_' + sf; }
 function _drumWafUrl(note, sf)  { return WAF_BASE + '128' + note + '_0_' + sf + '.js'; }
 
-async function _synthInit() {
-    if (_synthPlayer) return;
-    try {
-        if (!_playerScriptLoaded) {
-            await _loadScript(WAF_PLAYER_URL);
-            _playerScriptLoaded = true;
-        }
-        if (typeof WebAudioFontPlayer === 'undefined') return;
+// ── Sampled kits (sounds/kits/<dir>/kit.json + audio files) ──────────
+// kit.json: { "format": 1, "notes": { "<midi>": { "layers": [ { "lo": 1, "hi": 50,
+// "files": ["snare_v1_a.ogg", ...] }, ... ], "gain"?: 1 } }, "chokes"?: { "<midi>": [<midi>, ...] },
+// "gain"?: 1 }. Layers cover velocity ranges (1..127); files are round-robins.
+// chokes: hitting the key note cuts the listed notes (closed hi-hat -> open hi-hat).
+// File and folder names match routes.py _KIT_FILE (served from sounds/kits/ only).
+const KIT_FILE_RE = /^[a-z0-9][a-z0-9_-]{0,63}\.(?:ogg|webm|mp3)$/;
+const KIT_DIR_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
+function _kitBaseUrl(dir) { return WAF_BASE + 'kits/' + dir + '/'; }
 
-        _audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+// Check + normalise a kit.json. Returns { notes: {midi: {layers, gain}}, chokes, gain, files }
+// or null if it is unusable. Bad layers / file names are dropped, layers sorted by velocity.
+function _validateKitManifest(m) {
+    if (!m || typeof m !== 'object' || !m.notes || typeof m.notes !== 'object') return null;
+    const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+    const clampVel = (v) => Math.max(1, Math.min(127, Math.round(v)));
+    const clampGain = (v) => Math.max(0, Math.min(4, num(v, 1)));
+    const out = { notes: {}, chokes: {}, gain: clampGain(m.gain), files: [] };
+    const files = new Set();
+    for (const key of Object.keys(m.notes)) {
+        const midi = Number(key);
+        if (!Number.isInteger(midi) || midi < 0 || midi > 127) continue;
+        const n = m.notes[key];
+        if (!n || !Array.isArray(n.layers)) continue;
+        const layers = [];
+        for (const l of n.layers) {
+            if (!l || !Array.isArray(l.files)) continue;
+            const fl = l.files.filter((f) => typeof f === 'string' && KIT_FILE_RE.test(f));
+            if (!fl.length) continue;
+            let lo = clampVel(num(l.lo, 1)), hi = clampVel(num(l.hi, 127));
+            if (hi < lo) { const t = lo; lo = hi; hi = t; }
+            layers.push({ lo, hi, files: fl, gain: clampGain(l.gain) });
+            fl.forEach((f) => files.add(f));
+        }
+        if (!layers.length) continue;
+        layers.sort((a, b) => a.lo - b.lo || a.hi - b.hi);
+        out.notes[midi] = { layers, gain: clampGain(n.gain) };
+    }
+    if (!Object.keys(out.notes).length) return null;
+    if (m.chokes && typeof m.chokes === 'object') {
+        for (const key of Object.keys(m.chokes)) {
+            const midi = Number(key);
+            const raw = Array.isArray(m.chokes[key]) ? m.chokes[key] : [];
+            const list = raw.map(Number).filter((x) => Number.isInteger(x) && x >= 0 && x <= 127);
+            if (Number.isInteger(midi) && midi >= 0 && midi <= 127 && list.length) out.chokes[midi] = list;
+        }
+    }
+    out.files = Array.from(files);
+    return out;
+}
+
+// The layer for a velocity: the one whose range holds it, else the nearest range.
+function _pickKitLayer(layers, velocity) {
+    if (!layers || !layers.length) return null;
+    const v = Math.max(1, Math.min(127, Math.round(Number(velocity) || 0)));
+    let best = null, bestD = Infinity;
+    for (const l of layers) {
+        if (v >= l.lo && v <= l.hi) return l;
+        const d = v < l.lo ? l.lo - v : v - l.hi;
+        if (d < bestD) { bestD = d; best = l; }
+    }
+    return best;
+}
+
+// Gain for a hit inside its layer: the layer's samples already carry the
+// loudness of that dynamic, so only a gentle slope across the layer's range
+// (0.6 at its bottom .. 1 at its top) smooths the step between layers.
+function _kitHitGain(layer, velocity) {
+    if (!layer) return 0;
+    const v = Math.max(1, Math.min(127, Number(velocity) || 0));
+    const span = layer.hi - layer.lo;
+    const t = span > 0 ? Math.max(0, Math.min(1, (v - layer.lo) / span)) : 1;
+    return (0.6 + 0.4 * t) * (layer.gain == null ? 1 : layer.gain);
+}
+
+const _sampleKits = {};       // kitId -> { manifest, buffers: {file: AudioBuffer}, promise }
+let _sampleKit = null;        // the loaded sampled kit in use (null = WebAudioFont kit)
+const _kitRR = {};            // midi -> round-robin counter
+const _kitVoices = {};        // midi -> [{ src, gain }] still sounding (for chokes)
+
+// Fetch + decode one sampled kit (once; later calls share the promise).
+function _loadSampleKit(kitId) {
+    if (_sampleKits[kitId]) return _sampleKits[kitId].promise;
+    const dir = (DRUM_KITS[kitId] && DRUM_KITS[kitId].dir) || '';
+    if (!KIT_DIR_RE.test(dir)) return Promise.reject(new Error('bad kit folder'));
+    const base = _kitBaseUrl(dir);
+    const entry = { manifest: null, buffers: {}, promise: null };
+    entry.promise = (async () => {
+        const res = await fetch(base + 'kit.json?v=' + ASSET_VERSION);
+        if (!res.ok) throw new Error('kit.json HTTP ' + res.status);
+        const manifest = _validateKitManifest(await res.json());
+        if (!manifest) throw new Error('kit.json is not a valid kit');
+        entry.manifest = manifest;
+        let failed = 0;
+        await Promise.all(manifest.files.map(async (f) => {
+            try {
+                const r = await fetch(base + f + '?v=' + ASSET_VERSION);
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                entry.buffers[f] = await _audioCtx.decodeAudioData(await r.arrayBuffer());
+            } catch (e) {
+                failed++;
+                console.warn('[Drums] Kit sample ' + dir + '/' + f + ' failed:', e);
+            }
+        }));
+        if (failed === manifest.files.length) throw new Error('no samples decoded');
+        return entry;
+    })().catch((e) => { delete _sampleKits[kitId]; throw e; });
+    _sampleKits[kitId] = entry;
+    return entry.promise;
+}
+
+// Decoded kits take ~100 MB each: keep only the one in use (voices still
+// playing keep their own buffers until they end).
+function _dropSampleKitsExcept(kitId) {
+    for (const id of Object.keys(_sampleKits)) {
+        if (id !== kitId && _sampleKits[id].manifest) delete _sampleKits[id];
+    }
+}
+
+function _sampleKitHit(kit, midiNote, velocity, when) {
+    const n = kit.manifest.notes[midiNote];
+    if (!n) return;
+    const layer = _pickKitLayer(n.layers, velocity);
+    if (!layer) return;
+    const t = Math.max(when || 0, _audioCtx.currentTime);
+    // Chokes: e.g. a closed hi-hat cuts the open hi-hat still ringing.
+    const choked = kit.manifest.chokes[midiNote];
+    if (choked) {
+        for (const c of choked) {
+            for (const v of (_kitVoices[c] || [])) {
+                if (v.t0 > t) continue;   // scheduled after this hit (Play test)
+                try {
+                    v.gain.gain.cancelScheduledValues(t);
+                    v.gain.gain.setTargetAtTime(0, t, 0.012);
+                    v.src.stop(t + 0.1);
+                } catch (_) { /* already stopped */ }
+            }
+        }
+    }
+    // Round-robin over the layer's files that decoded.
+    const rr = (_kitRR[midiNote] = ((_kitRR[midiNote] || 0) + 1) % 1024);
+    let buf = null;
+    for (let i = 0; i < layer.files.length && !buf; i++) buf = kit.buffers[layer.files[(rr + i) % layer.files.length]] || null;
+    if (!buf) return;
+    const src = _audioCtx.createBufferSource();
+    src.buffer = buf;
+    const g = _audioCtx.createGain();
+    g.gain.value = _kitHitGain(layer, velocity) * n.gain * kit.manifest.gain;
+    src.connect(g);
+    g.connect(_synthGain);
+    src.start(t);
+    const list = (_kitVoices[midiNote] = (_kitVoices[midiNote] || []));
+    const voice = { src, gain: g, t0: t };
+    list.push(voice);
+    if (list.length > 12) list.shift();
+    src.onended = () => {
+        const l = _kitVoices[midiNote];
+        const i = l ? l.indexOf(voice) : -1;
+        if (i >= 0) l.splice(i, 1);
+        try { g.disconnect(); } catch (_) { /* gone */ }
+    };
+}
+
+async function _synthInit() {
+    if (_audioCtx) return;
+    try {
+        const AC = window.AudioContext || window.webkitAudioContext;
+        if (!AC) return;
+        _audioCtx = new AC({ latencyHint: 'interactive' });
         _synthGain = _audioCtx.createGain();
         _synthGain.gain.value = _cfg.synthVolume;
         _synthGain.connect(_audioCtx.destination);
-        _synthPlayer = new WebAudioFontPlayer();
-
         await _synthLoadDrumKit();
     } catch (e) {
         console.warn('[Drums] Synth init failed:', e);
     }
 }
 
+// The WebAudioFont player, loaded only when a GM kit is used.
+async function _ensureWafPlayer() {
+    if (_synthPlayer) return true;
+    if (!_playerScriptLoaded) {
+        await _loadScript(WAF_PLAYER_URL);
+        _playerScriptLoaded = true;
+    }
+    if (typeof WebAudioFontPlayer === 'undefined') return false;
+    _synthPlayer = new WebAudioFontPlayer();
+    return true;
+}
+
 let _kitLoadSeq = 0;
 async function _synthLoadDrumKit() {
-    if (!_synthPlayer || !_audioCtx) return;
+    if (!_audioCtx) return;
     _synthLoading = true;
     const seq = ++_kitLoadSeq;
-    const sf = _kitSf(_cfg.kit);
+    const kitId = _cfg.kit;
+    try {
+        if (_kitIsSampled(kitId)) {
+            try {
+                const kit = await _loadSampleKit(kitId);
+                if (seq === _kitLoadSeq) {
+                    _sampleKit = kit;
+                    _dropSampleKitsExcept(kitId);
+                }
+                return;
+            } catch (e) {
+                // Missing / broken kit folder: fall back to the GM kit so pads still sound.
+                console.warn('[Drums] Sampled kit ' + kitId + ' failed, using JCLive:', e);
+                if (seq !== _kitLoadSeq) return;
+            }
+        }
+        if (!(await _ensureWafPlayer())) return;
+        await _loadWafKit(_kitSf(kitId), seq);
+        if (seq === _kitLoadSeq) {
+            _sampleKit = null;
+            _dropSampleKitsExcept(null);
+        }
+    } catch (e) {
+        console.warn('[Drums] Kit load failed:', e);
+    } finally {
+        if (seq === _kitLoadSeq) _synthLoading = false;
+    }
+}
 
-    const promises = DRUM_MIDI_NOTES.map(async (note) => {
+async function _loadWafKit(sf, seq) {
+    const loaded = {};
+    await Promise.all(DRUM_MIDI_NOTES.map(async (note) => {
         const varName = _drumWafVar(note, sf);
         try {
             if (!window[varName]) {
                 await _loadScript(_drumWafUrl(note, sf));
             }
             const preset = window[varName];
-            // A newer kit pick supersedes this load: keep its sounds.
-            if (preset && seq === _kitLoadSeq) {
+            if (preset) {
                 if (!preset.__drumsAdjusted) {
                     _synthPlayer.adjustPreset(_audioCtx, preset);
                     preset.__drumsAdjusted = true;
                 }
-                _drumPresets[note] = preset;
+                loaded[note] = preset;
             }
         } catch (e) {
             console.warn('[Drums] Failed to load drum note ' + note + ':', e);
         }
-    });
-
-    await Promise.all(promises);
-    _synthLoading = false;
+    }));
+    // A newer kit pick supersedes this load: keep its sounds.
+    if (seq === _kitLoadSeq) Object.assign(_drumPresets, loaded);
 }
 
 function _synthEnsureCtx() {
@@ -802,16 +1008,23 @@ function _synthEnsureCtx() {
     }
 }
 
-function _synthDrumHit(midiNote, velocity) {
-    if (!_synthPlayer || !_audioCtx || !_synthGain) return;
+// One drum sound at `when` (AudioContext time; 0 = now) on the current kit.
+function _synthPlayNote(midiNote, velocity, when) {
+    if (!_audioCtx || !_synthGain) return;
+    if (_sampleKit) {
+        _sampleKitHit(_sampleKit, midiNote, velocity, when);
+        return;
+    }
     const preset = _drumPresets[midiNote];
-    if (!preset) return;
-    _synthEnsureCtx();
+    if (!preset || !_synthPlayer) return;
+    _synthPlayer.queueWaveTable(_audioCtx, _synthGain, preset, when || 0, midiNote, when ? 0.6 : 0.5,
+        (velocity / 127) * _cfg.synthVolume);
+}
 
-    const vol = (velocity / 127) * _cfg.synthVolume;
-    _synthPlayer.queueWaveTable(
-        _audioCtx, _synthGain, preset, 0, midiNote, 0.5, vol
-    );
+function _synthDrumHit(midiNote, velocity) {
+    if (!_audioCtx || !_synthGain) return;
+    _synthEnsureCtx();
+    _synthPlayNote(midiNote, velocity, 0);
 }
 
 function _synthSetVolume(vol) {
@@ -826,15 +1039,15 @@ function _synthSetVolume(vol) {
 async function _synthSetKit(kitId) {
     _saveCfg('kit', kitId);
     try { document.querySelectorAll('.drums-kit-select').forEach((sel) => { sel.value = _cfg.kit; }); } catch (_) { /* no DOM */ }
-    if (_synthPlayer) await _synthLoadDrumKit();
+    if (_audioCtx) await _synthLoadDrumKit();
 }
 
 // Short groove on the current kit (settings "Play test" button).
 async function _synthPlayTest() {
     await _synthInit();
-    if (!_synthPlayer || !_audioCtx) return;
+    if (!_audioCtx) return;
     _synthEnsureCtx();
-    if (_synthLoading) await new Promise((r) => setTimeout(r, 400));
+    for (let i = 0; i < 100 && _synthLoading; i++) await new Promise((r) => setTimeout(r, 100));
     // [eighth, GM note, velocity] at 110 BPM, then a tom fill into a crash.
     const pat = [
         [0, 36, 110], [0, 42, 90], [1, 42, 70], [2, 38, 110], [2, 42, 90], [3, 42, 70],
@@ -843,11 +1056,7 @@ async function _synthPlayTest() {
     ];
     const step = 60 / 110 / 2;
     const t0 = _audioCtx.currentTime + 0.08;
-    for (const [b, note, vel] of pat) {
-        const preset = _drumPresets[note];
-        if (!preset) continue;
-        _synthPlayer.queueWaveTable(_audioCtx, _synthGain, preset, t0 + b * step, note, 0.6, (vel / 127) * _cfg.synthVolume);
-    }
+    for (const [b, note, vel] of pat) _synthPlayNote(note, vel, t0 + b * step);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -1754,7 +1963,7 @@ function createFactory(forceView) {
             const a = si.arrangements.find(x => x && x.index === si.arrangement_index);
             if (a) arrName = a.name || '';
         }
-        const url = (DRUMS_PATTERNS.test(arrName) && !bundle.drumTab)
+        const url = (DRUMS_PATTERNS.test(arrName) && !_drumTabFor(bundle))
             ? H.drumsMetaUrl(si, window.slopsmith && window.slopsmith.currentSong) : null;
         if (url === _metaUrl) return;
         _metaUrl = url;
@@ -1789,7 +1998,7 @@ function createFactory(forceView) {
         }
         _diffOptions = H.difficultyOptions({
             meta: _metaCache, metaPending: _metaState === 'pending',
-            has2x: _has2xMemo.val, drumTab: !!bundle.drumTab,
+            has2x: _has2xMemo.val, drumTab: !!_drumTabFor(bundle),
         });
         _diff = H.resolveDifficulty(_cfg.difficulty, _diffOptions);
         const id = _diff.id;
@@ -3210,8 +3419,8 @@ function createFactory(forceView) {
             // the canonical drum_tab hits via _drumTabHitsToNotes.
             let drumNotes = null;
             let drumChords = null;
-            const dt = bundle.drumTab;
-            if (dt && Array.isArray(dt.hits)) {
+            const dt = _drumTabFor(bundle);
+            if (dt) {
                 if (_drumTabCacheKey !== dt) {
                     _drumTabCacheKey = dt;
                     _drumTabCacheNotes = _drumTabHitsToNotes(dt.hits);
@@ -3674,7 +3883,7 @@ function _resetDrumSettings() {
     _setAssist('autoKick', 'off');
     _setAssist('autoCymbals', 'off');
     _setAssist('timing', 'normal');
-    _synthSetKit('jclive');
+    _synthSetKit(DEFAULT_KIT);
     _synthSetVolume(0.7);
     _saveCfg('midiChannel', -1);
     _saveCfg('view', 'auto');
@@ -3727,6 +3936,18 @@ try {
     }
 } catch (e) { console.warn('[Drums] settings screen failed to start:', e); }
 
+// The drum tab to play, or null. A sloppak's drum_tab is for songs without a
+// real drum chart: when the loaded arrangement IS a Drums arrangement with
+// notes, that chart (and its Easy/Medium/Hard levels) wins over the tab.
+function _drumTabFor(bundle) {
+    const dt = bundle && bundle.drumTab;
+    if (!dt || !Array.isArray(dt.hits)) return null;
+    const hasChart = (Array.isArray(bundle.notes) && bundle.notes.length > 0)
+        || (Array.isArray(bundle.chords) && bundle.chords.length > 0);
+    if (hasChart && _isDrumsArrangement(bundle.songInfo)) return null;
+    return dt;
+}
+
 // Node-only export hook for tests; browsers keep the window.*Viz_drums wiring.
 if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
@@ -3743,7 +3964,8 @@ if (typeof module !== 'undefined' && module.exports) {
         _midiOnMessage, _midiDiag,
         AUTO_LEVEL_IDS, TIMING_PRESETS, TIMING_IDS, DRUM_KITS, KIT_IDS,
         _autoAt, _laneIsAuto, _timingParams, _setAssist, _saveCfg, _cfg: () => _cfg,
-        _drumWafVar, _drumWafUrl, _kitSf,
+        _drumWafVar, _drumWafUrl, _kitSf, _drumTabFor, DEFAULT_KIT, _kitIsSampled, _kitBaseUrl,
+        _validateKitManifest, _pickKitLayer, _kitHitGain, KIT_FILE_RE, KIT_DIR_RE, DRUM_MIDI_NOTES,
     };
 }
 

@@ -91,8 +91,20 @@ Then the real re-search:
 
 **Done in 5.4 (2026-10-09):** Plugins → **Drums** settings page (`screen.html`, wired in `screen.js` "Drums
 settings screen") + a **Kit** selector there and in the ⚙ panel, with three more WebAudioFont kits bundled
-(FluidR3 GM, SB Live!, Chaos; `DRUM_KITS`, routes `_SOUND_NAME`). Still open: real multi-sample kits with
-velocity layers (below) — add them as more `DRUM_KITS` entries.
+(FluidR3 GM, SB Live!, Chaos; `DRUM_KITS`, routes `_SOUND_NAME`).
+
+**Done in 5.5 (2026-10-09): real multi-sample kits with velocity layers.** `DRUM_KITS` entries with
+`type: 'samples'`: **crocell** (CrocellKit 1.1 stereo mix from DrumGizmo, CC BY 4.0, rock — now the default
+kit) and **virtuosity** (Virtuosity Drums, CC0, jazz). Built by `plugins/drums/tools/build_sample_kit.py`
+into `sounds/kits/<id>/` (kit.json + Ogg Vorbis, 4 velocity layers × 2 round-robins, 4.7 / 3.6 MB),
+served by routes `/api/plugins/drums/sounds/kits/{kit}/{name}` (`_KIT_DIR`/`_KIT_FILE` + path check).
+screen.js: `_loadSampleKit` (fetch + decodeAudioData, only the chosen kit, others dropped),
+`_pickKitLayer`, `_kitHitGain`, `_sampleKitHit` (round-robin, hi-hat choke 42/44 → 46), `_synthPlayNote`
+shared by pad hits and Play test; the WebAudioFont player now loads only for GM kits. Not checked by ear
+yet: Matt should A/B the kits in the app (Plugins → Drums → ▶ Play test) and say if levels/balance need a
+tweak (per-piece gain dB in `build_sample_kit.py` `KITS`). Rejected candidates: Salamander (CC BY-SA),
+AVL Black Pearl / Red Zeppelin (modified CC BY-SA), DRSKit / MuldjordKit (CC BY 4.0 but 2.5–2.8 GB
+multitrack only — would need our own mic mix), Karoryfer Big Rusty Drums (junk-percussion kit).
 
 - Today: WebAudioFont player + 22 GM drum notes of the **JCLive** set, bundled in `plugins/drums/sounds/`
   (828 KB), served by `routes.py` `/api/plugins/drums/sounds/{name}` (whitelist regex `_SOUND_NAME` — only

@@ -123,6 +123,55 @@ def test_bundled_drum_sounds_are_served_locally():
         assert c.get(f"/api/plugins/drums/sounds/{bad}").status_code == 404, bad
 
 
+SAMPLED_KITS = ("crocell", "virtuosity")   # screen.js DRUM_KITS type 'samples'
+GM_NOTES = [35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 57, 58, 59]
+
+
+def test_sampled_kits_are_served_with_every_file():
+    import json
+    c = _client()
+    for kit in SAMPLED_KITS:
+        r = c.get(f"/api/plugins/drums/sounds/kits/{kit}/kit.json?v=1")
+        assert r.status_code == 200, kit
+        assert r.headers["content-type"].startswith("application/json")
+        assert "max-age" in r.headers["cache-control"]
+        manifest = r.json()
+        assert manifest == json.loads((PLUGIN_DIR / "sounds" / "kits" / kit / "kit.json").read_text(encoding="utf-8"))
+        for n in GM_NOTES:
+            layers = manifest["notes"][str(n)]["layers"]
+            assert layers and layers[0]["lo"] == 1 and layers[-1]["hi"] == 127, (kit, n)
+            for lo_layer, hi_layer in zip(layers, layers[1:]):
+                assert hi_layer["lo"] == lo_layer["hi"] + 1, (kit, n)
+            for layer in layers:
+                for f in layer["files"]:
+                    assert routes._KIT_FILE.fullmatch(f), f
+                    assert (PLUGIN_DIR / "sounds" / "kits" / kit / f).is_file(), (kit, f)
+        first = manifest["notes"]["38"]["layers"][0]["files"][0]
+        r = c.get(f"/api/plugins/drums/sounds/kits/{kit}/{first}")
+        assert r.status_code == 200 and r.headers["content-type"] == "audio/ogg"
+        assert r.content[:4] == b"OggS"
+        # every file in the folder is used by the manifest (no stray data shipped)
+        used = {f for e in manifest["notes"].values() for l in e["layers"] for f in l["files"]}
+        on_disk = {p.name for p in (PLUGIN_DIR / "sounds" / "kits" / kit).iterdir()} - {"kit.json"}
+        assert on_disk == used, kit
+
+
+def test_sampled_kit_route_rejects_traversal_and_other_files():
+    c = _client()
+    bad = [
+        "crocell/..%2F..%2F..%2Froutes.py", "crocell/..%2Fvirtuosity%2Fkit.json", "..%2F..%2Froutes.py/x.ogg",
+        "crocell/kit.json.bak", "crocell/README.md", "crocell/x.wav", "crocell/missing.ogg",
+        "Crocell/kit.json", "crocell/Snare.ogg", "nope/kit.json", "crocell/.ogg", "..%5C..%5Croutes.py/kit.json",
+        "crocell/..%5C..%5C..%5Croutes.py",
+    ]
+    for path in bad:
+        assert c.get(f"/api/plugins/drums/sounds/kits/{path}").status_code == 404, path
+    assert c.get("/api/plugins/drums/sounds/kits/../../routes.py").status_code == 404
+    assert routes.kit_file_path("..", "kit.json") is None
+    assert routes.kit_file_path("crocell", "../routes.py") is None
+    assert routes.kit_file_path("crocell", "kit.json") is not None
+
+
 def test_screen_js_loads_no_third_party_sound_urls():
     src = (PLUGIN_DIR / "screen.js").read_text(encoding="utf-8")
     assert "surikov.github.io" not in src.replace("Same files as surikov.github.io", "")

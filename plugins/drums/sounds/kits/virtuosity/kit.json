@@ -1,0 +1,772 @@
+{
+ "format": 1,
+ "name": "Virtuosity Drums (basic kit mix)",
+ "notes": {
+  "35": {
+   "piece": "kick",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 32,
+     "files": [
+      "kick_v1_a.ogg",
+      "kick_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 33,
+     "hi": 64,
+     "files": [
+      "kick_v2_a.ogg",
+      "kick_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 65,
+     "hi": 96,
+     "files": [
+      "kick_v3_a.ogg",
+      "kick_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 97,
+     "hi": 127,
+     "files": [
+      "kick_v4_a.ogg",
+      "kick_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "36": {
+   "piece": "kick",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 32,
+     "files": [
+      "kick_v1_a.ogg",
+      "kick_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 33,
+     "hi": 64,
+     "files": [
+      "kick_v2_a.ogg",
+      "kick_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 65,
+     "hi": 96,
+     "files": [
+      "kick_v3_a.ogg",
+      "kick_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 97,
+     "hi": 127,
+     "files": [
+      "kick_v4_a.ogg",
+      "kick_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "37": {
+   "piece": "sidestick",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 52,
+     "files": [
+      "sidestick_v1_a.ogg",
+      "sidestick_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 53,
+     "hi": 84,
+     "files": [
+      "sidestick_v2_a.ogg",
+      "sidestick_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 85,
+     "hi": 112,
+     "files": [
+      "sidestick_v3_a.ogg",
+      "sidestick_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "sidestick_v4_a.ogg",
+      "sidestick_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "38": {
+   "piece": "snare",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 49,
+     "files": [
+      "snare_v1_a.ogg",
+      "snare_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 50,
+     "hi": 81,
+     "files": [
+      "snare_v2_a.ogg",
+      "snare_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 82,
+     "hi": 109,
+     "files": [
+      "snare_v3_a.ogg",
+      "snare_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 110,
+     "hi": 127,
+     "files": [
+      "snare_v4_a.ogg",
+      "snare_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "40": {
+   "piece": "rimshot",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 53,
+     "files": [
+      "rimshot_v1_a.ogg",
+      "rimshot_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 54,
+     "hi": 85,
+     "files": [
+      "rimshot_v2_a.ogg",
+      "rimshot_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 86,
+     "hi": 112,
+     "files": [
+      "rimshot_v3_a.ogg",
+      "rimshot_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "rimshot_v4_a.ogg",
+      "rimshot_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "41": {
+   "piece": "ftom1",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 52,
+     "files": [
+      "ftom1_v1_a.ogg",
+      "ftom1_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 53,
+     "hi": 84,
+     "files": [
+      "ftom1_v2_a.ogg",
+      "ftom1_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 85,
+     "hi": 112,
+     "files": [
+      "ftom1_v3_a.ogg",
+      "ftom1_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "ftom1_v4_a.ogg",
+      "ftom1_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "42": {
+   "piece": "hhclosed",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 32,
+     "files": [
+      "hhclosed_v1_a.ogg",
+      "hhclosed_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 33,
+     "hi": 64,
+     "files": [
+      "hhclosed_v2_a.ogg",
+      "hhclosed_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 65,
+     "hi": 96,
+     "files": [
+      "hhclosed_v3_a.ogg",
+      "hhclosed_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 97,
+     "hi": 127,
+     "files": [
+      "hhclosed_v4_a.ogg",
+      "hhclosed_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "43": {
+   "piece": "ftom1",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 52,
+     "files": [
+      "ftom1_v1_a.ogg",
+      "ftom1_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 53,
+     "hi": 84,
+     "files": [
+      "ftom1_v2_a.ogg",
+      "ftom1_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 85,
+     "hi": 112,
+     "files": [
+      "ftom1_v3_a.ogg",
+      "ftom1_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "ftom1_v4_a.ogg",
+      "ftom1_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "44": {
+   "piece": "hhpedal",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 43,
+     "files": [
+      "hhpedal_v1_a.ogg",
+      "hhpedal_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 44,
+     "hi": 85,
+     "files": [
+      "hhpedal_v2_a.ogg",
+      "hhpedal_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 86,
+     "hi": 127,
+     "files": [
+      "hhpedal_v3_a.ogg",
+      "hhpedal_v3_b.ogg"
+     ]
+    }
+   ]
+  },
+  "45": {
+   "piece": "tom2",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 52,
+     "files": [
+      "tom2_v1_a.ogg",
+      "tom2_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 53,
+     "hi": 84,
+     "files": [
+      "tom2_v2_a.ogg",
+      "tom2_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 85,
+     "hi": 112,
+     "files": [
+      "tom2_v3_a.ogg",
+      "tom2_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "tom2_v4_a.ogg",
+      "tom2_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "46": {
+   "piece": "hhopen",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 32,
+     "files": [
+      "hhopen_v1_a.ogg",
+      "hhopen_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 33,
+     "hi": 64,
+     "files": [
+      "hhopen_v2_a.ogg",
+      "hhopen_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 65,
+     "hi": 96,
+     "files": [
+      "hhopen_v3_a.ogg",
+      "hhopen_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 97,
+     "hi": 127,
+     "files": [
+      "hhopen_v4_a.ogg",
+      "hhopen_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "47": {
+   "piece": "tom2",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 52,
+     "files": [
+      "tom2_v1_a.ogg",
+      "tom2_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 53,
+     "hi": 84,
+     "files": [
+      "tom2_v2_a.ogg",
+      "tom2_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 85,
+     "hi": 112,
+     "files": [
+      "tom2_v3_a.ogg",
+      "tom2_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "tom2_v4_a.ogg",
+      "tom2_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "48": {
+   "piece": "tom1",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 52,
+     "files": [
+      "tom1_v1_a.ogg",
+      "tom1_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 53,
+     "hi": 84,
+     "files": [
+      "tom1_v2_a.ogg",
+      "tom1_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 85,
+     "hi": 112,
+     "files": [
+      "tom1_v3_a.ogg",
+      "tom1_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "tom1_v4_a.ogg",
+      "tom1_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "49": {
+   "piece": "crash",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 43,
+     "files": [
+      "crash_v1_a.ogg",
+      "crash_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 44,
+     "hi": 85,
+     "files": [
+      "crash_v2_a.ogg",
+      "crash_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 86,
+     "hi": 127,
+     "files": [
+      "crash_v3_a.ogg",
+      "crash_v3_b.ogg"
+     ]
+    }
+   ]
+  },
+  "50": {
+   "piece": "tom1",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 52,
+     "files": [
+      "tom1_v1_a.ogg",
+      "tom1_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 53,
+     "hi": 84,
+     "files": [
+      "tom1_v2_a.ogg",
+      "tom1_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 85,
+     "hi": 112,
+     "files": [
+      "tom1_v3_a.ogg",
+      "tom1_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "tom1_v4_a.ogg",
+      "tom1_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "51": {
+   "piece": "ride",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 43,
+     "files": [
+      "ride_v1_a.ogg",
+      "ride_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 44,
+     "hi": 85,
+     "files": [
+      "ride_v2_a.ogg",
+      "ride_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 86,
+     "hi": 127,
+     "files": [
+      "ride_v3_a.ogg",
+      "ride_v3_b.ogg"
+     ]
+    }
+   ]
+  },
+  "52": {
+   "piece": "china",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 43,
+     "files": [
+      "china_v1_a.ogg",
+      "china_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 44,
+     "hi": 85,
+     "files": [
+      "china_v2_a.ogg",
+      "china_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 86,
+     "hi": 127,
+     "files": [
+      "china_v3_a.ogg",
+      "china_v3_b.ogg"
+     ]
+    }
+   ]
+  },
+  "53": {
+   "piece": "bell",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 43,
+     "files": [
+      "bell_v1_a.ogg",
+      "bell_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 44,
+     "hi": 85,
+     "files": [
+      "bell_v2_a.ogg",
+      "bell_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 86,
+     "hi": 127,
+     "files": [
+      "bell_v3_a.ogg",
+      "bell_v3_b.ogg"
+     ]
+    }
+   ]
+  },
+  "55": {
+   "piece": "crash2",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 32,
+     "files": [
+      "crash2_v1_a.ogg"
+     ]
+    },
+    {
+     "lo": 33,
+     "hi": 64,
+     "files": [
+      "crash2_v2_a.ogg"
+     ]
+    },
+    {
+     "lo": 65,
+     "hi": 96,
+     "files": [
+      "crash2_v3_a.ogg"
+     ]
+    },
+    {
+     "lo": 97,
+     "hi": 127,
+     "files": [
+      "crash2_v4_a.ogg"
+     ]
+    }
+   ]
+  },
+  "57": {
+   "piece": "crash2",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 32,
+     "files": [
+      "crash2_v1_a.ogg"
+     ]
+    },
+    {
+     "lo": 33,
+     "hi": 64,
+     "files": [
+      "crash2_v2_a.ogg"
+     ]
+    },
+    {
+     "lo": 65,
+     "hi": 96,
+     "files": [
+      "crash2_v3_a.ogg"
+     ]
+    },
+    {
+     "lo": 97,
+     "hi": 127,
+     "files": [
+      "crash2_v4_a.ogg"
+     ]
+    }
+   ]
+  },
+  "58": {
+   "piece": "ftom1",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 52,
+     "files": [
+      "ftom1_v1_a.ogg",
+      "ftom1_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 53,
+     "hi": 84,
+     "files": [
+      "ftom1_v2_a.ogg",
+      "ftom1_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 85,
+     "hi": 112,
+     "files": [
+      "ftom1_v3_a.ogg",
+      "ftom1_v3_b.ogg"
+     ]
+    },
+    {
+     "lo": 113,
+     "hi": 127,
+     "files": [
+      "ftom1_v4_a.ogg",
+      "ftom1_v4_b.ogg"
+     ]
+    }
+   ]
+  },
+  "59": {
+   "piece": "ride2",
+   "layers": [
+    {
+     "lo": 1,
+     "hi": 43,
+     "files": [
+      "ride2_v1_a.ogg",
+      "ride2_v1_b.ogg"
+     ]
+    },
+    {
+     "lo": 44,
+     "hi": 85,
+     "files": [
+      "ride2_v2_a.ogg",
+      "ride2_v2_b.ogg"
+     ]
+    },
+    {
+     "lo": 86,
+     "hi": 127,
+     "files": [
+      "ride2_v3_a.ogg",
+      "ride2_v3_b.ogg"
+     ]
+    }
+   ]
+  }
+ },
+ "chokes": {
+  "42": [
+   46
+  ],
+  "44": [
+   46
+  ]
+ }
+}

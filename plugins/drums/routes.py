@@ -8,6 +8,10 @@ GET /api/plugins/drums/sounds/{name}
     The drum synth's player and General MIDI drum samples (sounds/, see sounds/README.md), served
     locally so drum sounds work offline and nothing loads from third-party sites.
 
+GET /api/plugins/drums/sounds/kits/{kit}/{name}
+    A sampled drum kit (sounds/kits/<kit>/: kit.json + .ogg samples, see sounds/README.md). Folder and
+    file names are whitelisted by regex and the resolved path must stay inside sounds/kits.
+
 GET /api/plugins/drums/kit-mapping
     The e-kit's pad mapping from Clone Hero's active MIDI profile (read live, so remapping the kit
     in Clone Hero carries over). screen.js uses it as the default MIDI map when no Learn map is saved.
@@ -24,6 +28,11 @@ _PLUGIN_DIR = Path(__file__).resolve().parent
 # The player + one file per GM drum note for each bundled kit (screen.js DRUM_KITS).
 _SOUND_NAME = re.compile(
     r"WebAudioFontPlayer\.js|128\d{2}_0_(?:JCLive_sf2_file|FluidR3_GM_sf2_file|SBLive_sf2|Chaos_sf2_file)\.js")
+# Sampled kits (screen.js DRUM_KITS type 'samples'; same rules as KIT_DIR_RE / KIT_FILE_RE there).
+_KITS_DIR = _PLUGIN_DIR / "sounds" / "kits"
+_KIT_DIR = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
+_KIT_FILE = re.compile(r"(?:kit\.json|[a-z0-9][a-z0-9_-]{0,63}\.(?:ogg|webm|mp3))")
+_KIT_TYPES = {".json": "application/json", ".ogg": "audio/ogg", ".webm": "audio/webm", ".mp3": "audio/mpeg"}
 _ASSETS = {
     "engine.js": "application/javascript",
     "highway3d.js": "application/javascript",
@@ -169,6 +178,17 @@ def allow_drums_library_filter():
     return done
 
 
+def kit_file_path(kit: str, name: str):
+    """sounds/kits/<kit>/<name> if both names are whitelisted and it is a file inside sounds/kits."""
+    if not (_KIT_DIR.fullmatch(kit or "") and _KIT_FILE.fullmatch(name or "")):
+        return None
+    root = _KITS_DIR.resolve()
+    path = (root / kit / name).resolve()
+    if not path.is_relative_to(root) or path.parent.parent != root or not path.is_file():
+        return None
+    return path
+
+
 def setup(app, context):
     log = context.get("log") if isinstance(context, dict) else None
     allow_drums_library_filter()
@@ -183,6 +203,19 @@ def setup(app, context):
             return Response("", status_code=404)
         # Content never changes for a given file name: let the browser keep it.
         return Response(body, media_type="application/javascript",
+                        headers={"Cache-Control": "public, max-age=604800"})
+
+    @app.get("/api/plugins/drums/sounds/kits/{kit}/{name}")
+    def drums_kit_file(kit: str, name: str):
+        path = kit_file_path(kit, name)
+        if path is None:
+            return Response("", status_code=404)
+        try:
+            body = path.read_bytes()
+        except OSError:
+            return Response("", status_code=404)
+        # screen.js adds ?v=<plugin version> to every kit request, so a rebuilt kit is refetched.
+        return Response(body, media_type=_KIT_TYPES[path.suffix],
                         headers={"Cache-Control": "public, max-age=604800"})
 
     @app.get("/api/plugins/drums/kit-mapping")

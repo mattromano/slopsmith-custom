@@ -275,7 +275,7 @@ test('assists: _autoAt follows the difficulty ceiling; _saveCfg validates the ne
     const cfg = mod._cfg();
     assert.equal(cfg.autoKick, 'off');
     assert.equal(cfg.timing, 'normal');
-    assert.equal(cfg.kit, 'jclive');
+    assert.equal(cfg.kit, 'crocell');
     mod._saveCfg('autoKick', 'medium');
     mod._saveCfg('autoCymbals', 'all');
     assert.deepEqual(mod._autoAt('easy'), { kick: true, cymbals: true });
@@ -286,7 +286,7 @@ test('assists: _autoAt follows the difficulty ceiling; _saveCfg validates the ne
     mod._saveCfg('synthVolume', 7);
     assert.equal(cfg.autoKick, 'off');
     assert.equal(cfg.timing, 'normal');
-    assert.equal(cfg.kit, 'jclive');
+    assert.equal(cfg.kit, 'crocell');
     assert.equal(cfg.synthVolume, 1);
     assert.equal(mod._timingParams(), null);
     mod._saveCfg('timing', 'relaxed');
@@ -306,11 +306,113 @@ test('assists: _laneIsAuto maps 2D lanes (kick; hi-hat/crash/ride)', () => {
 test('kits: every kit resolves to bundled sound files', () => {
     const mod = freshPlugin();
     const fs = require('node:fs');
+    assert.equal(mod.DEFAULT_KIT, 'crocell');
+    assert.ok(mod.KIT_IDS.includes(mod.DEFAULT_KIT));
+    assert.deepEqual([...mod.KIT_IDS].sort(), Object.keys(mod.DRUM_KITS).sort());
     for (const id of mod.KIT_IDS) {
+        if (mod._kitIsSampled(id)) {
+            const dir = mod.DRUM_KITS[id].dir;
+            assert.ok(mod.KIT_DIR_RE.test(dir), dir);
+            assert.equal(mod._kitBaseUrl(dir), '/api/plugins/drums/sounds/kits/' + dir + '/');
+            const raw = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'sounds', 'kits', dir, 'kit.json'), 'utf8'));
+            const m = mod._validateKitManifest(raw);
+            assert.ok(m, id);
+            for (const n of mod.DRUM_MIDI_NOTES) assert.ok(m.notes[n], id + ' note ' + n);
+            for (const f of m.files) assert.ok(fs.existsSync(path.join(__dirname, '..', 'sounds', 'kits', dir, f)), f);
+            assert.deepEqual(m.chokes[42], [46]);
+            continue;
+        }
         const sf = mod._kitSf(id);
         assert.equal(mod._drumWafVar(38, sf), '_drum_38_0_' + sf);
         const file = mod._drumWafUrl(38, sf).replace('/api/plugins/drums/sounds/', '');
         assert.ok(fs.existsSync(path.join(__dirname, '..', 'sounds', file)), file);
     }
     assert.equal(mod._kitSf('nope'), mod._kitSf('jclive'));
+    assert.equal(mod._kitSf('crocell'), mod._kitSf('jclive'), 'sampled kits fall back to the JCLive GM set');
+});
+
+test('kits: a saved WebAudioFont kit choice stays valid', () => {
+    global.window = {};
+    global.localStorage = { getItem: (k) => (k === 'drums_kit_v1' ? 'fluid' : null), setItem: () => {} };
+    global.document = { addEventListener: () => {} };
+    const file = path.join(__dirname, '..', 'screen.js');
+    delete require.cache[require.resolve(file)];
+    const mod = require(file);
+    assert.equal(mod._cfg().kit, 'fluid');
+    mod._saveCfg('kit', 'virtuosity');
+    assert.equal(mod._cfg().kit, 'virtuosity');
+});
+
+test('sample kits: _validateKitManifest normalises and rejects bad input', () => {
+    const mod = freshPlugin();
+    const v = mod._validateKitManifest;
+    assert.equal(v(null), null);
+    assert.equal(v({}), null);
+    assert.equal(v({ notes: [] }), null);
+    assert.equal(v({ notes: { 38: { layers: [] } } }), null);
+    assert.equal(v({ notes: { 38: { layers: [{ lo: 1, hi: 127, files: ['../routes.py'] }] } } }), null);
+    const m = v({
+        gain: 9,
+        notes: {
+            38: { layers: [
+                { lo: 80, hi: 127, files: ['snare_v2_a.ogg', 'snare_v2_b.ogg'] },
+                { lo: 60, hi: 1, files: ['snare_v1_a.ogg', 'Bad Name.ogg', '/abs.ogg', 'x.wav', 7] },
+                { lo: 1, hi: 127, files: [] },
+            ] },
+            200: { layers: [{ files: ['a.ogg'] }] },
+            abc: { layers: [{ files: ['a.ogg'] }] },
+            42: { layers: [{ files: ['hh.ogg'] }], gain: -2 },
+        },
+        chokes: { 42: [46, 'x', 300], 44: 'nope', 1000: [46] },
+    });
+    assert.deepEqual(Object.keys(m.notes).sort(), ['38', '42']);
+    assert.deepEqual(m.notes[38].layers.map((l) => [l.lo, l.hi, l.files]), [
+        [1, 60, ['snare_v1_a.ogg']],
+        [80, 127, ['snare_v2_a.ogg', 'snare_v2_b.ogg']],
+    ]);
+    assert.deepEqual(m.notes[42].layers[0], { lo: 1, hi: 127, files: ['hh.ogg'], gain: 1 });
+    assert.equal(m.notes[42].gain, 0);
+    assert.equal(m.gain, 4);
+    assert.deepEqual(m.chokes, { 42: [46] });
+    assert.deepEqual(m.files.sort(), ['hh.ogg', 'snare_v1_a.ogg', 'snare_v2_a.ogg', 'snare_v2_b.ogg']);
+});
+
+test('sample kits: _pickKitLayer picks the layer by velocity, nearest when in a gap', () => {
+    const mod = freshPlugin();
+    const L = [{ lo: 1, hi: 40, id: 'pp' }, { lo: 41, hi: 90, id: 'mf' }, { lo: 100, hi: 127, id: 'ff' }];
+    const pick = (vel) => mod._pickKitLayer(L, vel).id;
+    assert.equal(pick(1), 'pp');
+    assert.equal(pick(40), 'pp');
+    assert.equal(pick(41), 'mf');
+    assert.equal(pick(90), 'mf');
+    assert.equal(pick(93), 'mf');
+    assert.equal(pick(98), 'ff');
+    assert.equal(pick(127), 'ff');
+    assert.equal(pick(500), 'ff');
+    assert.equal(pick(0), 'pp');
+    assert.equal(pick('x'), 'pp');
+    assert.equal(mod._pickKitLayer([], 100), null);
+    assert.equal(mod._pickKitLayer(null, 100), null);
+});
+
+test('sample kits: _kitHitGain rises gently across a layer', () => {
+    const mod = freshPlugin();
+    const l = { lo: 41, hi: 81, gain: 1 };
+    assert.equal(mod._kitHitGain(l, 41), 0.6);
+    assert.equal(mod._kitHitGain(l, 81), 1);
+    assert.ok(Math.abs(mod._kitHitGain(l, 61) - 0.8) < 1e-9);
+    assert.equal(mod._kitHitGain({ lo: 5, hi: 5 }, 5), 1);
+    assert.equal(mod._kitHitGain({ lo: 1, hi: 127, gain: 0.5 }, 127), 0.5);
+    assert.equal(mod._kitHitGain(null, 100), 0);
+});
+
+test('_drumTabFor: a Drums arrangement with notes wins over the sloppak drum tab', () => {
+    const mod = freshPlugin();
+    const dt = { hits: [{ t: 1, p: 'kick' }] };
+    const drums = { arrangement: 'Drums' };
+    assert.equal(mod._drumTabFor({ drumTab: dt, songInfo: drums, notes: [{ t: 1, s: 1, f: 12 }] }), null);
+    assert.equal(mod._drumTabFor({ drumTab: dt, songInfo: drums, notes: [] }), dt, 'empty chart: fall back to the tab');
+    assert.equal(mod._drumTabFor({ drumTab: dt, songInfo: { arrangement: 'Lead' }, notes: [{ t: 1, s: 0, f: 3 }] }), dt);
+    assert.equal(mod._drumTabFor({ songInfo: drums, notes: [] }), null);
+    assert.equal(mod._drumTabFor({ drumTab: { hits: 'x' } }), null);
 });
