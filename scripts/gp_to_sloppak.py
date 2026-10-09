@@ -698,6 +698,7 @@ def main():
     ap.add_argument("--reuse", help="existing build of this song: keep its stems, cover and sync map and "
                     "only rebuild the charts (seconds instead of a minute; tab timing must be unchanged)")
     ap.add_argument("--reuse-map", help="report JSON with beat_map, for older builds without x_sync.json")
+    ap.add_argument("--export-rs", help="also write each synced arrangement as Rocksmith XML into this folder")
     ap.add_argument("--merge-into", help="existing sloppak: add the new arrangements to it "
                     "(keeps its audio/stems/charts; uses its authored beat grid for sync). "
                     "Pass '-' as the audio argument to use its full-mix stem.")
@@ -888,6 +889,9 @@ def main():
         used.add(aid)
         (work / "arrangements" / f"{aid}.json").write_text(
             json.dumps(wire, separators=(",", ":")), encoding="utf-8")
+        if a.export_rs:  # synced Rocksmith XML for DLC Builder (scripts/export_dlcbuilder.py)
+            Path(a.export_rs).mkdir(parents=True, exist_ok=True)
+            (Path(a.export_rs) / f"{aid}_RS2.xml").write_text(wx, encoding="utf-8")
         tmp.unlink()
         arr_manifest.append({"id": aid, "name": name, "file": f"arrangements/{aid}.json",
                              "tuning": list(arr.tuning), "capo": arr.capo})
