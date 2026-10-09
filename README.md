@@ -9,7 +9,7 @@ workflow that turns Guitar Pro tabs plus my own album MP3s into graded, stem-spl
 | `slopsmith/` | Slopsmith (AGPL-3.0, upstream history kept via git subtree) + my changes: GP→RS converter fixes in `lib/gp2rs.py` and the song-builder scripts in `scripts/` |
 | `plugins/note_detect/` | note_detect plugin, `feat/retune-offset` branch (follows the Auto-Tuner retune offset) |
 | `plugins/nam_tone/` | NAM amp plugin with a live preset picker in the player |
-| `plugins/autotune/` | My Auto-Tuner plugin |
+| `plugins/autotune/` | My Auto-Tuner plugin (snapshot; full history stays in the local repo) |
 | `slopsmith-desktop/` | Desktop app changes (backing-track pitch shift) as patches on upstream; see its README |
 | `song-builder/` | The skill, setup scripts, feedBack Studio setup, album recipes (YAML) and working notes |
 | `.claude/skills/` | The same skill, auto-loaded when Claude Code runs inside this repo |

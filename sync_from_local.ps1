@@ -15,7 +15,7 @@ Push-Location $repo
 git subtree pull -q --prefix=slopsmith "$Desktop\slopsmith" custom -m "Sync slopsmith from local custom branch"
 git subtree pull -q --squash --prefix=plugins/note_detect "$Desktop\slopsmith\plugins\note_detect" feat/retune-offset -m "Sync note_detect"
 git subtree pull -q --squash --prefix=plugins/nam_tone "$Desktop\slopsmith\plugins\nam_tone" custom -m "Sync nam_tone"
-git subtree pull -q --prefix=plugins/autotune "$Desktop\slopsmith-plugin-autotune" main -m "Sync autotune"
+git subtree pull -q --squash --prefix=plugins/autotune "$Desktop\slopsmith-plugin-autotune" main -m "Sync autotune"
 
 # slopsmith-desktop: refresh the patch series against its upstream base
 $d = "$Desktop\slopsmith-desktop"
