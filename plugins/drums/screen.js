@@ -102,6 +102,9 @@ const STORE_KEYS = {
     // separate from the pad volume so pads can be silent (kit module makes
     // the sound) while the auto notes still fill in for a muted drum stem.
     autoVolume:     'drums_auto_volume_v1',
+    // Room: how much room ambience (stereo convolution reverb) the drum
+    // sounds get, 0..1. The dry sound is never delayed by it.
+    room:           'drums_room_v1',
 };
 
 // Valid preset ids — kept here so _saveCfg can validate before persisting
@@ -205,6 +208,7 @@ const _cfg = {
     midiInputId:    _readStore(STORE_KEYS.midiInputId) || '',
     synthVolume:    _readNum(STORE_KEYS.synthVolume, 0.7, 0, 1),
     autoVolume:     _readNum(STORE_KEYS.autoVolume, 0.8, 0, 1),
+    room:           _readNum(STORE_KEYS.room, 0.35, 0, 1),
     // -1 = all, 0..15 are the 16 MIDI channels (9 = "ch10" Drums)
     midiChannel:    Math.round(_readNum(STORE_KEYS.midiChannel, -1, -1, 15)),
     hitDetection:   _readStore(STORE_KEYS.hitDetection) === 'true',
@@ -287,6 +291,10 @@ function _saveCfg(key, val) {
     if (key === 'autoVolume') {
         const n = Number(val);
         val = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0.8;
+    }
+    if (key === 'room') {
+        const n = Number(val);
+        val = Number.isFinite(n) ? Math.max(0, Math.min(1, n)) : 0.35;
     }
     if (key === 'synthVolume') {
         const n = Number(val);
@@ -943,12 +951,111 @@ async function _synthInit() {
         _synthGain.gain.value = _cfg.synthVolume;
         _autoGain = _audioCtx.createGain();
         _autoGain.gain.value = _cfg.autoVolume;
-        _autoGain.connect(_audioCtx.destination);
-        _synthGain.connect(_audioCtx.destination);
+        const mix = _buildDrumBus(_audioCtx);
+        _autoGain.connect(mix);
+        _synthGain.connect(mix);
         await _synthLoadDrumKit();
     } catch (e) {
         console.warn('[Drums] Synth init failed:', e);
     }
+}
+
+// ── Drum bus: EQ + stereo room ──
+// pads / auto notes -> mix -> low shelf -> presence -> out
+//                        \-> room send -> convolver (generated stereo room IR) -> high-pass -/
+// Only IIR filters sit on the dry path (no DynamicsCompressor: Chromium's has
+// a fixed ~6 ms look-ahead), so the room adds space without adding delay.
+let _roomSend = null;
+function _roomSendGain(room) { return Math.max(0, Math.min(1, room)) * 1.6; }
+function _buildDrumBus(ctx) {
+    const mix = ctx.createGain();
+    const low = ctx.createBiquadFilter();
+    low.type = 'lowshelf'; low.frequency.value = 90; low.gain.value = 2.5;
+    const pres = ctx.createBiquadFilter();
+    pres.type = 'peaking'; pres.frequency.value = 3800; pres.Q.value = 0.9; pres.gain.value = 1.5;
+    mix.connect(low); low.connect(pres); pres.connect(ctx.destination);
+    try {
+        _roomSend = ctx.createGain();
+        _roomSend.gain.value = _roomSendGain(_cfg.room);
+        const conv = ctx.createConvolver();
+        conv.normalize = false;
+        conv.buffer = _makeRoomIR(ctx);
+        const hp = ctx.createBiquadFilter();
+        hp.type = 'highpass'; hp.frequency.value = 160;   // keep kick boom out of the room
+        mix.connect(_roomSend); _roomSend.connect(conv); conv.connect(hp); hp.connect(low);
+    } catch (e) {
+        console.warn('[Drums] room reverb unavailable:', e);
+        _roomSend = null;
+    }
+    return mix;
+}
+
+// A small live room as a stereo impulse response: a few early reflections
+// (different on each side, so the kit gets width and depth) and a dense
+// decaying tail (RT60 ~0.7 s) whose highs die away faster than its lows.
+// Deterministic (seeded noise), so every session sounds the same.
+function _makeRoomIR(ctx) {
+    const sr = ctx.sampleRate, len = Math.floor(sr * 1.1);
+    const buf = ctx.createBuffer(2, len, sr);
+    let seed = 0x2468ace1;
+    const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return ((seed >>> 0) / 4294967296) * 2 - 1; };
+    const rt60 = 0.7, pre = 0.012;
+    const early = [[0.011, 0.55, 0.25], [0.017, 0.2, 0.5], [0.023, 0.42, 0.3], [0.031, 0.25, 0.4], [0.038, 0.3, 0.18], [0.047, 0.15, 0.28]];
+    for (let ch = 0; ch < 2; ch++) {
+        const d = buf.getChannelData(ch);
+        let lp = 0;
+        for (let i = Math.floor(pre * sr); i < len; i++) {
+            const t = i / sr;
+            const env = Math.exp(-6.91 * (t - pre) / rt60);
+            // One-pole low-pass whose cutoff falls over time: dark tail, bright start.
+            const a = Math.min(0.95, 0.15 + 0.8 * (t / 1.1));
+            lp = lp * a + rnd() * (1 - a);
+            d[i] = lp * env * 0.9 * Math.min(1, (t - pre) / 0.02);
+        }
+        for (const [tt, gl, gr] of early) {
+            const i = Math.floor(tt * sr);
+            if (i < len) d[i] += ch === 0 ? gl : gr;
+        }
+    }
+    // Normalise the energy so the send level means the same at any sample rate.
+    let e = 0;
+    for (let ch = 0; ch < 2; ch++) { const d = buf.getChannelData(ch); for (let i = 0; i < len; i++) e += d[i] * d[i]; }
+    const k = 1 / Math.sqrt(e / 2 || 1);
+    for (let ch = 0; ch < 2; ch++) { const d = buf.getChannelData(ch); for (let i = 0; i < len; i++) d[i] *= k; }
+    return buf;
+}
+
+function _setRoom(v) {
+    _saveCfg('room', v);
+    if (_roomSend) _roomSend.gain.value = _roomSendGain(_cfg.room);
+    try {
+        document.querySelectorAll('.drums-room-slider').forEach((el) => { el.value = String(Math.round(_cfg.room * 100)); });
+    } catch (_) { /* no DOM */ }
+}
+
+// Where each piece sits in the stereo image (drummer's view: hi-hat left,
+// ride right, toms high to low left to right). Only for the General MIDI
+// kits, whose samples are mono; the multi-sampled kits are recorded in stereo.
+const DRUM_PAN = {
+    35: 0, 36: 0, 37: -0.05, 38: -0.05, 39: -0.1, 40: -0.05,
+    42: -0.45, 44: -0.45, 46: -0.45,
+    50: -0.3, 48: -0.15, 47: 0.05, 45: 0.2, 43: 0.38, 41: 0.5,
+    49: -0.55, 55: -0.3, 57: 0.55, 52: 0.65, 51: 0.5, 59: 0.5, 53: 0.45,
+};
+const _panNodes = new Map();   // dest bus -> Map(midi -> StereoPannerNode)
+function _panFor(dest, midi) {
+    const pan = DRUM_PAN[midi];
+    if (!pan || !_audioCtx || typeof _audioCtx.createStereoPanner !== 'function') return dest;
+    let m = _panNodes.get(dest);
+    if (!m) { m = new Map(); _panNodes.set(dest, m); }
+    let node = m.get(midi);
+    if (!node) {
+        node = _audioCtx.createStereoPanner();
+        node.pan.value = pan;
+        node.connect(dest);
+        m.set(midi, node);
+    }
+    return node;
 }
 
 // The WebAudioFont player, loaded only when a GM kit is used.
@@ -1038,8 +1145,9 @@ function _synthPlayNote(midiNote, velocity, when, dest) {
     }
     const preset = _drumPresets[midiNote];
     if (!preset || !_synthPlayer) return;
-    _synthPlayer.queueWaveTable(_audioCtx, dest, preset, when || 0, midiNote, when ? 0.6 : 0.5,
-        (velocity / 127) * (dest === _synthGain ? _cfg.synthVolume : 1));
+    const isPad = dest === _synthGain;
+    _synthPlayer.queueWaveTable(_audioCtx, _panFor(dest, midiNote), preset, when || 0, midiNote, when ? 0.6 : 0.5,
+        (velocity / 127) * (isPad ? _cfg.synthVolume : 1));
 }
 
 function _setAutoVolume(vol) {
@@ -2913,6 +3021,12 @@ function createFactory(forceView) {
                         value="${Math.round(_cfg.synthVolume * 100)}"
                         style="width:70px;accent-color:#ef4444;height:14px;">
                 </div>
+                <div style="display:flex;align-items:center;gap:4px;" title="Room ambience on the drum sounds (adds no delay)">
+                    <span style="font-size:10px;color:#666;">Room</span>
+                    <input type="range" class="drums-room-slider" min="0" max="100"
+                        value="${Math.round(_cfg.room * 100)}"
+                        style="width:56px;accent-color:#60a0ff;height:14px;">
+                </div>
                 <div style="display:flex;align-items:center;gap:4px;">
                     <span style="font-size:10px;color:#666;">Ch</span>
                     <select class="drums-channel-select" style="background:#1a1a2e;border:1px solid #333;border-radius:6px;
@@ -3033,6 +3147,9 @@ function createFactory(forceView) {
         };
         panel.querySelector('.drums-vol-slider').oninput = function () {
             _synthSetVolume(parseInt(this.value) / 100);
+        };
+        panel.querySelector('.drums-room-slider').oninput = function () {
+            _setRoom(parseInt(this.value, 10) / 100);
         };
         panel.querySelector('.drums-channel-select').onchange = function () {
             _saveCfg('midiChannel', parseInt(this.value));
@@ -4017,7 +4134,7 @@ window.__drumsSetInputOffset = (ms) => {
 window.__drumsGetConfig = () => Object.assign({}, _cfg);
 window.__drumsRefreshParams = () => { for (const i of _instances) { try { i._assistsChanged(); } catch (_) { /* ignore */ } } };
 window.__drumsSetPadVolume = (v) => { _synthSetVolume(v); return _cfg.synthVolume; };
-window.__drumsDebug = { midi: (data, timeStamp) => _midiOnMessage({ data, timeStamp }), routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
+window.__drumsDebug = { midi: (data, timeStamp) => _midiOnMessage({ data, timeStamp }), audioCtx: () => _audioCtx, routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
 // Split view: every drum panel's results (highway_tweaks' comparison card).
 window.__drumsPanelResults = () => {
     const out = [];
@@ -4187,6 +4304,11 @@ function _pageAutoVolumeText() {
     if (el) el.textContent = Math.round(_cfg.autoVolume * 100) + '%';
 }
 
+function _pageRoomText() {
+    const el = _page && _page.querySelector('[data-dr="roomText"]');
+    if (el) el.textContent = Math.round(_cfg.room * 100) + '%';
+}
+
 function _pageVolumeText() {
     const el = _page && _page.querySelector('[data-dr="volumeText"]');
     if (el) el.textContent = Math.round(_cfg.synthVolume * 100) + '%';
@@ -4205,6 +4327,8 @@ function _pageFill() {
     q('channel').value = String(_cfg.midiChannel);
     q('proCymbals').checked = _cfg.proCymbals;
     q('volume').value = String(Math.round(_cfg.synthVolume * 100));
+    q('room').value = String(Math.round(_cfg.room * 100));
+    _pageRoomText();
     q('autoVolume').value = String(Math.round(_cfg.autoVolume * 100));
     q('view').value = _cfg.view;
     q('offset').value = String(_cfg.inputOffsetMs);
@@ -4238,6 +4362,7 @@ function _pageWire() {
     };
     q('test').onclick = () => { _synthPlayTest(); };
     q('volume').oninput = function () { _synthSetVolume(parseInt(this.value, 10) / 100); _pageVolumeText(); };
+    q('room').oninput = function () { _setRoom(parseInt(this.value, 10) / 100); _pageRoomText(); };
     q('autoVolume').oninput = function () { _synthInit(); _setAutoVolume(parseInt(this.value, 10) / 100); _pageAutoVolumeText(); };
     q('midi').onchange = function () {
         _saveCfg('midiManual', this.value ? '1' : '');
@@ -4298,6 +4423,7 @@ function _resetDrumSettings() {
     _synthSetKit(DEFAULT_KIT);
     _synthSetVolume(0.7);
     _setAutoVolume(0.8);
+    _setRoom(0.35);
     _saveCfg('midiChannel', -1);
     _saveCfg('view', 'auto');
     _saveCfg('inputOffsetMs', 0);

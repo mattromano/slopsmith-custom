@@ -3,6 +3,9 @@ import { chromium } from 'playwright-core';
 
 export const BASE = process.env.BASE || 'http://127.0.0.1:8003';
 
+// Closing the browser rejects Playwright's pending navigation promise; that is harmless.
+process.on('unhandledRejection', (e) => { if (!/Target page, context or browser has been closed/.test(String(e))) { console.error(e); process.exitCode = 1; } });
+
 export async function launch() {
     const browser = await chromium.launch({
         executablePath: 'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',

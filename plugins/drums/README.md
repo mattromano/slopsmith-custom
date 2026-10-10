@@ -183,6 +183,24 @@ changes apply right away to a song that is playing in another panel:
   plain `AudioBufferSourceNode`s for low latency; the GM kits (JCLive, FluidR3 GM, SB Live!, Chaos) are one
   WebAudioFont sample per note. A saved GM kit choice is kept; a missing kit folder falls back to JCLive.
   Sources, licences and the build script: `sounds/README.md`, `NOTICE.md`, `tools/build_sample_kit.py`.
+- **Room** (`drums_room_v1`, default 35%): every kit plays through a drum bus with a stereo room (a
+  convolution reverb on a generated room impulse response, RT60 ~0.7 s, early reflections different left and
+  right) plus a gentle low shelf and presence lift. The GM kits are mono samples, so each piece is also placed
+  in the stereo image (drummer's view: hi-hat left, ride right, toms left to right). Only IIR filters sit on
+  the dry path, so it adds no delay (no DynamicsCompressor: Chromium's has a fixed look-ahead). Measured
+  (tools/sync-bench/drumsound.mjs): SB Live! snare L/R correlation 1.00 -> 0.59, room tail -24 -> -14 dB.
+
+### Timing (5.11 - 5.12)
+
+- The 3D view draws from the frame-exact audio clock (highway_tweaks `__hwtFrameTime`), not the 60 Hz
+  `bundle.currentTime` sample: per-frame step error sd 3.7 ms -> 0.1 ms.
+- Pad hits are timed by the MIDI message's own timestamp on the audio clock, with this highway's own
+  chart/A/V offset (split view panels run on their own timer).
+- The engine runs 60 ms behind the frame clock (`INPUT_GRACE`), so a hit struck before the last frame but
+  delivered after it keeps its strike time (YARG's QueueInput used to move it to the frame time: +9 ms late).
+- Pad sounds reach the ears ~50 ms after the stick through Web Audio (Windows shared-mode output). Clone
+  Hero plays no pad sounds; for the same feel use the kit module's sound (volume 0, computer audio into the
+  module's AUX IN). Sync Lab (nav → Sync) measures it and calibrates the input offset.
 
 ### Notes and limits
 
