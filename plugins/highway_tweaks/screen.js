@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.17.0' };
+    window.__highwayTweaks = { version: '1.18.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -62,10 +62,13 @@
                 // of bundle.currentTime, which app.js sampled on its own 60 Hz
                 // timer up to a frame earlier. Offset (chart + AV) recovered
                 // from the last raw time passed to highway.setTime().
+                // bundle.__hwtSetT: this highway's own last time (split-view
+                // panels run on their own timer); else the main highway's.
                 const __a = document.getElementById('audio');
-                if (bundle.isPlaying !== false && __a && typeof window.__hwtLastSetT === 'number'
+                const __s = typeof bundle.__hwtSetT === 'number' ? bundle.__hwtSetT : window.__hwtLastSetT;
+                if (bundle.isPlaying !== false && __a && typeof __s === 'number'
                         && window.__hwtStemsSmooth && window.__hwtStemsSmooth()) {
-                    const __t = __a.currentTime + (bundle.currentTime - window.__hwtLastSetT);
+                    const __t = __a.currentTime + (bundle.currentTime - __s);
                     _clkAudioT = bundle.currentTime; _clkPerf = performance.now(); _clkRate = 1;
                     window.__h3dFrameNow = __t;
                     return (_frameNow = __t);
@@ -630,16 +633,99 @@
         if (jp._polling) jp._startPolling();
     })();
 
-    // Record the raw audio time app.js feeds the highway each tick, so the 3D
-    // renderer's patched smoothNow can recover the chart/AV offset.
+    // Record the raw audio time each highway instance is fed (app.js's 60 Hz
+    // tick for the main one, splitscreen's own 60 Hz loop for each panel), so
+    // renderers can recover the chart/AV offset and draw from the precise
+    // audio clock at the moment of the frame. Every renderer's bundle is
+    // stamped with ITS highway's last time (bundle.__hwtSetT): split-view
+    // panels are fed on a different timer than the main highway, so mixing
+    // the two gave a random 0-16 ms offset that changed every frame.
+    //
+    // A/V offset: app.js only sets it on the main highway. Split-view panels
+    // (createHighway) stayed at 0 ms, so in split view gems and Note
+    // Detection ran on a different clock than in single-player. Every
+    // instance now gets the main highway's A/V offset, at creation and on
+    // every change.
+    const HW_INSTANCES = new Set();   // WeakRefs of panel highways
+    function stampRenderer(hw, r) {
+        if (!r || typeof r.draw !== 'function' || r.__hwtStamp === hw) return;
+        const draw = r.__hwtOrigDraw || r.draw;
+        r.__hwtOrigDraw = draw;
+        r.__hwtStamp = hw;
+        r.draw = function (bundle) {
+            if (bundle && typeof bundle === 'object') bundle.__hwtSetT = hw.__hwtLastSetT;
+            return draw.apply(this, arguments);
+        };
+    }
+    function hookInstance(hw, isMain) {
+        if (!hw || typeof hw.setTime !== 'function' || hw.__hwtSetTime) return hw;
+        hw.__hwtSetTime = true;
+        const origSet = hw.setTime;
+        hw.setTime = isMain
+            ? function (t) { hw.__hwtLastSetT = t; window.__hwtLastSetT = t; return origSet.apply(this, arguments); }
+            : function (t) { hw.__hwtLastSetT = t; return origSet.apply(this, arguments); };
+        if (typeof hw.setRenderer === 'function') {
+            const origR = hw.setRenderer;
+            hw.setRenderer = function (r) { try { stampRenderer(hw, r); } catch (_) { /* ignore */ } return origR.apply(this, arguments); };
+        }
+        if (isMain && typeof hw.setAvOffset === 'function') {
+            const origAv = hw.setAvOffset;
+            hw.setAvOffset = function (ms) {
+                const r = origAv.apply(this, arguments);
+                for (const ref of [...HW_INSTANCES]) {
+                    const p = ref.deref();
+                    if (!p) { HW_INSTANCES.delete(ref); continue; }
+                    try { p.setAvOffset(ms); } catch (_) { /* ignore */ }
+                }
+                return r;
+            };
+        }
+        return hw;
+    }
     (function hookSetTime() {
         const hw = window.highway;
         if (!hw || typeof hw.setTime !== 'function') { setTimeout(hookSetTime, 500); return; }
-        if (hw.__hwtSetTime) return;
-        hw.__hwtSetTime = true;
-        const orig = hw.setTime;
-        hw.setTime = function (t) { window.__hwtLastSetT = t; return orig.apply(this, arguments); };
+        hookInstance(hw, true);
     })();
+    (function hookCreateHighway() {
+        const orig = window.createHighway;
+        if (typeof orig !== 'function') { setTimeout(hookCreateHighway, 500); return; }
+        if (orig.__hwt) return;
+        const wrapped = function () {
+            const hw = orig.apply(this, arguments);
+            try {
+                hookInstance(hw, false);
+                const main = window.highway;
+                if (hw && hw !== main && typeof hw.setAvOffset === 'function') {
+                    const ms = main && typeof main.getAvOffset === 'function' ? main.getAvOffset() : 0;
+                    if (ms) hw.setAvOffset(ms);
+                    HW_INSTANCES.add(new WeakRef(hw));
+                }
+            } catch (e) { console.warn('[highway_tweaks] panel highway hook failed:', e); }
+            return hw;
+        };
+        wrapped.__hwt = true;
+        window.createHighway = wrapped;
+    })();
+    // Frame-exact render time for a renderer's bundle: the precise stems
+    // clock read now, plus this highway's chart/AV offset. NaN when not
+    // available (paused, no stems transport, unknown highway) — callers fall
+    // back to bundle.currentTime.
+    window.__hwtFrameTime = function (bundle) {
+        if (!bundle || bundle.isPlaying === false) return NaN;
+        const setT = typeof bundle.__hwtSetT === 'number' ? bundle.__hwtSetT : window.__hwtLastSetT;
+        if (typeof setT !== 'number' || !window.__hwtStemsSmooth || !window.__hwtStemsSmooth()) return NaN;
+        const a = document.getElementById('audio');
+        if (!a || a.paused) return NaN;
+        const t = a.currentTime + (bundle.currentTime - setT);
+        return Number.isFinite(t) && Math.abs(t - bundle.currentTime) < 0.1 ? t : NaN;
+    };
+    // Render-minus-audio offset (chart + A/V) of the highway that drew this bundle.
+    window.__hwtRenderOffset = function (bundle) {
+        if (!bundle) return NaN;
+        const setT = typeof bundle.__hwtSetT === 'number' ? bundle.__hwtSetT : window.__hwtLastSetT;
+        return typeof setT === 'number' ? bundle.currentTime - setT : NaN;
+    };
 
     // ── 2. Frame-drop watchdog ──────────────────────────────────────────
     // Track every canvas context created from here on so a snapshot can

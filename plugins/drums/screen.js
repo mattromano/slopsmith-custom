@@ -2517,7 +2517,14 @@ function createFactory(forceView) {
         const nextScale = bundle.renderScale || 1;
         if (nextScale !== _renderScale) { _renderScale = nextScale; _resize3D(); }
         else if (_highwayCanvas && (_highwayCanvas.width !== _lastHwW || _highwayCanvas.height !== _lastHwH)) _resize3D();
-        const t = +bundle.currentTime || 0;
+        // Frame-exact clock (highway_tweaks): the precise stems clock read
+        // now + this highway's chart/AV offset. bundle.currentTime was
+        // sampled by a 60 Hz timer up to a frame earlier, so gems stepped
+        // unevenly (measured: per-frame step error sd 3.6 ms, p95 13 ms).
+        let ft = NaN;
+        try { if (window.__hwtFrameTime) ft = window.__hwtFrameTime(bundle); } catch (_) { ft = NaN; }
+        const t = Number.isFinite(ft) ? ft : (+bundle.currentTime || 0);
+        window.__drumsFrameT = t;
         const wall = _now();
         if (!isReady) {
             _view3d.render({ time: t, session: null, wallNow: wall, message: 'Loading drums...' });
@@ -2543,8 +2550,10 @@ function createFactory(forceView) {
         _clock.wall = wall;
         try {
             const a = document.getElementById('audio');
-            _audioOff = a && !a.paused && typeof window.__hwtLastSetT === 'number'
-                ? (+bundle.currentTime || 0) - window.__hwtLastSetT : NaN;
+            // This highway's own offset (split-view panels run on their own
+            // timer, so the main highway's last time is the wrong reference).
+            const off = window.__hwtRenderOffset ? window.__hwtRenderOffset(bundle) : NaN;
+            _audioOff = a && !a.paused && Number.isFinite(off) ? off : NaN;
         } catch (_) { _audioOff = NaN; }
         _session.update(t);
         const meta = _session.meta;
@@ -2636,7 +2645,11 @@ function createFactory(forceView) {
             // 3D view: the engine scores. Learn/custom mapping wins, else GM.
             if (_session && _libs) {
                 const m = _libs.H.midiToPad(midiNote, _baseMapping(), _libs.E.padFromMidi);
-                if (m) _session.hit(_inputTime(ts), m.pad, { cymbal: m.cymbal, velocity });
+                if (m) {
+                    const ht = _inputTime(ts);
+                    _session.hit(ht, m.pad, { cymbal: m.cymbal, velocity });
+                    if (window.__drumsHitTap) { try { window.__drumsHitTap({ t: ht, ts, now: _now(), pad: m.pad }); } catch (_) { /* debug only */ } }
+                }
             }
             return;
         }
@@ -3977,7 +3990,7 @@ function _drumsTakeover() {
 // difficulty is kept in localStorage ("drums.best:<file>|<difficulty>").
 let _endCardAt = 0;
 // Console / test hook: inject a MIDI message and see where hits are routed.
-window.__drumsDebug = { midi: (data) => _midiOnMessage({ data }), routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
+window.__drumsDebug = { midi: (data, timeStamp) => _midiOnMessage({ data, timeStamp }), routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
 // Split view: every drum panel's results (highway_tweaks' comparison card).
 window.__drumsPanelResults = () => {
     const out = [];
