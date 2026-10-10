@@ -3940,6 +3940,28 @@ function createFactory(forceView) {
                 drumNotes = bundle.notes;
                 drumChords = bundle.chords;
             }
+            // Not a drum chart: a split-view panel left on the Drum Highway
+            // falls back to Lead on a song with no Drums part, and guitar
+            // notes read as drum notes (string * 24 + fret) gave a few random
+            // gems. Show a message instead, with nothing to play or score.
+            const notDrums = isReady && !dt && !_isDrumsArrangement(bundle.songInfo);
+            if (notDrums) {
+                _latestNotes = [];
+                _latestChords = [];
+                _latestTime = bundle.currentTime;
+                _autoSchedTo = NaN;
+                if (_view === '3d') {
+                    if (_view3d) {
+                        _view3d.render({ time: +bundle.currentTime || 0, session: null, wallNow: _now(),
+                            message: 'No drum chart in this song: ' + ((bundle.songInfo && bundle.songInfo.arrangement) || 'this part') + ' is not drums' });
+                    }
+                    _placeBadge(null);
+                    _placeTimingBtn(null);
+                    return;
+                }
+                _draw([], [], bundle.currentTime, bundle.beats);
+                return;
+            }
             if (isReady) {
                 // Difficulty: Expert+ = the wire notes as they are, Expert
                 // drops the 2x kick notes, Easy/Medium/Hard come from the
