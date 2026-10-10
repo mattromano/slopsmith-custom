@@ -154,8 +154,8 @@ const TIMING_IDS = ['relaxed', 'forgiving', 'normal', 'precision'];
 // in sounds/ (one sample per note). See sounds/README.md. Only the chosen
 // kit is loaded.
 const DRUM_KITS = {
-    drs:        { name: 'DRS (studio, multi-mic)', type: 'samples', dir: 'drs', note: 'real kit from 13 mics with our own mix and a real room, 4-8 velocity layers x 2-3 hits (default)' },
-    crocell:    { name: 'Crocell (rock, multi-mic)', type: 'samples', dir: 'crocell', note: 'real rock/metal kit from 15 mics with our own mix and a real room, up to 10 velocity layers x 4 hits' },
+    drs:        { name: 'DRS (studio, multi-mic)', type: 'samples', dir: 'drs', room: 0.5, note: 'real kit from 13 mics with our own mix and a real room, 4-8 velocity layers x 2-3 hits (default)' },
+    crocell:    { name: 'Crocell (rock, multi-mic)', type: 'samples', dir: 'crocell', room: 0.5, note: 'real rock/metal kit from 15 mics with our own mix and a real room, up to 10 velocity layers x 4 hits' },
     virtuosity: { name: 'Virtuosity (jazz)', type: 'samples', dir: 'virtuosity', note: 'real sampled jazz kit, velocity layers' },
     jclive: { name: 'JCLive', sf: 'JCLive_sf2_file', note: 'tight, dry GM rock kit' },
     fluid:  { name: 'FluidR3 GM', sf: 'FluidR3_GM_sf2_file', note: 'full acoustic GM kit with room' },
@@ -1076,7 +1076,13 @@ async function _synthInit() {
 // Only IIR filters sit on the dry path (no DynamicsCompressor: Chromium's has
 // a fixed ~6 ms look-ahead), so the room adds space without adding delay.
 let _roomSend = null;
-function _roomSendGain(room) { return Math.max(0, Math.min(1, room)) * 1.6; }
+// Kits recorded with their own room mics (DRUM_KITS room: 0.5) get less of
+// the generated room, so the Room setting sounds alike on every kit.
+function _roomSendGain(room) {
+    const k = DRUM_KITS[_cfg.kit];
+    const scale = k && typeof k.room === 'number' ? k.room : 1;
+    return Math.max(0, Math.min(1, room)) * 1.6 * scale;
+}
 function _buildDrumBus(ctx) {
     const mix = ctx.createGain();
     const low = ctx.createBiquadFilter();
@@ -1577,6 +1583,7 @@ function _synthSetVolume(vol) {
 // Switch the synth's sound set. Loads only the picked kit (lazily, once).
 async function _synthSetKit(kitId) {
     _saveCfg('kit', kitId);
+    if (_roomSend) _roomSend.gain.value = _roomSendGain(_cfg.room);
     try { document.querySelectorAll('.drums-kit-select').forEach((sel) => { sel.value = _cfg.kit; }); } catch (_) { /* no DOM */ }
     if (_audioCtx) await _synthLoadDrumKit();
 }

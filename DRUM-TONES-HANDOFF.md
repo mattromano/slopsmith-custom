@@ -26,13 +26,25 @@ Shipped (drums 5.15.1 `be6987f`, 5.16.0 `8823b9a`, installed in AppData incl. th
   semi-open hi-hat on note 23. 6.3 MB ogg, ~130 MB decoded. Source zip in the session scratchpad (re-download
   `https://drumgizmo.org/kits/DRSKit/DRSKit2_1.zip`, 2.8 GB). Kit .ogg files are gitignored (all kits).
 
-Next:
-1. Matt: record the MIDI monitor, then map note 24 and the CC4 pedal: pick closed / semi-open (note 23) /
-   open by pedal position, pedal chick on close, choke on CC4 down after an open hat.
-2. Matt's ears: balance targets (`balance.mjs` TARGET), the law (1.75; Soft curve if too quiet), DRS mix
-   (`MIX` in build_drumgizmo_kit.py).
-3. Lazy decode for DRS (mid layers first) if load time / memory matters; CrocellKit multichannel as a 2nd
-   multi-mic kit; optional real-room stem instead of the convolution room for DRS.
+Third session (Matt away), shipped 5.17.0 `6a69062`, 5.18.0 `b6ef142`, 5.18.1:
+- **Hi-hat pedal (CC4)** without waiting for the recording: modules that split 42 / 46 are trusted (a raw 42
+  is always closed; half-closed pedal turns 46 into semi-open note 23); one-note modules get closed /
+  semi-open / open from the pedal; closing the pedal chokes the open hat, chick (note 44) if the kit never
+  sends 44; CC4 direction learnt from 42 vs 46 values (default high = closed). Setting on Plugins -> Drums.
+  `tools/sync-bench/hihat.mjs` checks MIDI -> sample end to end.
+- **Lazy decode:** first hit of every layer first; DRS playable ~125 ms, all ~330 ms (this PC, local).
+- **Crocell rebuilt from the 15-mic multichannel kit** (5.6 GB zip; overheads are named from the audience,
+  so they're panned swapped; snare close mics nudged left): up to 10 layers x 4, ~165 MB decoded.
+- **Room per kit:** multi-mic kits (own room mics) get half the generated room; tails at Room 35 % now match
+  the GM kits (snare -14 vs -13.6 dB).
+
+Still open (needs Matt):
+1. Record the MIDI monitor once: confirms note 24, whether CC4 is sent and its direction, chokes.
+   If the module's CC4 runs high = open AND it sends one note for every hit, flip `_hh.closedHigh`.
+2. Ears: balance targets (`balance.mjs` TARGET), velocity law 1.75 (Soft curve if too quiet), DRS / Crocell
+   mixes (`MIX` in build_drumgizmo_kit.py), default kit (DRS).
+3. Memory: DRS ~140 MB, Crocell ~165 MB decoded (one kit loaded at a time). If that's a problem, drop
+   round-robins or decode layers on first use.
 
 ## GOAL (paste as the session goal)
 
