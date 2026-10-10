@@ -413,6 +413,10 @@ function _laneIsAuto(laneIdx, auto) {
 }
 
 function _timingParams() {
+    // Sync Lab's calibration song: a wide fixed window, so even far-off hits
+    // (wrong A/V offset, playing by ear) are measured instead of missed.
+    const cw = +window.__drumsCalibrationWindow;
+    if (cw > 0) return { hitWindow: { maxWindow: cw, minWindow: cw, isDynamic: false } };
     const p = TIMING_PRESETS[_cfg.timing];
     return p && p.params ? JSON.parse(JSON.stringify(p.params)) : null;
 }
@@ -1088,6 +1092,9 @@ function _autoNotesBetween(notes, chords, from, to, auto) {
 
 function _synthDrumHit(midiNote, velocity) {
     if (!_audioCtx || !_synthGain) return;
+    // Sync Lab mutes pad sounds during its calibration song: they reach the
+    // ears ~50 ms after the stick (Web Audio output latency) and pull timing.
+    if (window.__drumsMutePads) return;
     _synthEnsureCtx();
     _synthPlayNote(midiNote, velocity, 0);
 }
@@ -2010,6 +2017,17 @@ function createFactory(forceView) {
             _view3d = libs.H.createView(libs.THREE, canvas, { hudCanvas: _hudCanvas, context: gl });
             _auto = _autoAt(_diff ? _diff.id : _myDiff());
             _session = libs.H.createSession(libs.E, { proDrums: _cfg.proCymbals, auto: _auto, params: _timingParams() });
+            // Every judged hit, for calibration (Sync Lab): song seconds, + = late.
+            if (_session.setOnHit) {
+                _session.setOnHit((h) => {
+                    try {
+                        window.dispatchEvent(new CustomEvent('drums:judgment', { detail: {
+                            noteTime: h.noteTime, time: h.time, pad: h.pad, errMs: (h.time - h.noteTime) * 1000,
+                            inputOffsetMs: _cfg.inputOffsetMs || 0, canvas: _highwayCanvas,
+                        } }));
+                    } catch (_) { /* listeners only */ }
+                });
+            }
             _chartRefs = null;
             _resetMeta();
             _resize3D();
@@ -3990,6 +4008,15 @@ function _drumsTakeover() {
 // difficulty is kept in localStorage ("drums.best:<file>|<difficulty>").
 let _endCardAt = 0;
 // Console / test hook: inject a MIDI message and see where hits are routed.
+// Set the input offset from outside (Sync Lab's one-click Apply).
+window.__drumsSetInputOffset = (ms) => {
+    _saveCfg('inputOffsetMs', ms);
+    try { document.querySelectorAll('.drums-offset-input').forEach((el) => { el.value = String(_cfg.inputOffsetMs); }); } catch (_) { /* no DOM */ }
+    return _cfg.inputOffsetMs;
+};
+window.__drumsGetConfig = () => Object.assign({}, _cfg);
+window.__drumsRefreshParams = () => { for (const i of _instances) { try { i._assistsChanged(); } catch (_) { /* ignore */ } } };
+window.__drumsSetPadVolume = (v) => { _synthSetVolume(v); return _cfg.synthVolume; };
 window.__drumsDebug = { midi: (data, timeStamp) => _midiOnMessage({ data, timeStamp }), routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
 // Split view: every drum panel's results (highway_tweaks' comparison card).
 window.__drumsPanelResults = () => {

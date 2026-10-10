@@ -776,3 +776,19 @@ test('session: setParams widens the hit window', () => {
     m.setParams({ hitWindow: { maxWindow: 0.26, minWindow: 0.26 } });
     m.update(1.09); assert.equal(m.hit(1.09, H.PAD.RED).type, 'hit');
 });
+
+test('session: a hit timestamped before the last frame keeps its own time (no clamp to the frame)', () => {
+    const s = H.createSession(E);
+    s.load(chart());
+    const seen = [];
+    s.setOnHit((h) => seen.push(h));
+    s.update(0.9);
+    s.update(1.016);           // the frame after the note at t=1 was drawn...
+    s.hit(1.004, 1);           // ...then a pad hit struck at 1.004 arrives (MIDI timestamp)
+    assert.equal(seen.length, 1);
+    assert.ok(Math.abs(seen[0].time - 1.004) < 1e-9, 'judged at the strike, not moved to the frame time 1.016');
+    assert.equal(seen[0].noteTime, 1);
+    s.update(1.5);             // misses are still found, a little later
+    s.update(1.6);
+    assert.ok(s.drainEvents().some((e) => e.type === 'miss'));
+});

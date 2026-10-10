@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.18.0' };
+    window.__highwayTweaks = { version: '1.19.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -369,6 +369,7 @@
                     '        const d = ct - est;\n' +
                     '        if (__hwtOff === null || Math.abs(d - __hwtOff) > 0.2) __hwtOff = d;\n' +
                     '        else __hwtOff += (d - __hwtOff) * 0.002;\n' +
+                    '        window.__hwtRenderAheadMs = (ct - ts.contextTime - (performance.now() - ts.performanceTime) / 1000) * 1000;\n' +
                     '        return est + __hwtOff;\n' +
                     '    }\n' +
                     '    window.__hwtStemsSmooth = () => !!(sloppakActive && buffersReady && transport.playing && ctx);\n' + m;
@@ -511,7 +512,9 @@
             // expose the live latency offset. Independent of the pitch patch.
             code = code.replace(/( {12})_recordDiagnostic\(judgment\);\r?\n/, (m, ind) => {
                 hits.push('timing-hook');
-                return m + ind + 'try { if (isDefault) { window.__hwtNdLatency = () => latencyOffset;' +
+                return m + ind + "try { window.dispatchEvent(new CustomEvent('hwt:judgment', { detail: { j: judgment," +
+                    ' latencyMs: latencyOffset * 1000, container: isDefault ? null : (opts.container || null) } })); } catch (_) {}\n' +
+                    ind + 'try { if (isDefault) { window.__hwtNdLatency = () => latencyOffset;' +
                     ' if (window.__hwtOnJudgment) window.__hwtOnJudgment(judgment, currentSection); }' +
                     ' else if (window.__hwtOnPanelJudgment) window.__hwtOnPanelJudgment(judgment, currentSection,' +
                     ' { hw: resolveHw(), container: opts.container || null }); } catch (_) {}\n';
@@ -706,6 +709,32 @@
         };
         wrapped.__hwt = true;
         window.createHighway = wrapped;
+    })();
+    // Every Note Detection instance (the default one + one per split-view
+    // panel), so a latency change can reach all of them (Sync Lab's Apply):
+    // they share one saved setting but each keeps its own copy in memory.
+    const ND_INSTANCES = new Set();
+    window.__hwtDetectors = function () {
+        const out = [];
+        if (window.noteDetect) out.push(window.noteDetect);
+        for (const ref of [...ND_INSTANCES]) {
+            const d = ref.deref();
+            if (!d) { ND_INSTANCES.delete(ref); continue; }
+            if (!out.includes(d)) out.push(d);
+        }
+        return out;
+    };
+    (function hookCreateNoteDetector() {
+        const orig = window.createNoteDetector;
+        if (typeof orig !== 'function') { setTimeout(hookCreateNoteDetector, 500); return; }
+        if (orig.__hwt) return;
+        const wrapped = function () {
+            const d = orig.apply(this, arguments);
+            try { if (d && typeof d === 'object') ND_INSTANCES.add(new WeakRef(d)); } catch (_) { /* ignore */ }
+            return d;
+        };
+        wrapped.__hwt = true;
+        window.createNoteDetector = wrapped;
     })();
     // Frame-exact render time for a renderer's bundle: the precise stems
     // clock read now, plus this highway's chart/AV offset. NaN when not

@@ -1,0 +1,14 @@
+{
+  "id": "sync_lab",
+  "name": "_Sync Lab",
+  "version": "1.0.0",
+  "private": true,
+  "nav": {
+    "label": "Sync",
+    "screen": "plugin-sync_lab"
+  },
+  "screen": "screen.html",
+  "script": "screen.js",
+  "routes": "routes.py",
+  "description": "Measured calibration of A/V offset, guitar latency and drum input offset (single player and split view)."
+}

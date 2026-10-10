@@ -8,3 +8,4 @@ __pycache__/
 *.ogg
 .env
 _build/
+plugins/sync_lab/sync_log*.jsonl

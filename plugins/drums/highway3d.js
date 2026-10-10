@@ -86,6 +86,7 @@
 
     // Seeks: a jump larger than this (seconds) rebuilds the engine from the new position.
     const SEEK_BACK = 0.25;
+    const INPUT_GRACE = 0.06;   // s the engine trails the frame clock (see session.update)
     const SEEK_FORWARD = 1.5;
 
     function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
@@ -841,6 +842,9 @@
             eng.on('hit', e => {
                 push({ type: 'hit', pad: e.pad, cymbal: e.cymbal, id: e.id, sp: eng.isStarPowerNote(e.id), bonus: !!e.bonus, time: e.time });
                 bonusHit(e);
+                if (s.onHit) {
+                    try { s.onHit({ time: e.time, noteTime: Number.isFinite(e.noteTime) ? e.noteTime : e.time, pad: e.pad }); } catch (_) { /* listener only */ }
+                }
             });
             eng.on('miss', e => {
                 push({ type: 'miss', pad: e.pad, cymbal: e.cymbal, id: e.id, time: e.time });
@@ -926,7 +930,13 @@
                 // First frame after a load that starts mid-song (view switched while playing,
                 // renderer installed late): score from here instead of missing everything before.
                 else if (s.gems.length && time > s.gems[0].t - SEEK_BACK) build(time);
-                s.engine.update(time);
+                // The engine runs INPUT_GRACE behind the frame clock: pad hits are
+                // timed by their MIDI timestamp (back-dated to the strike), and the
+                // engine moves any input older than its own time forward to it
+                // (YARG QueueInput). Advancing it to the frame time made every hit
+                // that arrived just after a frame late by up to a frame (measured
+                // +9 ms median). Misses are only final INPUT_GRACE later.
+                s.engine.update(time - INPUT_GRACE);
                 bonusTick(time);
                 s.lastTime = time;
             },
@@ -950,6 +960,8 @@
                 return out;
             },
             getState() { return s.engine ? s.engine.getState() : null; },
+            /** Per-hit timing listener ({time, noteTime, pad}, song seconds) or null. */
+            setOnHit(fn) { s.onHit = typeof fn === 'function' ? fn : null; return api; },
             /** Forget the early/late samples (after the input offset changed). */
             resetTiming() { if (s.bonus) s.bonus.offsets = []; return api; },
             /** Bonus score on top of the engine's: totals, recent feed, the live solo. */
