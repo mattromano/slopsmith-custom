@@ -190,6 +190,18 @@ changes apply right away to a song that is playing in another panel:
   the dry path, so it adds no delay (no DynamicsCompressor: Chromium's has a fixed look-ahead). Measured
   (tools/sync-bench/drumsound.mjs): SB Live! snare L/R correlation 1.00 -> 0.59, room tail -24 -> -14 dB.
 
+### Direct MIDI input (5.14, Windows)
+
+With the Windows MIDI Service, Chromium/Electron's Web MIDI can fail to see the kit (its Unicode device
+query failed for the Alesis while the ANSI one worked). `native_midi.py` reads MIDI inputs through WinMM
+directly (ctypes, ANSI) and `routes.py` streams them to the page over `WS /ws/plugins/drums/midi?id=N`
+(loopback only; the device is open only while a page listens, so Clone Hero can have it otherwise). The
+inputs appear in the MIDI list as "<name> · direct" when Web MIDI has no input of that name. Each message
+carries the driver's arrival time, mapped onto `performance.now()` with WebSocket pings, so hit timing is
+the same as with Web MIDI. Web MIDI gets 4 s to answer before the direct inputs are used. Checked with a
+fake input (`DRUMS_MIDI_TEST=1`, `tools/sync-bench/directmidi.mjs`): 40/40 hits judged, timestamps within
+the request window (+1.2 ms of a 2.1 ms round trip), delivered 0.6 ms after their stamp.
+
 ### Timing (5.11 - 5.12)
 
 - The 3D view draws from the frame-exact audio clock (highway_tweaks `__hwtFrameTime`), not the 60 Hz

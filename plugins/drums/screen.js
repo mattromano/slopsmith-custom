@@ -1257,11 +1257,101 @@ function _mi() {
 // discover / listSources / select / open (-> handle.addListener /
 // removeListener, raw MIDI bytes) / close, plus 'midi-input:sources-changed'
 // on plug/unplug. One MIDIAccess for the page; inputs are opened on demand.
+// Direct MIDI inputs served by routes.py (native_midi.py), used by
+// _webMidiShim. Each open input is a WebSocket streaming {d: bytes, t: server
+// perf ms}; pings map the server clock onto performance.now() (the round with
+// the smallest round trip of the last 12), so hits keep their arrival time.
+function _nativeMidi(onChange) {
+    const PREFIX = 'native-midi::';
+    let inputs = [];            // [{id, name}]
+    let pollTimer = null;
+    const socks = new Map();    // key -> { ws, set, rounds, off, ready, timer }
+    const sig = (l) => l.map(s => s.id + ':' + s.name).join('|');
+    async function fetchList() {
+        try {
+            const r = await fetch('/api/plugins/drums/native-midi', { cache: 'no-store' });
+            if (!r.ok) return [];
+            const d = await r.json();
+            return d && d.available && Array.isArray(d.inputs)
+                ? d.inputs.filter(s => s && Number.isInteger(s.id) && typeof s.name === 'string') : [];
+        } catch (_) { return []; }
+    }
+    async function refresh() {
+        inputs = await fetchList();
+        // The kit switching on / off (Alesis modules power off by themselves).
+        if (!pollTimer) {
+            pollTimer = setInterval(async () => {
+                if (document.hidden) return;
+                const n = await fetchList();
+                if (sig(n) !== sig(inputs)) { inputs = n; onChange(); }
+            }, 5000);
+            if (pollTimer && typeof pollTimer.unref === 'function') pollTimer.unref();   // node tests
+        }
+    }
+    function open(key) {
+        const id = key.slice(PREFIX.length);
+        let ent = socks.get(key);
+        if (!ent) {
+            ent = { set: new Set(), rounds: [], off: NaN, ws: null, timer: null };
+            socks.set(key, ent);
+            ent.ready = new Promise((resolve, reject) => {
+                const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+                const ws = new WebSocket(proto + '//' + location.host + '/ws/plugins/drums/midi?id=' + encodeURIComponent(id));
+                ent.ws = ws;
+                const ping = () => { if (ws.readyState === 1) ws.send(JSON.stringify({ ping: performance.now() })); };
+                const pings = (n) => { for (let i = 0; i < n; i++) setTimeout(ping, i * 40); };
+                ws.onmessage = (ev) => {
+                    let m;
+                    try { m = JSON.parse(ev.data); } catch (_) { return; }
+                    if (m.error) { reject(new Error(m.error)); try { ws.close(); } catch (_) { /* gone */ } return; }
+                    if (m.open) { resolve(); pings(6); ent.timer = setInterval(() => pings(3), 10000); return; }
+                    if ('pong' in m) {
+                        const now = performance.now();
+                        ent.rounds.push({ rtt: now - m.pong, off: m.t - (m.pong + now) / 2 });
+                        if (ent.rounds.length > 12) ent.rounds.shift();
+                        ent.off = ent.rounds.reduce((a, b) => (b.rtt < a.rtt ? b : a)).off;
+                        return;
+                    }
+                    if (Array.isArray(m.d)) {
+                        const ts = Number.isFinite(ent.off) && Number.isFinite(m.t) ? m.t - ent.off : performance.now();
+                        const data = Uint8Array.from(m.d);
+                        for (const fn of ent.set) { try { fn(data, ts); } catch (err) { console.warn('[Drums] MIDI listener failed:', err); } }
+                    }
+                };
+                ws.onerror = () => reject(new Error('direct MIDI connection failed'));
+                ws.onclose = () => {
+                    if (ent.timer) clearInterval(ent.timer);
+                    if (socks.get(key) === ent) socks.delete(key);
+                };
+            });
+        }
+        return ent.ready.then(
+            () => ({ handle: { addListener(fn) { ent.set.add(fn); }, removeListener(fn) { ent.set.delete(fn); } } }),
+            (e) => { if (socks.get(key) === ent) socks.delete(key); throw e; });
+    }
+    function close(key) {
+        const ent = socks.get(key);
+        if (!ent || ent.set.size) return;   // still in use by another listener
+        socks.delete(key);
+        if (ent.timer) clearInterval(ent.timer);
+        try { ent.ws.close(); } catch (_) { /* gone */ }
+    }
+    return {
+        keyOf: (id) => PREFIX + id,
+        owns: (k) => typeof k === 'string' && k.startsWith(PREFIX),
+        list: () => inputs.slice(),
+        refresh, open, close,
+        clockOffset: (key) => { const e = socks.get(key); return e ? e.off : NaN; },
+    };
+}
+
 let _shim = null;
 function _webMidiShim() {
     if (_shim) return _shim;
-    if (typeof navigator === 'undefined' || typeof navigator.requestMIDIAccess !== 'function') return null;
+    const hasWebMidi = typeof navigator !== 'undefined' && typeof navigator.requestMIDIAccess === 'function';
+    if (!hasWebMidi && typeof WebSocket === 'undefined') return null;
     let access = null;
+    let webPending = null;         // the requestMIDIAccess promise, once asked
     const listeners = new Map();   // logicalSourceKey -> Set<fn(data)>
     const keyOf = (id) => 'web-midi::' + id;
     const inputFor = (key) => {
@@ -1269,6 +1359,11 @@ function _webMidiShim() {
         for (const inp of access.inputs.values()) if (keyOf(inp.id) === key) return inp;
         return null;
     };
+    // Direct inputs (routes.py / native_midi.py read the kit through WinMM):
+    // for when Web MIDI can't see it (the Windows MIDI Service can hide
+    // devices from Chromium). Listed only when Web MIDI has no input of the
+    // same name; their timestamps are mapped onto performance.now().
+    const native = _nativeMidi(() => sourcesChanged());
     const sourcesChanged = () => {
         try {
             if (window.slopsmith && typeof window.slopsmith.emit === 'function') window.slopsmith.emit('midi-input:sources-changed', {});
@@ -1279,20 +1374,37 @@ function _webMidiShim() {
         version: 1,
         shim: true,
         async discover() {
-            if (!access) {
-                access = await navigator.requestMIDIAccess({ sysex: false });
-                access.onstatechange = (e) => { if (e && e.port && e.port.type === 'input') sourcesChanged(); };
+            if (!access && hasWebMidi && !webPending) {
+                // Don't let an unanswered permission prompt (or a stuck MIDI
+                // service) hold up the direct inputs: wait 4 s, then go on and
+                // pick Web MIDI up whenever it does answer.
+                const attach = (a) => {
+                    access = a;
+                    access.onstatechange = (e) => { if (e && e.port && e.port.type === 'input') sourcesChanged(); };
+                };
+                webPending = navigator.requestMIDIAccess({ sysex: false });
+                try {
+                    attach(await Promise.race([webPending,
+                        new Promise((_, rej) => setTimeout(() => rej(new Error('Web MIDI did not answer')), 4000))]));
+                } catch (e) {
+                    console.warn('[Drums] Web MIDI unavailable for now, direct inputs only:', e);
+                    webPending.then((a) => { attach(a); sourcesChanged(); }, () => {});
+                }
             }
+            await native.refresh();
             return { outcome: 'handled' };
         },
         listSources() {
-            if (!access) return [];
-            return Array.from(access.inputs.values())
+            const web = access ? Array.from(access.inputs.values())
                 .filter(inp => inp.state !== 'disconnected')
-                .map(inp => ({ sourceId: inp.id, label: inp.name || inp.manufacturer || inp.id, logicalSourceKey: keyOf(inp.id) }));
+                .map(inp => ({ sourceId: inp.id, label: inp.name || inp.manufacturer || inp.id, logicalSourceKey: keyOf(inp.id) })) : [];
+            const names = new Set(web.map(s => String(s.label).toLowerCase()));
+            return web.concat(native.list().filter(s => !names.has(s.name.toLowerCase()))
+                .map(s => ({ sourceId: 'native-' + s.id, label: s.name + ' · direct', logicalSourceKey: native.keyOf(s.id) })));
         },
         async select() { /* selection lives in the plugin */ },
         async open({ logicalSourceKey }) {
+            if (native.owns(logicalSourceKey)) return native.open(logicalSourceKey);
             const inp = inputFor(logicalSourceKey);
             if (!inp) return { handle: null };
             // Throws if another program holds the port (Windows MIDI is exclusive).
@@ -1311,6 +1423,7 @@ function _webMidiShim() {
             };
         },
         close({ logicalSourceKey }) {
+            if (native.owns(logicalSourceKey)) { native.close(logicalSourceKey); return; }
             const set = listeners.get(logicalSourceKey);
             const inp = inputFor(logicalSourceKey);
             if (set && set.size) return;     // still in use by another listener

@@ -15,14 +15,26 @@ GET /api/plugins/drums/sounds/kits/{kit}/{name}
 GET /api/plugins/drums/kit-mapping
     The e-kit's pad mapping from Clone Hero's active MIDI profile (read live, so remapping the kit
     in Clone Hero carries over). screen.js uses it as the default MIDI map when no Learn map is saved.
+
+GET /api/plugins/drums/native-midi, WS /ws/plugins/drums/midi?id=<n>
+    Direct MIDI input (native_midi.py, WinMM): the kit's inputs when the browser's Web MIDI can't see
+    them (Windows MIDI Service). The socket streams {"d": [bytes], "t": perf ms} per message and answers
+    {"ping": x} with {"pong": x, "t": perf ms} so the page can map the times onto performance.now().
+    Loopback clients only. The device is open only while a socket listens. DRUMS_MIDI_TEST=1 adds a
+    fake input (id 999) and POST /api/plugins/drums/native-midi/inject for tests.
 """
 
+import asyncio
 import configparser
+import importlib.util
+import json
 import os
 import re
+import time
 from pathlib import Path
 
-from fastapi.responses import Response
+from fastapi import Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse, Response
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
 # The player + one file per GM drum note for each bundled kit (screen.js DRUM_KITS).
@@ -189,9 +201,123 @@ def kit_file_path(kit: str, name: str):
     return path
 
 
+def _load_native_midi():
+    spec = importlib.util.spec_from_file_location("drums_native_midi", _PLUGIN_DIR / "native_midi.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+_TEST_DEV = 999
+
+
+class _FakeInput:
+    """DRUMS_MIDI_TEST: a stand-in device (messages arrive only through Hub.inject)."""
+
+    def __init__(self, dev_id, listener):
+        self.dev_id = dev_id
+
+    def open(self):
+        return self
+
+    def close(self):
+        pass
+
+
+def native_midi_routes(app, log=None):
+    nm = _load_native_midi()
+    test_mode = os.environ.get("DRUMS_MIDI_TEST") == "1"
+
+    def opener(dev_id, listener):
+        if test_mode and dev_id == _TEST_DEV:
+            return _FakeInput(dev_id, listener)
+        return nm.MidiInput(dev_id, listener)
+
+    hub = nm.Hub(opener)
+
+    def inputs():
+        out = nm.list_inputs()
+        if test_mode:
+            out.append({"id": _TEST_DEV, "name": "Sync-bench test kit"})
+        return out
+
+    @app.get("/api/plugins/drums/native-midi")
+    def native_midi_list(request: Request):
+        if request.client and request.client.host not in _LOOPBACK:
+            return JSONResponse({"available": False, "inputs": []}, status_code=403)
+        try:
+            return {"available": nm.available() or test_mode, "inputs": inputs()}
+        except Exception as e:
+            return {"available": False, "inputs": [], "error": str(e)}
+
+    if test_mode:
+        @app.post("/api/plugins/drums/native-midi/inject")
+        async def native_midi_inject(data: dict):
+            hub.inject(int(data.get("id", _TEST_DEV)), [int(b) & 0xFF for b in data.get("data", [])][:3])
+            return {"ok": True, "t": time.perf_counter() * 1000}
+
+    @app.websocket("/ws/plugins/drums/midi")
+    async def native_midi_ws(ws: WebSocket):
+        if ws.client and ws.client.host not in _LOOPBACK:
+            await ws.close(code=4403)
+            return
+        await ws.accept()
+        try:
+            dev = int(ws.query_params.get("id", "-1"))
+        except ValueError:
+            dev = -1
+        loop = asyncio.get_running_loop()
+        q = asyncio.Queue(maxsize=2000)
+
+        def on_msg(data, t):
+            def put():
+                try:
+                    q.put_nowait((data, t))
+                except asyncio.QueueFull:
+                    pass
+            loop.call_soon_threadsafe(put)
+
+        try:
+            token = hub.subscribe(dev, on_msg)
+        except Exception as e:
+            await ws.send_text(json.dumps({"error": str(e)}))
+            await ws.close()
+            return
+        if log:
+            log.info("drums: direct MIDI input %s opened", dev)
+        await ws.send_text(json.dumps({"open": True, "id": dev, "t": time.perf_counter() * 1000}))
+
+        async def sender():
+            while True:
+                data, t = await q.get()
+                await ws.send_text(json.dumps({"d": data, "t": t * 1000}))
+
+        task = asyncio.create_task(sender())
+        try:
+            while True:
+                msg = json.loads(await ws.receive_text())
+                if isinstance(msg, dict) and "ping" in msg:
+                    await ws.send_text(json.dumps({"pong": msg["ping"], "t": time.perf_counter() * 1000}))
+        except (WebSocketDisconnect, ValueError, RuntimeError):
+            pass
+        finally:
+            task.cancel()
+            hub.unsubscribe(dev, token)
+            if log:
+                log.info("drums: direct MIDI input %s closed", dev)
+
+    return hub
+
+
 def setup(app, context):
     log = context.get("log") if isinstance(context, dict) else None
     allow_drums_library_filter()
+    try:
+        native_midi_routes(app, log)
+    except Exception as e:   # never block the plugin over the optional MIDI bridge
+        if log:
+            log.warning("drums: direct MIDI input unavailable: %s", e)
 
     @app.get("/api/plugins/drums/sounds/{name}")
     def drums_sound(name: str):
