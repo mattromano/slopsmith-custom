@@ -188,8 +188,8 @@ changes apply right away to a song that is playing in another panel:
 - **Kit** (`drums_kit_v1`): the sound set for pad hits; only the chosen kit is loaded. Default **DRS
   (studio, multi-mic)** (5.16): DRSKit 2.1 (DrumGizmo, CC BY 4.0), built from all 13 microphones of every hit
   (close mics, overheads and the real room mics) with our own stereo mix from the drummer's view, up to
-  8 velocity layers × 3 hits per drum and full cymbal decays. **Crocell (rock)** is a sampled kit from
-  CrocellKit's stereo mix (4 velocity layers × 2), **Virtuosity (jazz)** the same kind of kit (Virtuosity
+  8 velocity layers × 3 hits per drum and full cymbal decays. **Crocell (rock, multi-mic)** (5.18) is built the
+  same way from CrocellKit's 15 microphones (up to 10 velocity layers × 4 hits), **Virtuosity (jazz)** the same kind of kit (Virtuosity
   Drums, CC0). In the sampled kits soft and hard hits sound different, repeated hits don't sound identical,
   and a closed / pedal hi-hat cuts a ringing open hi-hat. The sampled
   kits (`sounds/kits/`, ~4–5 MB each, Ogg Vorbis) are fetched and decoded when picked and play through

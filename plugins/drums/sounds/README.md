@@ -19,7 +19,11 @@ nothing from third-party sites.
     23 is the semi-open hi-hat (for the hi-hat pedal; not a GM note). ~130 MB once decoded. Built with
     `python -I plugins/drums/tools/build_drumgizmo_kit.py drs <DRSKit folder>` from
     https://drumgizmo.org/kits/DRSKit/DRSKit2_1.zip (2.8 GB).
-  - `crocell/` — CrocellKit 1.1 (DrumGizmo) stereo mix, **CC BY 4.0**, rock/metal kit. 4.7 MB.
+  - `crocell/` — CrocellKit 1.1 (DrumGizmo) multichannel, **CC BY 4.0**, rock/metal kit (5.18; was its stereo
+    mix). Our own mix of its 15 microphones (its overheads are named from the audience: panned from the
+    drummer here), up to 10 velocity layers × 4 hits, semi-open hi-hat on note 23. 7.8 MB, ~165 MB decoded.
+    `python -I plugins/drums/tools/build_drumgizmo_kit.py crocell <CrocellKit folder>` from
+    https://drumgizmo.org/kits/CrocellKit/CrocellKit1_1.zip (5.6 GB).
   - `virtuosity/` — Virtuosity Drums (Versilian Studios / Karoryfer), **CC0**, jazz kit. 3.6 MB.
 
   Each holds `kit.json` + `<piece>_v<layer>_<a|b>.ogg` (Ogg Vorbis q5, 48 kHz stereo). `kit.json`:

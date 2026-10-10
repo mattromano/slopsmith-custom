@@ -1,10 +1,15 @@
 """Build a web drum kit (kit.json + Ogg Vorbis) from a multi-microphone DrumGizmo kit, with our own mix.
 
-    python -I plugins/drums/tools/build_drumgizmo_kit.py drs <DRSKit dir> [out dir]
+    python -I plugins/drums/tools/build_drumgizmo_kit.py drs     <DRSKit dir>     [out dir]
+    python -I plugins/drums/tools/build_drumgizmo_kit.py crocell <CrocellKit dir> [out dir]
 
 DRSKit 2.1 (DrumGizmo team / DRSDrums, CC BY 4.0): https://drumgizmo.org/kits/DRSKit/DRSKit2_1.zip.
-Every hit is stored with all 13 microphones (close mics, two overheads, two room mics) and a "power"
-value; the kit covers each drum from very soft to very hard (~30 hits per drum, ~11 per cymbal).
+CrocellKit 1.1 multichannel (DrumGizmo team / Crocell, CC BY 4.0):
+https://drumgizmo.org/kits/CrocellKit/CrocellKit1_1.zip (5.6 GB). The out dir defaults to
+sounds/kits/<kit> (the "crocell" kit used to be built from CrocellKit's stereo mix by build_sample_kit.py).
+Every hit is stored with all microphones (13 / 15: close mics, overheads, two room mics) and a
+"power" value; the kits cover each drum from very soft to very hard (DRS ~30 hits per drum, Crocell
+up to ~100).
 
 For every hit the microphones are mixed to stereo from the drummer's view (MIX below: gain and pan
 per mic; the room mics are real room, wide). Snare bottom and kick front get their polarity checked
@@ -42,10 +47,23 @@ MIX = {
         "OHL": (-1, -0.75), "OHR": (-1, 0.75),
         "AmbL": (-5, -1.0), "AmbR": (-5, 1.0),
     },
+    "crocell": {
+        "KDrumInside": (0, 0.0), "KDrumOutside": (-4, 0.0),
+        "SnareTop": (0, -0.35), "SnareBottom": (-9, -0.35),   # offsets the overheads (snare nearer OHLeft)
+        "Hihat": (-5, -0.5), "Ride": (-8, 0.55),
+        "Tom1": (-1, -0.3), "Tom2": (-1, -0.05), "FTom1": (-1, 0.3), "FTom2": (-1, 0.5),
+        # Crocell's overheads are named from the audience: hi-hat, left crash and rack tom are loudest in
+        # "OHRight", the floor toms in "OHLeft" (OHRight also runs ~3 dB hotter). Panned from the drummer.
+        "OHLeft": (0.5, 0.75), "OHRight": (-2.5, -0.75), "OHCenter": (-4, 0.0),
+        "AmbLeft": (-5, -1.0), "AmbRight": (-5, 1.0),
+    },
 }
 # polarity: (mic, reference mic, the instrument it is decided on). A mic's polarity is a fixed fact of
 # the recording, so it is decided once (majority over that instrument's hits) and used for every piece.
-POLARITY = [("Snare_bottom", "Snare_top", "Snare"), ("Kdrum_front", "Kdrum_back", "Kdrum_with_contact")]
+POLARITY = {
+    "drs": [("Snare_bottom", "Snare_top", "Snare"), ("Kdrum_front", "Kdrum_back", "Kdrum_with_contact")],
+    "crocell": [("SnareBottom", "SnareTop", "Snare"), ("KDrumOutside", "KDrumInside", "KDrumR")],
+}
 
 # piece: (instrument folder, max seconds, layers, round-robins)
 KITS = {
@@ -72,6 +90,35 @@ KITS = {
         # GM note -> piece (23 = semi-open hi-hat, for the hi-hat pedal; not a GM note)
         "notes": {35: "kick", 36: "kick", 37: "sidestick", 38: "snare", 40: "snare",
                   48: "tom1", 50: "tom1", 45: "tom2", 47: "tom2", 41: "tom3", 43: "tom3", 58: "tom3",
+                  42: "hhclosed", 44: "hhpedal", 46: "hhopen", 23: "hhhalf",
+                  49: "crash", 57: "crash2", 55: "splash", 52: "china",
+                  51: "ride", 59: "ride", 53: "bell"},
+    },
+    "crocell": {
+        "title": "CrocellKit (DrumGizmo), multi-mic mix",
+        "pieces": {
+            "kick":      ("KDrumR", 0.9, 10, 4),
+            "kick2":     ("KDrumL", 0.8, 6, 2),
+            "snare":     ("Snare", 1.2, 10, 4),
+            "sidestick": ("SnareRim", 0.7, 5, 3),
+            "rimshot":   ("SnareRimShot", 1.2, 4, 3),
+            "tom1":      ("Tom1", 1.4, 7, 3),
+            "tom2":      ("Tom2", 1.4, 7, 3),
+            "ftom1":     ("FTom1", 1.6, 6, 3),
+            "ftom2":     ("FTom2", 1.7, 6, 3),
+            "hhclosed":  ("HihatClosed", 0.55, 8, 3),
+            "hhpedal":   ("HihatPedal", 0.5, 3, 3),
+            "hhopen":    ("HihatOpen", 1.8, 6, 3),
+            "hhhalf":    ("HihatSemiOpen", 1.2, 6, 3),
+            "crash":     ("CrashL", 2.7, 6, 2),
+            "crash2":    ("CrashR", 2.7, 5, 2),
+            "ride":      ("RideR", 2.4, 6, 2),
+            "bell":      ("RideRBell", 2.4, 4, 2),
+            "china":     ("ChinaR", 2.2, 5, 2),
+            "splash":    ("SplashL", 1.8, 4, 2),
+        },
+        "notes": {35: "kick2", 36: "kick", 37: "sidestick", 38: "snare", 40: "rimshot",
+                  48: "tom1", 50: "tom1", 45: "tom2", 47: "tom2", 43: "ftom1", 58: "ftom1", 41: "ftom2",
                   42: "hhclosed", 44: "hhpedal", 46: "hhopen", 23: "hhhalf",
                   49: "crash", 57: "crash2", 55: "splash", 52: "china",
                   51: "ride", 59: "ride", 53: "bell"},
@@ -108,11 +155,11 @@ def load_mics(chans):
     return out, sr
 
 
-def polarity_flips(mics, sr):
+def polarity_flips(mics, sr, pairs):
     """Mics whose polarity is opposite to their reference (low band, lag within +-1.5 ms)."""
     flips = set()
     sos = butter(4, 800, "low", fs=sr, output="sos")
-    for mic, ref, _ in POLARITY:
+    for mic, ref, _ in (pairs or []):
         if mic not in mics or ref not in mics:
             continue
         a, b = sosfiltfilt(sos, mics[mic][: int(0.15 * sr)]), sosfiltfilt(sos, mics[ref][: int(0.15 * sr)])
@@ -190,8 +237,9 @@ def build(kit_id, src: Path, out: Path):
     spec = KITS[kit_id]
     mix_spec = MIX[kit_id]
     flips = set()
-    for mic, _, folder in POLARITY:
-        votes = [mic in polarity_flips(load_mics(chans)[0], load_mics(chans)[1]) for _, chans in read_instrument(src, folder)]
+    pairs = POLARITY.get(kit_id, [])
+    for mic, _, folder in pairs:
+        votes = [mic in polarity_flips(*load_mics(chans), pairs) for _, chans in read_instrument(src, folder)]
         if sum(votes) * 2 > len(votes):
             flips.add(mic)
         print("polarity: %s %s (%d of %d %s hits)" % (mic, "inverted" if mic in flips else "kept", sum(votes), len(votes), folder))

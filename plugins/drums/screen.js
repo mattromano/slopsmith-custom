@@ -155,7 +155,7 @@ const TIMING_IDS = ['relaxed', 'forgiving', 'normal', 'precision'];
 // kit is loaded.
 const DRUM_KITS = {
     drs:        { name: 'DRS (studio, multi-mic)', type: 'samples', dir: 'drs', note: 'real kit from 13 mics with our own mix and a real room, 4-8 velocity layers x 2-3 hits (default)' },
-    crocell:    { name: 'Crocell (rock)', type: 'samples', dir: 'crocell', note: 'real sampled rock kit, velocity layers' },
+    crocell:    { name: 'Crocell (rock, multi-mic)', type: 'samples', dir: 'crocell', note: 'real rock/metal kit from 15 mics with our own mix and a real room, up to 10 velocity layers x 4 hits' },
     virtuosity: { name: 'Virtuosity (jazz)', type: 'samples', dir: 'virtuosity', note: 'real sampled jazz kit, velocity layers' },
     jclive: { name: 'JCLive', sf: 'JCLive_sf2_file', note: 'tight, dry GM rock kit' },
     fluid:  { name: 'FluidR3 GM', sf: 'FluidR3_GM_sf2_file', note: 'full acoustic GM kit with room' },
