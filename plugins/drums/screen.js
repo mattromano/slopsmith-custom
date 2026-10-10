@@ -682,7 +682,7 @@ function _loadScript(url) {
 // module, the same file the bundled 3D guitar highway imports.
 
 const PLUGIN_ID = 'drums';
-const ASSET_VERSION = '5.9.0';   // cache-buster for the lazily loaded files
+const ASSET_VERSION = '5.10.1';   // cache-buster for the lazily loaded files
 const THREE_URL = '/static/vendor/three/three.module.min.js';
 const PLUGIN_STATIC = '/api/plugins/' + PLUGIN_ID + '/static/';
 
@@ -1186,7 +1186,7 @@ function _webMidiShim() {
             if (!set) {
                 set = new Set();
                 listeners.set(logicalSourceKey, set);
-                inp.onmidimessage = (e) => { for (const fn of set) { try { fn(e.data); } catch (err) { console.warn('[Drums] MIDI listener failed:', err); } } };
+                inp.onmidimessage = (e) => { for (const fn of set) { try { fn(e.data, e.timeStamp); } catch (err) { console.warn('[Drums] MIDI listener failed:', err); } } };
             }
             return {
                 handle: {
@@ -1431,7 +1431,7 @@ async function _midiConnect(key) {
             _midiHandle = res.handle;
             // The domain handle delivers raw MIDI data; adapt to the old
             // MIDIMessageEvent shape so _midiOnMessage stays unchanged.
-            _midiListener = (data) => _midiOnMessage({ data });
+            _midiListener = (data, timeStamp) => _midiOnMessage({ data, timeStamp });
             // Wire the listener only when at least one renderer is active. A
             // late open() from an async _midiInit that resolved post-destroy
             // would otherwise re-enable scoring/synth in the background.
@@ -1550,7 +1550,7 @@ function _midiOnMessage(e) {
     if (_cfg.midiChannel >= 0 && ch !== _cfg.midiChannel) return;
 
     if (cmd === 0x90 && velocity > 0) {
-        target._handleDrumHit(note, velocity);
+        target._handleDrumHit(note, velocity, e.timeStamp);
     }
     // Drums don't need note-off handling (one-shot hits)
 }
@@ -1927,9 +1927,25 @@ function createFactory(forceView) {
 
     // Song time for an input arriving now (between frames), minus the
     // user's input offset.
-    function _inputTime() {
-        const H = _libs && _libs.H;
-        const t = H ? H.estimateTime(_clock, _now()) : _clock.time;
+    // Song time of a hit. Best: the audio clock right now (highway_tweaks makes
+    // the stems clock precise) plus the chart/AV offset seen at the last frame,
+    // minus how long ago the MIDI message arrived (its own timestamp), so the
+    // hit is timed when the pad was struck, not when this code got to run or
+    // when the last frame was drawn. Fallback: extrapolate the frame clock
+    // (paused, no highway_tweaks, keyboard input).
+    let _audioOff = NaN;   // render time - audio time, from the last frame
+    function _inputTime(ts) {
+        const nowW = _now();
+        const lag = Number.isFinite(ts) && ts > 0 && ts <= nowW + 5 ? Math.min(0.25, (nowW - ts) / 1000) : 0;
+        let t = NaN;
+        try {
+            const a = document.getElementById('audio');
+            if (a && !a.paused && Number.isFinite(_audioOff)) t = a.currentTime + _audioOff - lag;
+        } catch (_) { /* ignore */ }
+        if (!Number.isFinite(t) || (Number.isFinite(_clock.time) && Math.abs(t - _clock.time) > 0.3)) {
+            const H = _libs && _libs.H;
+            t = (H ? H.estimateTime(_clock, nowW) : _clock.time) - lag;
+        }
         return t - (_cfg.inputOffsetMs || 0) / 1000;
     }
 
@@ -2288,6 +2304,43 @@ function createFactory(forceView) {
         _refreshDifficultyUI();
     }
 
+    // The timing meter's "Apply" pill: a transparent button over it sets the
+    // Input offset to the suggested value and restarts the meter.
+    let _timingBtn = null, _timingRectKey = '', _timingWant = null;
+    function _placeTimingBtn(rect, want) {
+        if (!rect || !_hwVisible || !_highwayCanvas || !_highwayCanvas.parentNode) {
+            if (_timingBtn && _timingRectKey !== '') { _timingBtn.style.display = 'none'; _timingRectKey = ''; }
+            return;
+        }
+        if (!_timingBtn) {
+            const b = document.createElement('button');
+            b.type = 'button';
+            b.className = 'drums-timing-apply';
+            b.setAttribute('aria-label', 'Apply the suggested input offset');
+            b.style.cssText = 'position:absolute;z-index:3;display:none;margin:0;padding:0;border:0;background:transparent;cursor:pointer;border-radius:999px;';
+            b.onclick = (e) => {
+                e.stopPropagation();
+                b.blur();
+                if (!Number.isFinite(_timingWant)) return;
+                _saveCfg('inputOffsetMs', _timingWant);
+                try { document.querySelectorAll('.drums-offset-input').forEach((el) => { el.value = String(_cfg.inputOffsetMs); }); } catch (_) { /* ignore */ }
+                if (_session && _session.resetTiming) _session.resetTiming();
+            };
+            const after = _hudCanvas || _highwayCanvas;
+            after.parentNode.insertBefore(b, after.nextSibling);
+            _timingBtn = b;
+        }
+        _timingWant = want;
+        const x = Math.round(_highwayCanvas.offsetLeft + rect.x), y = Math.round(_highwayCanvas.offsetTop + rect.y);
+        const w = Math.round(rect.w), h = Math.round(rect.h);
+        const key = x + '|' + y + '|' + w + '|' + h;
+        if (key === _timingRectKey) return;
+        _timingRectKey = key;
+        const st = _timingBtn.style;
+        st.left = x + 'px'; st.top = y + 'px'; st.width = w + 'px'; st.height = h + 'px';
+        st.display = '';
+    }
+
     // rect: the badge in canvas css px (from the HUD / 2D draw), or null to hide.
     function _placeBadge(rect) {
         if (!_badgeBtn) return;
@@ -2404,6 +2457,7 @@ function createFactory(forceView) {
         _toggleDiffMenu(false);
         if (_diffMenu) { _diffMenu.remove(); _diffMenu = null; }
         if (_badgeBtn) { _badgeBtn.remove(); _badgeBtn = null; }
+        if (_timingBtn) { _timingBtn.remove(); _timingBtn = null; }
         _badgeRectKey = '';
         if (_onDiffKey) { window.removeEventListener('keydown', _onDiffKey, true); _onDiffKey = null; }
     }
@@ -2468,6 +2522,7 @@ function createFactory(forceView) {
         if (!isReady) {
             _view3d.render({ time: t, session: null, wallNow: wall, message: 'Loading drums...' });
             _placeBadge(null);
+            _placeTimingBtn(null);
             return;
         }
         // Reload when the chart arrays change identity (new song /
@@ -2486,13 +2541,19 @@ function createFactory(forceView) {
         _clock.prevWall = _clock.wall;
         _clock.time = t;
         _clock.wall = wall;
+        try {
+            const a = document.getElementById('audio');
+            _audioOff = a && !a.paused && typeof window.__hwtLastSetT === 'number'
+                ? (+bundle.currentTime || 0) - window.__hwtLastSetT : NaN;
+        } catch (_) { _audioOff = NaN; }
         _session.update(t);
         const meta = _session.meta;
         const hint = meta && meta.activation.length
             ? 'Hit the marked note at the end of the fill to activate'
             : (_cfg.keyboard ? 'Press Enter to activate star power' : null);
-        _view3d.render({ time: t, session: _session, wallNow: wall, hint, difficulty: _badge });
+        _view3d.render({ time: t, session: _session, wallNow: wall, hint, difficulty: _badge, inputOffsetMs: _cfg.inputOffsetMs });
         _placeBadge(_view3d.difficultyRect);
+        _placeTimingBtn(_view3d.timingRect, _view3d.timingSuggest);
         const hctx = _view3d.hudContext;
         if (hctx && window.highway && typeof window.highway.fireDrawHooks === 'function') {
             const sz = _view3d.size;
@@ -2547,7 +2608,8 @@ function createFactory(forceView) {
 
     // ── MIDI event handler (called by _midiOnMessage via _activeInstance) ──
 
-    function _handleDrumHit(midiNote, velocity) {
+    // ts: when the MIDI message arrived (performance.now() clock), when known.
+    function _handleDrumHit(midiNote, velocity, ts) {
         if (midiNote < 0 || midiNote > 127) return;
 
         // Learn mode: assign this MIDI note to the pending lane.
@@ -2574,7 +2636,7 @@ function createFactory(forceView) {
             // 3D view: the engine scores. Learn/custom mapping wins, else GM.
             if (_session && _libs) {
                 const m = _libs.H.midiToPad(midiNote, _baseMapping(), _libs.E.padFromMidi);
-                if (m) _session.hit(_inputTime(), m.pad, { cymbal: m.cymbal, velocity });
+                if (m) _session.hit(_inputTime(ts), m.pad, { cymbal: m.cymbal, velocity });
             }
             return;
         }

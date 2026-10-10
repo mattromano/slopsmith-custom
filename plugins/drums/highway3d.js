@@ -739,7 +739,7 @@
                 }
             }
             const solos = ((s.meta && s.meta.solos) || []).map(r => ({ start: r.start, end: r.end, h: 0, n: 0, done: false }));
-            return { total: 0, timing: 0, rolls: 0, solo: 0, perfect: 0, dynamics: 0, rollSet: rolls, run: null,
+            return { total: 0, timing: 0, rolls: 0, solo: 0, perfect: 0, dynamics: 0, rollSet: rolls, run: null, offsets: [],
                 runs: [], solos, soloDone: [], feed: [] };
         }
         function bonusFeed(text, color) {
@@ -752,6 +752,9 @@
             const b = s.bonus;
             const mult = e.multiplier || 1;
             const nt = Number.isFinite(e.noteTime) ? e.noteTime : e.time;
+            // Early/late meter: hit time minus note time (ms, + = late), last 24 hits.
+            b.offsets.push(Math.round((e.time - nt) * 1000));
+            if (b.offsets.length > 24) b.offsets.shift();
             let pts = 0;
             if (Math.abs(e.time - nt) <= 0.025) { pts += 10 * mult; b.timing += 10 * mult; b.perfect++; }
             if (b.rollSet.has(noteKey(nt, e.pad))) {
@@ -947,6 +950,8 @@
                 return out;
             },
             getState() { return s.engine ? s.engine.getState() : null; },
+            /** Forget the early/late samples (after the input offset changed). */
+            resetTiming() { if (s.bonus) s.bonus.offsets = []; return api; },
             /** Bonus score on top of the engine's: totals, recent feed, the live solo. */
             getBonus() {
                 const b = s.bonus;
@@ -955,6 +960,7 @@
                 const live = t == null ? null : b.solos.find(x => t >= x.start - 0.5 && t < x.end + 0.3);
                 return { total: b.total, timing: b.timing, rolls: b.rolls, solo: b.solo, perfect: b.perfect, dynamics: b.dynamics,
                     feed: b.feed.slice(), rollActive: !!(b.run && b.run.n >= 3), runs: b.runs.slice(), solos: b.soloDone.slice(),
+                    offsets: b.offsets.slice(),
                     soloLive: live ? { h: live.h, n: live.n, active: t >= live.start && t < live.end } : null };
             },
             get engine() { return s.engine; },
@@ -1372,6 +1378,7 @@
         let toast = null; // {text, color, born}
         let cssW = 1, cssH = 1, dpr = 1;
         let diffRect = null;    // css-px rect of the HUD difficulty badge (last frame), or null
+        let timingRect = null, timingSuggest = null;   // the timing meter's Apply pill + its input offset
 
         function laneOf(pad) { return pad >= 1 && pad <= 4 ? pad - 1 : -1; }
         function padColor(pad, cymbal) {
@@ -1627,6 +1634,79 @@
                 ctx.textBaseline = 'alphabetic';
                 ctx.textAlign = align;
                 diffRect = { x: px, y: py, w: pw, h: ph };
+            }
+
+            // Early/late meter (score column, under the difficulty badge): the last 24
+            // hits as ticks on a +-100 ms bar (blue early, orange late), their median, and
+            // the Input offset that would centre them (Apply pill; screen.js puts a
+            // button over timingRect).
+            timingRect = null; timingSuggest = null;
+            {
+                const bl = frame.session && frame.session.getBonus ? frame.session.getBonus() : null;
+                const offs = bl && bl.offsets ? bl.offsets : [];
+                const EARLY = '#66c7ff', LATE = '#ff9a40', OKC = '#e5e7eb', RANGE = 100, DEAD = 10;
+                const ty = starY + (d && d.text ? 44 + 21 + 22 : 44 + 4) * scale;
+                const bw = 190 * scale, bh = 10 * scale;
+                const bx = align === 'right' ? lx - bw : lx;
+                ctx.shadowBlur = 0;
+                ctx.textAlign = 'left';
+                ctx.font = `700 ${11 * scale}px ${FONT}`;
+                if (!offs.length) {
+                    ctx.fillStyle = '#7a84a6';
+                    ctx.fillText('TIMING · waiting for hits', bx, ty);
+                } else {
+                    const srt = offs.slice().sort((a, b) => a - b), mid = srt.length >> 1;
+                    const med = srt.length % 2 ? srt[mid] : (srt[mid - 1] + srt[mid]) / 2;
+                    const col = (ms) => (Math.abs(ms) < DEAD ? OKC : ms < 0 ? EARLY : LATE);
+                    const word = Math.abs(med) < DEAD ? 'ON TIME' : (med > 0 ? '+' : '') + Math.round(med) + ' ms ' + (med < 0 ? 'EARLY' : 'LATE');
+                    ctx.fillStyle = '#7a84a6';
+                    ctx.fillText('TIMING', bx, ty);
+                    ctx.font = `800 ${13 * scale}px ${FONT}`;
+                    ctx.fillStyle = col(med);
+                    ctx.fillText(word, bx + 56 * scale, ty);
+                    const by = ty + 6 * scale;
+                    ctx.fillStyle = 'rgba(10,14,30,0.85)';
+                    ctx.fillRect(bx, by, bw, bh);
+                    ctx.fillStyle = 'rgba(160,170,200,0.5)';
+                    ctx.fillRect(bx + bw / 2 - 0.5, by, 1, bh);
+                    const px = (ms) => bx + bw / 2 + (bw / 2) * clamp(ms / RANGE, -1, 1);
+                    offs.forEach((ms, i) => {
+                        ctx.globalAlpha = 0.25 + 0.75 * (i + 1) / offs.length;
+                        ctx.fillStyle = col(ms);
+                        ctx.fillRect(px(ms) - 1, by + 1, 2, bh - 2);
+                    });
+                    ctx.globalAlpha = 1;
+                    ctx.fillStyle = col(med);
+                    ctx.fillRect(px(med) - 1.5, by - 2 * scale, 3, bh + 4 * scale);
+                    ctx.font = `600 ${10 * scale}px ${FONT}`;
+                    ctx.fillStyle = EARLY; ctx.fillText('early', bx, by + bh + 11 * scale);
+                    ctx.fillStyle = LATE; ctx.textAlign = 'right'; ctx.fillText('late', bx + bw, by + bh + 11 * scale);
+                    ctx.textAlign = 'left';
+                    const cur = Number.isFinite(frame.inputOffsetMs) ? frame.inputOffsetMs : 0;
+                    const hy = by + bh + 27 * scale;
+                    ctx.font = `600 ${11 * scale}px ${FONT}`;
+                    if (offs.length >= 6 && Math.abs(med) >= DEAD) {
+                        const want = clamp(Math.round(cur + med), -250, 250);
+                        const txt = 'input offset ' + cur + ' → ' + want + ' ms';
+                        ctx.fillStyle = '#c3cbe6';
+                        ctx.fillText(txt, bx, hy);
+                        const tw = ctx.measureText(txt).width;
+                        const pw = 46 * scale, ph = 17 * scale, ppx = bx + tw + 8 * scale, ppy = hy - 12.5 * scale;
+                        ctx.fillStyle = 'rgba(30,40,70,0.95)';
+                        _pill(ctx, ppx, ppy, pw, ph); ctx.fill();
+                        ctx.strokeStyle = '#7f8cc0'; ctx.lineWidth = 1; ctx.stroke();
+                        ctx.fillStyle = '#f1f5f9'; ctx.textAlign = 'center';
+                        ctx.font = `700 ${10 * scale}px ${FONT}`;
+                        ctx.fillText('Apply', ppx + pw / 2, ppy + ph / 2 + 3.5 * scale);
+                        ctx.textAlign = 'left';
+                        timingRect = { x: ppx, y: ppy, w: pw, h: ph };
+                        timingSuggest = want;
+                    } else if (offs.length >= 6) {
+                        ctx.fillStyle = '#7a84a6';
+                        ctx.fillText('input offset ' + cur + ' ms looks right', bx, hy);
+                    }
+                }
+                ctx.textAlign = align;
             }
 
             // Multiplier badge + streak.
@@ -1985,6 +2065,8 @@
             get size() { return { w: cssW, h: cssH, dpr }; },
             get lastWall() { return wallLast; },
             get difficultyRect() { return diffRect; },
+            get timingRect() { return timingRect; },
+            get timingSuggest() { return timingSuggest; },
         };
     }
 
