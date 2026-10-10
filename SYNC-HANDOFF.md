@@ -22,7 +22,62 @@ reloads JS, `routes.py` changes need an app restart; commit and push straight to
 > Verify everything with measurements (logged judgments, timestamps, test harnesses), not by feel alone.
 > Never play song audio in browser-pane tests (seek while paused, or silence Web Audio output).
 
-## Where things stand (what exists today)
+## Overnight session 2026-10-10: what changed (read this first)
+
+All measured with `tools/sync-bench/` (headed Edge launched by Playwright with `--mute-audio`, so songs really
+play but nothing reaches the speakers; server `sync-test` on :8003 uses a scratch copy of the AppData plugins).
+Everything is committed to `main` and deployed to `%APPDATA%\slopsmith-desktop\plugins` (drums 5.14.0,
+highway_tweaks 1.20.0, multiplayer 1.1.0, **new sync_lab 1.0.0**). **Restart the app** (new plugin + routes).
+
+**Found and fixed (numbers are before → after):**
+1. Drum highway drew from the 60 Hz `bundle.currentTime` sample: per-frame step error sd 3.67 ms, p95 13 ms
+   (visible judder) → sd 0.09, p95 0.16 (frame-exact clock, `__hwtFrameTime`).
+2. **Split view never applied the A/V offset** to panel highways (core only sets it on the main highway) and
+   panels mixed in the main highway's timer: at A/V +30 the drum panel drew at −8 ms (sd 3.8), the guitar 3D panel
+   at 0 ms (sd 4.8) → both +30.03 (sd 0.05). Split-view drum hits were judged −29.6 ms (sd 4.3) → 0.0 ± 0.07.
+3. Drum engine clamped back-dated hits to the frame time (YARG QueueInput): +9 ms late bias + up to a frame of
+   jitter → engine now trails the frame clock by 60 ms; hits keep their MIDI strike time.
+4. **Pad sounds reach the ears ~50 ms after the stick** (Web Audio on the Realtek output: 10 ms buffer + 40 ms
+   device, plus up to a frame of main-thread delay). Matt's app uses the SB Live! GM kit at the default volume.
+   Clone Hero plays no pad sounds (you hear the module). Fix options on the Sync screen: "Pad sounds off" + plug
+   the PC's headphone out into the module's AUX IN and wear headphones on the module.
+5. Drum sounds were "2D": SB Live! was mono (L/R correlation 1.00), bone dry. New drum bus: per-piece panning for
+   the GM kits, stereo convolution room (generated IR), low shelf + presence, **Room** setting (default 35 %), no
+   added delay on the dry path → snare correlation 0.59, room tail −24 → −14 dB.
+6. Multiplayer: guests ignored transit time and output latency and never corrected < 50 ms; its ±0.2 % speed
+   nudges toggled the stems pitch worklet (any rate ≠ 1 engages it, adding its buffering delay). Now: host clock
+   stamps + output-latency difference, min-RTT clock sync with re-syncs, seek-only correction (> 30 ms for 3
+   heartbeats, learned seek lead; stems play/seek freezes the clock 120–160 ms). Two browsers on one PC:
+   −6..−9 ms steady (sd 0.07), knocked 80 ms off → back in ~1 s. (The Mac needs the same plugins for this.)
+7. highway_tweaks stems patch: speed changes re-anchored on the coarse `ctx.currentTime` (±5 ms clock-vs-audio
+   jump per speed change) → anchored on the precise clock.
+8. **MIDI**: at session start the Alesis was visible to WinMM again (Unicode call OK), but later the kit
+   **powered itself off** (gone from Device Manager), so the browser couldn't be re-checked with it on. New
+   fallback in drums: **direct MIDI input** (`native_midi.py`, WinMM ANSI via ctypes → loopback WebSocket with
+   driver timestamps). Shown as "Alesis Drum Module · direct" in the MIDI list when Web MIDI doesn't list the
+   kit. Verified with a fake input only (40/40 hits judged, stamps within a 2 ms window).
+
+**New: Sync Lab (nav → Plugins → Sync).** Guided calibration through the real player (works in split view, one
+result per panel): a 64 s "Sync Calibration" song (written into the library as
+`sloppak/_Sync_Calibration_v2.sloppak`): Listen (screen black, play by ear) → Watch (no clicks) → Play. Ear vs eye
+gives the A/V offset; eye gives each player's input offset (guitar latency for every detector, drums input
+offset). Results card with Apply / Apply all; logged to `plugins/sync_lab/sync_log.jsonl` with every raw sample.
+**A/V auto-follow**: if Web Audio's output latency changes (other headphones), the A/V offset moves with it.
+Simulated end to end (drummer + guitarist with known latencies): suggestions match the model within ~3 ms and
+converge to ±3 ms after Apply all.
+
+**For Matt in the morning (needs a human):**
+1. Restart Slopsmith. Turn the kit on (it auto-powers off); check Plugins → Drums shows it (Web MIDI or "· direct").
+2. Plugins → Sync → **Split: guitar + drums** (or Drums / Guitar alone). Play the three parts honestly (eyes
+   really closed in Listen), then **Apply all**. Run it again to confirm it says "already right".
+3. Decide on pad sound: try "Pad sounds off" + module AUX IN; else try kit Crocell and Room 35 %.
+4. Analyse `sync_lab/sync_log.jsonl` and `highway_tweaks/jank_log.jsonl` (judgments) after a few songs.
+
+**Still open:** real-kit timing check (needs hits), guitar detection delay of the native engine (Sync Lab measures
+it in place), the 2D drum view still judges on the frame time (3D view is the default), per-panel guitar latency is
+one shared Note Detection setting, multiplayer test across two real machines (Mac needs the new plugins).
+
+## Where things stood before the overnight session
 
 ### Clocks: how time flows
 - **Song clock:** core `static/highway.js` `setTime(t)` is driven by app.js's 60 Hz tick from
@@ -114,3 +169,4 @@ the highway: ear-vs-eye median difference → A/V suggestion). See the long comm
 
 ## Versions at handoff
 highway_tweaks 1.17.0 · drums 5.10.1 · play_queue 1.0.1 · play_counts 1.3.0 (main @ c3e9272 + this doc).
+After the overnight session: highway_tweaks 1.20.0 · drums 5.14.0 · multiplayer 1.1.0 · sync_lab 1.0.0.
