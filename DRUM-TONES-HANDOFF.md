@@ -5,6 +5,35 @@ Plugin: `plugins/drums` (5.15.0). Deploy = copy into `%APPDATA%\slopsmith-deskto
 (`tools/sync-bench/deploy.sh`); bump `plugin.json` version every time (scripts are cached by `?v=`); restart the app
 for `routes.py` changes. Commit and push straight to `main`.
 
+## Status (2026-10-10, second session): Phases 0-2 done, Phase 3 partly
+
+Shipped (drums 5.15.1 `be6987f`, 5.16.0 `8823b9a`, installed in AppData incl. the drs samples):
+- **Auto kick fixed (5.15.1):** auto notes were scheduled off the frame clock: +28 ms late, +-16 ms wobble,
+  ~7 % played twice. Now song time -> stems AudioContext -> drum AudioContext via getOutputTimestamp, one
+  forward-only shared schedule, cancelled on pause / seek. `tools/sync-bench/autosched.mjs`: 0.1 +- 0.1 ms, no
+  doubles. (`autokick.mjs` records both contexts to WAV.)
+- **Phase 0:** MIDI monitor on Plugins -> Drums (Record / Save log -> `<config>/drums/midi_log.jsonl`).
+  **Matt still has to record** (each pad soft -> hard, hi-hat pedal open/half/closed/chick, choke).
+- **Phase 1:** balance by perceived loudness for all 7 kits (`tools/sync-bench/balance.mjs` +
+  `plugins/drums/tools/apply_balance.py`): every piece within 1.5 dB of the target table (exceptions at the
+  +12 dB cap: Chaos note 59 +1.7, DRS hi-hat pedal +2.4). Velocity law 20*1.75*log10(v/127) dB for all kits
+  (snare 20->127 measured 28-29 dB); sampled layers levelled onto it (`tools/kit_loudness.py`) and blended
+  +-7 velocity across boundaries; GM soft hits darker (low-pass bands); velocity curve setting; GM double
+  pad volume fixed; GM sounds ring naturally (were cut at 0.5 s) + hi-hat choke; voice limits; note 24 ->
+  lane sound (currently closed hi-hat; confirm with the monitor).
+- **Phase 2:** new default kit **DRS** from DRSKit 2.1 multichannel (`tools/build_drumgizmo_kit.py`): own mix of
+  13 mics, snare-bottom and kick-front polarity inverted (decided on their own drums), up to 8 layers x 3 hits,
+  semi-open hi-hat on note 23. 6.3 MB ogg, ~130 MB decoded. Source zip in the session scratchpad (re-download
+  `https://drumgizmo.org/kits/DRSKit/DRSKit2_1.zip`, 2.8 GB). Kit .ogg files are gitignored (all kits).
+
+Next:
+1. Matt: record the MIDI monitor, then map note 24 and the CC4 pedal: pick closed / semi-open (note 23) /
+   open by pedal position, pedal chick on close, choke on CC4 down after an open hat.
+2. Matt's ears: balance targets (`balance.mjs` TARGET), the law (1.75; Soft curve if too quiet), DRS mix
+   (`MIX` in build_drumgizmo_kit.py).
+3. Lazy decode for DRS (mid layers first) if load time / memory matters; CrocellKit multichannel as a 2nd
+   multi-mic kit; optional real-room stem instead of the convolution room for DRS.
+
 ## GOAL (paste as the session goal)
 
 > Make the drum sounds as close to a real, well-recorded kit as possible, and fully dynamic:
