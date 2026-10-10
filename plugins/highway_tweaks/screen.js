@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.19.0' };
+    window.__highwayTweaks = { version: '1.20.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -387,6 +387,13 @@
                 return ind + "if (/^full$/i.test(r.id) && ok.some((x) => !/^full$/i.test(x.id))) on = false;\n" + m;
             });
             if (hits.length !== 3) { hits.length = 0; return null; }
+            // Speed changes re-anchor the playhead: stock takes the precise
+            // playhead (above) but stores the coarse ctx.currentTime as the new
+            // anchor, which moved the clock against the audio by up to ~5 ms
+            // (half an audio callback) on every speed change. Anchor on the
+            // same precise clock.
+            code = code.replace(/(transport\.baseOffset = transportPlayhead\(\);\r?\n\s*)transport\.baseCtxTime = ctx\.currentTime;/,
+                (m, a) => { hits.push('rate-anchor'); return a + 'transport.baseCtxTime = __hwtCtxNow();'; });
             // Cent-accurate pitch shift (UI: the pitch_shift plugin). Reuses the
             // master-bus SoundTouch worklet that already cancels the speed
             // slider's pitch change: target pitch = 2^(cents/1200) / rate.

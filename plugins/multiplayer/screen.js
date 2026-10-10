@@ -29,7 +29,14 @@ let _pendingSyncResolve = null;
 
 // Playback sync
 let _heartbeatInterval = null;
-let _driftResetTimer = null;
+let _clockRtt = 0;             // RTT of the round _clockOffset came from (ms)
+let _clockResyncTimer = null;
+let _mpSettleUntil = 0;        // performance.now() until which heartbeats are ignored (play / seek starting)
+let _mpSeekLead = 0.15;        // s a guest seek aims ahead (stems restart time; tuned per machine)
+let _mpSeekPending = false;    // the next settled heartbeat measures how our seek landed
+let _mpOffCount = 0;           // heartbeats in a row with drift over 30 ms
+let _mpLastDriftMs = NaN;      // last guest drift vs the host (debug)
+const _aheadSamples = [];      // this machine's Web Audio render-ahead (ms), recent samples
 let _songLoading = false;
 
 // Recording
@@ -130,7 +137,7 @@ let _origSetSpeed = null;
 
 const STORAGE_KEY = 'slopsmith_mp';
 const SESSION_STORAGE_KEY = 'mp_session';
-const SYNC_ROUNDS = 5;
+const SYNC_ROUNDS = 9;
 const HEARTBEAT_HZ = 100;  // ms between heartbeats
 
 // Close codes from PROTOCOL.md "Endpoints" / "v1 server policy".
@@ -1682,6 +1689,7 @@ window.mpLeaveRoom = async function () {
 function _cleanup() {
     _stopRecording();
     _stopHeartbeat();
+    if (_clockResyncTimer) { clearInterval(_clockResyncTimer); _clockResyncTimer = null; }
     _restorePlaybackControls();
     _audioListenerCleanup();
     _audioQualityStopTimer();
@@ -3792,7 +3800,10 @@ function _handleMessage(msg) {
 
 // ── Clock Sync ─────────────────────────────────────────────────────────
 
-async function _doClockSync() {
+// Server-time offset (server - local, ms) from the round with the smallest
+// RTT (its transit times are the most symmetric). Re-measured every 30 s:
+// two machines' performance.now() clocks drift apart by tens of ppm.
+async function _measureClockOffset() {
     const rounds = [];
 
     for (let i = 0; i < SYNC_ROUNDS; i++) {
@@ -3821,11 +3832,23 @@ async function _doClockSync() {
 
     if (rounds.length >= 3) {
         rounds.sort((a, b) => a.rtt - b.rtt);
-        const mid = Math.floor(rounds.length / 2);
-        _clockOffset = rounds[mid].offset;
+        _clockOffset = rounds[0].offset;
+        _clockRtt = rounds[0].rtt;
     }
+    return rounds.length;
+}
 
-    console.log(`[MP] Clock sync: offset=${_clockOffset.toFixed(1)}ms (${rounds.length} rounds)`);
+async function _doClockSync() {
+    const n = await _measureClockOffset();
+    console.log(`[MP] Clock sync: offset=${_clockOffset.toFixed(1)}ms rtt=${_clockRtt.toFixed(1)}ms (${n} rounds)`);
+    if (_clockResyncTimer) clearInterval(_clockResyncTimer);
+    const resync = () => {
+        if (!_ws || _ws.readyState !== WebSocket.OPEN || _pendingSyncResolve) return;
+        _measureClockOffset().catch(() => {});
+    };
+    setTimeout(resync, 3000);
+    setTimeout(resync, 10000);
+    _clockResyncTimer = setInterval(resync, 30000);
 
     // If host, start heartbeat
     if (_isHost) _startHeartbeat();
@@ -3846,6 +3869,11 @@ function _startHeartbeat() {
             type: 'heartbeat',
             time: audio.currentTime,
             client_time: performance.now(),
+            // When `time` was sampled, on the server's clock, and how far
+            // ahead of the speakers this machine renders: guests use both to
+            // line up what they HEAR with what the host hears.
+            host_server_t: _serverNow(),
+            ahead_ms: _aheadMs(),
         }));
     }, HEARTBEAT_HZ);
 }
@@ -3871,9 +3899,15 @@ function _onPlaybackState(msg) {
         // can resume. Best-effort; no-op if the context is already
         // running or doesn't yet exist.
         _audioListenerMaybeResumeContext();
-        audio.currentTime = msg.time;
+        // Start where the host is: both transports take the same ~150 ms to
+        // start, so only the message's transit time (host clock stamp ->
+        // now, on the server clock) is added, plus the output-latency
+        // difference; heartbeats take over once both have settled.
+        audio.currentTime = _hostTimeNow(msg, msg.speed || 1.0);
         audio.playbackRate = msg.speed || 1.0;
         audio.play().catch(() => {});
+        _mpSettleUntil = performance.now() + 700;
+        _mpSeekPending = false;
         if (typeof isPlaying !== 'undefined') isPlaying = true;
         const btn = document.getElementById('btn-play');
         if (btn) btn.textContent = '\u23F8 Pause';
@@ -3900,31 +3934,77 @@ function _onPlaybackState(msg) {
     if (speedSlider) speedSlider.value = Math.round((msg.speed || 1.0) * 100);
 }
 
+// This machine's Web Audio render-ahead (ms): how far its song clock runs
+// ahead of what comes out of the speakers (highway_tweaks measures it from
+// getOutputTimestamp). Median of recent samples; NaN when unknown.
+function _aheadMs() {
+    try {
+        const v = window.__hwtRenderAheadMs;
+        if (Number.isFinite(v) && window.__hwtStemsSmooth && window.__hwtStemsSmooth()) {
+            _aheadSamples.push(v);
+            if (_aheadSamples.length > 60) _aheadSamples.shift();
+        }
+    } catch (_) { /* ignore */ }
+    if (_aheadSamples.length < 5) return NaN;
+    const s = _aheadSamples.slice().sort((a, b) => a - b);
+    return s[s.length >> 1];
+}
+
+function _serverNow() { return performance.now() + _clockOffset; }
+
+// Where this guest's song clock should be right now for its speakers to
+// play the same moment the host's speakers are playing: the host's time,
+// moved on by how long ago (server clock) it was sampled, plus the
+// difference in output latency. Old hosts send neither field: the server's
+// receive time is the next best stamp.
+function _hostTimeNow(msg, speed) {
+    let t = msg.time;
+    const sent = Number.isFinite(msg.host_server_t) ? msg.host_server_t : msg.server_time;
+    if (Number.isFinite(sent)) t += Math.max(0, Math.min(2, (_serverNow() - sent) / 1000)) * speed;
+    const mine = _aheadMs();
+    if (Number.isFinite(mine) && Number.isFinite(msg.ahead_ms)) t += (mine - msg.ahead_ms) / 1000;
+    return t;
+}
+
+// Keep the guest locked to the host.
+//  - After play / a seek, the stems transport's clock stands still for
+//    ~120-160 ms while it restarts (measured), on the host and here, so
+//    heartbeats are ignored until both have settled (_mpSettleUntil).
+//  - A drift over 30 ms, seen on 3 heartbeats in a row (not a one-off
+//    hiccup): seek, aiming _mpSeekLead ahead to cover that restart time; the
+//    drift seen after it settles tunes the lead (it differs per machine).
+//  - No speed nudging: any playbackRate other than 1 switches the stems
+//    pitch-correction worklet in or out, which adds or drops its buffering
+//    delay (an audible jump each time). Two machines' audio clocks only
+//    drift apart by a few ms per minute, so an occasional seek is better.
 function _onHeartbeat(msg) {
     if (_isHost || _songLoading) return;
     const audio = document.getElementById('audio');
     if (!audio || audio.paused) return;
-
-    const drift = audio.currentTime - msg.time;
+    const now = performance.now();
+    if (now < _mpSettleUntil) return;
+    const baseSpeed = (_room && _room.speed) || 1.0;
+    const expected = _hostTimeNow(msg, baseSpeed);
+    const drift = audio.currentTime - expected;
     const absDrift = Math.abs(drift);
-
-    if (absDrift > 0.5) {
-        // Hard seek — drop scheduled peer audio so it doesn't play out of
-        // sync with the new chart position.
+    _mpLastDriftMs = drift * 1000;
+    if (_mpSeekPending) {
+        // First look after our own seek: how far off did it land?
+        _mpSeekPending = false;
+        if (absDrift < 0.25) _mpSeekLead = Math.max(0, Math.min(0.4, _mpSeekLead - drift));
+    }
+    if (Math.abs((audio.playbackRate || 1) - baseSpeed) > 1e-6) audio.playbackRate = baseSpeed;
+    _mpOffCount = absDrift > 0.03 ? _mpOffCount + 1 : 0;
+    if (absDrift > 0.25 || _mpOffCount >= 3) {
+        // Seek — drop scheduled peer audio so it doesn't play out of sync
+        // with the new chart position.
+        _mpOffCount = 0;
         _audioListenerOnChartPause();
-        audio.currentTime = msg.time;
-        if (typeof highway !== 'undefined') highway.setTime(msg.time);
-    } else if (absDrift > 0.05) {
-        // Micro-adjust: if ahead slow down, if behind speed up
-        const baseSpeed = (_room && _room.speed) || 1.0;
-        const correction = drift > 0 ? -0.002 : 0.002;
-        audio.playbackRate = baseSpeed + correction;
-
-        if (_driftResetTimer) clearTimeout(_driftResetTimer);
-        _driftResetTimer = setTimeout(() => {
-            audio.playbackRate = baseSpeed;
-            _driftResetTimer = null;
-        }, 500);
+        const to = expected + _mpSeekLead * baseSpeed;
+        audio.currentTime = to;
+        if (typeof highway !== 'undefined') highway.setTime(to);
+        _mpSettleUntil = now + 700;
+        _mpSeekPending = true;
     }
 }
 
@@ -4037,6 +4117,8 @@ function mpTogglePlay() {
             type: 'play',
             time: audio.currentTime,
             speed: audio.playbackRate,
+            host_server_t: _serverNow(),
+            ahead_ms: _aheadMs(),
         }));
         const btn = document.getElementById('mp-btn-play');
         if (btn) btn.textContent = 'Pause';
@@ -5361,6 +5443,7 @@ window.mpMixerExport = async function () {
 
 window.slopsmithMultiplayerDebug = {
     getAudioRxStats: _audioGetRxStats,
+    getSync: () => ({ clockOffset: _clockOffset, rtt: _clockRtt, aheadMs: _aheadMs(), lastDriftMs: _mpLastDriftMs, seekLeadMs: _mpSeekLead * 1000, isHost: _isHost }),
     getListenerState: () => ({
         broadcasterId: _audioListenerBroadcasterId,
         params: _audioListenerBroadcastParams,

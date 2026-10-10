@@ -26,3 +26,17 @@ Results, 2026-10-10 (A/V +30 for split):
 | split: guitar 3D panel offset (want +30) | 0.1 ms, sd 4.8 | +30.03, sd 0.05 |
 | split: guitar 3D panel judder | sd 3.75 ms | sd 0.09 |
 | split: drum hit error | −29.6 ms, sd 4.3 (−41..−26) | 0.0 ± 0.07 |
+
+## Multiplayer (mp.mjs)
+
+Two separate muted browsers (host + guest) in one room, both on this PC (process clock skew measured 0.0-0.1 ms).
+`SECS=40 node mp.mjs`, `TL=1` prints a timeline, `PERTURB=80` knocks the guest 80 ms off at 12 s.
+
+| | before (multiplayer 1.0.0) | after (1.1.0) |
+|---|---|---|
+| guest - host, steady state | -10.2 ms, never corrected (50 ms dead band) | -6 to -9 ms, sd 0.07 ms |
+| small drift correction | +-0.2 % rate nudges: each toggles the stems pitch worklet (adds/drops its delay) | none: 3 heartbeats > 30 ms -> one seek with a learned lead |
+| knocked 80 ms off | (rate nudges, ~25 s) | back to -3 ms in ~1 s |
+
+Measured along the way (seekprobe.mjs / rateprobe.mjs): a stems play or seek freezes the clock 120-160 ms
+before audio restarts; playbackRate changes take effect at once (1.003 -> clock 1.0024).

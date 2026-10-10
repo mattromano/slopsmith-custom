@@ -1079,6 +1079,15 @@ def _setup_lan_relay(app, mp_dir):
         return status()
 
 
+def _num_or_none(v):
+    """A finite number from a client message, else None (JSON null)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
+
 def setup(app, context):
     config_dir = context["config_dir"]
     STATIC_DIR = Path(__file__).resolve().parent.parent.parent / "static"
@@ -1993,6 +2002,9 @@ def setup(app, context):
                 "time": room["time"],
                 "speed": room["speed"],
                 "server_time": server_time,
+                # host clock stamp + output latency, for guests to line up (screen.js _hostTimeNow)
+                "host_server_t": _num_or_none(data.get("host_server_t")),
+                "ahead_ms": _num_or_none(data.get("ahead_ms")),
             }, exclude=player_id)
 
         elif msg_type == "pause" and is_host:
@@ -2033,6 +2045,8 @@ def setup(app, context):
                 "time": room["time"],
                 "state": room["state"],
                 "server_time": server_time,
+                "host_server_t": _num_or_none(data.get("host_server_t")),
+                "ahead_ms": _num_or_none(data.get("ahead_ms")),
             }, exclude=player_id)
 
         elif msg_type == "start_recording" and is_host:
