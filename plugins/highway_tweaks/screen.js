@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.16.0' };
+    window.__highwayTweaks = { version: '1.17.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -509,7 +509,9 @@
             code = code.replace(/( {12})_recordDiagnostic\(judgment\);\r?\n/, (m, ind) => {
                 hits.push('timing-hook');
                 return m + ind + 'try { if (isDefault) { window.__hwtNdLatency = () => latencyOffset;' +
-                    ' if (window.__hwtOnJudgment) window.__hwtOnJudgment(judgment, currentSection); } } catch (_) {}\n';
+                    ' if (window.__hwtOnJudgment) window.__hwtOnJudgment(judgment, currentSection); }' +
+                    ' else if (window.__hwtOnPanelJudgment) window.__hwtOnPanelJudgment(judgment, currentSection,' +
+                    ' { hw: resolveHw(), container: opts.container || null }); } catch (_) {}\n';
             });
             return code;
         },
@@ -1355,9 +1357,14 @@
 // Accuracy elsewhere in the card shows two decimals. The final score and
 // its breakdown are exposed as window.__hwtScore for play_counts (best
 // score per song, end-of-song card).
-(function scoreEngine() {
+// Split view: every panel with Note Detection on gets its own scorer (same
+// rules) and a compact score box in its panel (score, multiplier, streak,
+// accuracy, solo meter). OPT: { isDefault } for the main player, or
+// { hw, container } for a panel.
+function scoreEngineFor(OPT) {
+    OPT = OPT || {};
     const LS = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : v; } catch (_) { return d; } };
-    if (LS('hwtPerfHudOff', '0') === '1') return;
+    if (LS('hwtPerfHudOff', '0') === '1') return null;
     const GOLD = '#ffc531', BLUE = '#45c8ff', PURPLE = '#b77bff', ORANGE = '#ff9a40', DIM = '#8b95a5', WHITE = '#f1f5f9';
     const SOLO_RE = /solo/i;
     const DENSE_N = 6, DENSE_WIN = 0.5;           // >= 6 single notes within +-0.5 s
@@ -1370,11 +1377,12 @@
     const TECH_BONUS = Object.fromEntries(TECH.map(([name, , b]) => [name, b]));
     const rawKey = (t, s) => Math.round(t * 1000) * 10 + (s | 0);
     const fmt = (n) => Math.round(n).toLocaleString('en-US');
-    const hw = () => window.highway;
+    const hw = () => OPT.hw || window.highway;
+    const popFn = () => (OPT.isDefault ? window.__hwtPopup : null);
 
     let SC, chart = null, lastTotal = 0;
     const reset = () => {
-        SC = { score: 0, streak: 0, notes: 0, base: 0, timing: 0, tech: 0, techN: {}, dense: 0, soloBonus: 0,
+        SC = { score: 0, streak: 0, bestStreak: 0, hits: 0, notes: 0, base: 0, timing: 0, tech: 0, techN: {}, dense: 0, soloBonus: 0,
             solos: {}, soloDone: [], run: null, runs: [], feed: [] };
     };
     reset();
@@ -1492,7 +1500,7 @@
         SC.run = null;
         if (r.n >= RUN_MIN) {
             SC.runs.push({ h: r.h, n: r.n, pts: Math.round(r.pts) });
-            const pop = window.__hwtPopup;
+            const pop = popFn();
             if (pop) pop('TECHNICAL RUN ' + r.h + '/' + r.n + '  +' + fmt(r.pts), r.h === r.n ? GOLD : ORANGE, true);
         }
     }
@@ -1507,28 +1515,29 @@
         const rating = perfect ? 'PERFECT SOLO!' : pct >= 95 ? 'AWESOME SOLO!' : pct >= 90 ? 'GREAT SOLO!' : pct >= 80 ? 'GOOD SOLO!'
             : pct >= 70 ? 'SOLID SOLO' : pct >= 60 ? 'OKAY SOLO' : 'MESSY SOLO';
         SC.soloDone.push({ name: s.name, h: st.h, n: st.n, pct: Math.round(pct * 100) / 100, bonus: Math.round(bonus), rating });
-        const pop = window.__hwtPopup;
+        const pop = popFn();
         if (pop && st.n > 0) {
             pop(rating, perfect ? GOLD : pct >= 90 ? BLUE : WHITE);
             setTimeout(() => pop(pct.toFixed(2) + '%  ·  solo bonus +' + fmt(bonus), perfect ? GOLD : BLUE, true), 900);
         }
     }
 
-    const prevHook = window.__hwtOnJudgment;
-    window.__hwtOnJudgment = (j, section) => {
-        if (prevHook) { try { prevHook(j, section); } catch (_) { /* ignore */ } }
+    function judge(j) {
         if (!j || !Number.isFinite(j.noteTime)) return;
-        try {
-            const st = window.noteDetect.getStats();
-            const total = st.hits + st.misses;
-            if (total < lastTotal) reset();
-            lastTotal = total;
-        } catch (_) { /* ignore */ }
+        if (OPT.isDefault) {
+            try {
+                const st = window.noteDetect.getStats();
+                const total = st.hits + st.misses;
+                if (total < lastTotal) reset();
+                lastTotal = total;
+            } catch (_) { /* ignore */ }
+        }
         const info = chartInfo();
         const tms = Math.round(j.noteTime * 1000);
         const mult = Math.min(4, 1 + Math.floor(SC.streak / 10));
         const f = factorNow();
         SC.notes++;
+        if (j.hit) SC.hits++;
         const dense = !j.chord && info.dense.has(tms);
         let densePts = 0;
         if (j.hit) {
@@ -1550,7 +1559,8 @@
             SC.score += (timed + techPts) * k + densePts;
             for (const t of techs) SC.techN[t] = (SC.techN[t] || 0) + 1;
             if (techs.length) feed('+' + fmt(techPts * k) + ' ' + techs.join(' + '), PURPLE);
-            if (techs.includes('pinch harmonic') && window.__hwtPopup) window.__hwtPopup('PINCH HARMONIC!  +' + fmt(techPts * k), PURPLE, true);
+            if (techs.includes('pinch harmonic') && popFn()) popFn()('PINCH HARMONIC!  +' + fmt(techPts * k), PURPLE, true);
+            if (SC.streak > SC.bestStreak) SC.bestStreak = SC.streak;
         } else {
             SC.streak = 0;
         }
@@ -1564,11 +1574,27 @@
             const st = SC.solos[solo.id] || (SC.solos[solo.id] = { h: 0, n: 0, done: false });
             if (!st.done) { st.n++; if (j.hit) st.h++; }
         }
-    };
+    }
+    if (OPT.isDefault) {
+        const prevHook = window.__hwtOnJudgment;
+        window.__hwtOnJudgment = (j, section) => {
+            if (prevHook) { try { prevHook(j, section); } catch (_) { /* ignore */ } }
+            judge(j, section);
+        };
+    }
 
     // ── DOM: score block in the stats card, solo meter + glow on the highway ──
     const css = document.createElement('style');
+    if (!OPT.isDefault) css.disabled = true;
     css.textContent = `
+        .hwt-pscore { position: absolute; left: 8px; top: 34px; z-index: 22; pointer-events: none; text-align: left;
+            font: 13px system-ui, sans-serif; color: #cbd5e1; text-shadow: 0 1px 4px #000; background: rgba(8,12,18,.55);
+            border: 1px solid rgba(255,255,255,.08); border-radius: 8px; padding: 6px 10px; min-width: 120px; }
+        .hwt-pscore .pts { font: 900 26px/1 system-ui, sans-serif; color: #f1f5f9; font-variant-numeric: tabular-nums; }
+        .hwt-pscore .row { margin-top: 2px; white-space: nowrap; }
+        .hwt-pscore b { color: #f1f5f9; }
+        .hwt-pscore .feed { font: 700 12px system-ui, sans-serif; }
+        .hwt-pscore .tag { font: 800 10px system-ui, sans-serif; letter-spacing: 1px; padding: 0 5px; border-radius: 3px; margin-right: 4px; }
         .hwt-score { font: 15px system-ui, sans-serif; color: #cbd5e1; text-shadow: 0 2px 8px #000; margin-top: 16px;
             text-align: center; min-width: 200px; }
         .hwt-score .pts { font: 900 46px/1 system-ui, sans-serif; color: ${WHITE}; letter-spacing: -1px; font-variant-numeric: tabular-nums; }
@@ -1590,14 +1616,21 @@
             background: linear-gradient(to top, rgba(61,123,255,.22), transparent 55%); }
         .hwt-solo-glow.on { opacity: 1; }
     `;
-    document.head.appendChild(css);
+    if (OPT.isDefault) document.head.appendChild(css);
 
     let box = null, meter = null, glow = null, lastHtml = '';
     function ensure(hud) {
-        const root = hud.parentNode;
+        const root = OPT.isDefault ? hud.parentNode : OPT.container;
+        if (!OPT.isDefault && (!box || box.parentNode !== root)) {
+            if (box) box.remove();
+            box = document.createElement('div');
+            box.className = 'hwt-pscore';
+            root.appendChild(box);
+            lastHtml = '';
+        }
         // Score + bonuses live in the streak box on the left (it stays visible in
         // multiplayer, where the stats card is compact).
-        const streak = root.querySelector(':scope > .hwt-streak');
+        const streak = OPT.isDefault ? root.querySelector(':scope > .hwt-streak') : null;
         if (streak && (!box || box.parentNode !== streak)) {
             if (box) box.remove();
             box = document.createElement('div');
@@ -1617,7 +1650,10 @@
     }
 
     function render() {
-        const hud = document.querySelector('.nd-hud');
+        // The main player's card; split view panels have their own .nd-hud inside them.
+        const hud = OPT.isDefault
+            ? [...document.querySelectorAll('.nd-hud')].find((h) => !PANEL_SCORERS.has(h.parentNode)) || null
+            : (OPT.container && OPT.container.isConnected ? OPT.container.querySelector('.nd-hud') || OPT.container : null);
         if (!hud) {
             if (meter) meter.classList.remove('on');
             if (glow) glow.classList.remove('on');
@@ -1656,33 +1692,67 @@
         const now = performance.now();
         const feedHtml = SC.feed.filter((x) => now - x.at < 2500).map((x) =>
             '<div class="feed" style="color:' + x.color + ';opacity:' + (1 - (now - x.at) / 2500).toFixed(2) + '">' + x.text + '</div>').join('');
-        const html = '<div class="pts">' + fmt(SC.score) + '</div><div class="cap2">SCORE</div>' +
-            (tags.length ? '<div class="tags">' + tags.map(([s, c]) => '<span class="tag" style="color:' + c + ';border:1px solid ' + c + '66">' + s + '</span>').join('') + '</div>' : '') +
-            feedHtml;
+        const html = OPT.isDefault
+            ? '<div class="pts">' + fmt(SC.score) + '</div><div class="cap2">SCORE</div>' +
+              (tags.length ? '<div class="tags">' + tags.map(([s, c]) => '<span class="tag" style="color:' + c + ';border:1px solid ' + c + '66">' + s + '</span>').join('') + '</div>' : '') +
+              feedHtml
+            : '<div class="pts">' + fmt(SC.score) + '</div>' +
+              '<div class="row"><b>' + Math.min(4, 1 + Math.floor(SC.streak / 10)) + 'x</b> · streak <b>' + SC.streak + '</b>' +
+              (SC.notes ? ' · <b>' + (100 * SC.hits / SC.notes).toFixed(2) + '%</b>' : '') + '</div>' +
+              (tags.length ? '<div class="row">' + tags.map(([s, c]) => '<span class="tag" style="color:' + c + ';border:1px solid ' + c + '66">' + s + '</span>').join('') + '</div>' : '') +
+              feedHtml;
         if (html !== lastHtml) { lastHtml = html; box.innerHTML = html; }
     }
-    setInterval(render, 120);
+    const timer = setInterval(render, 120);
 
     // Song end: close any open solo / technical run so the final score is complete.
+    function finish() {
+        const info = chartInfo();
+        for (const s of info.solos) { const st = SC.solos[s.id]; if (st && !st.done) closeSolo(s, st); }
+        closeRun(true);
+    }
+    const onLoading = () => { reset(); chart = null; lastTotal = 0; };
     const bus = window.slopsmith;
     if (bus && bus.on) {
-        bus.on('song:ended', () => {
-            const info = chartInfo();
-            for (const s of info.solos) { const st = SC.solos[s.id]; if (st && !st.done) closeSolo(s, st); }
-            closeRun(true);
-        });
-        bus.on('song:loading', () => { reset(); chart = null; lastTotal = 0; });
+        bus.on('song:ended', finish);
+        bus.on('song:loading', onLoading);
     }
 
-    window.__hwtScore = {
-        get() {
-            const r = (x) => Math.round(x);
-            return { score: r(SC.score), notes: SC.notes, factor: factorNow(),
-                breakdown: { base: r(SC.base), timing: r(SC.timing), technique: r(SC.tech), technical: r(SC.dense), solo: r(SC.soloBonus) },
-                techniques: Object.assign({}, SC.techN), solos: SC.soloDone.slice(), runs: SC.runs.slice() };
+    function get() {
+        const r = (x) => Math.round(x);
+        return { score: r(SC.score), notes: SC.notes, hits: SC.hits, bestStreak: SC.bestStreak, factor: factorNow(),
+            breakdown: { base: r(SC.base), timing: r(SC.timing), technique: r(SC.tech), technical: r(SC.dense), solo: r(SC.soloBonus) },
+            techniques: Object.assign({}, SC.techN), solos: SC.soloDone.slice(), runs: SC.runs.slice() };
+    }
+    if (OPT.isDefault) window.__hwtScore = { get };
+    return {
+        judge, get, finish,
+        destroy() {
+            clearInterval(timer);
+            if (box) box.remove();
+            if (meter) meter.remove();
+            if (glow) glow.remove();
+            try { bus.off('song:ended', finish); bus.off('song:loading', onLoading); } catch (_) { /* ignore */ }
         },
     };
-})();
+}
+const PANEL_SCORERS = new Map();   // split view panel container -> scorer
+scoreEngineFor({ isDefault: true });
+window.__hwtOnPanelJudgment = (j, section, inst) => {
+    const c = inst && inst.container;
+    if (!c) return;
+    let e = PANEL_SCORERS.get(c);
+    if (!e) {
+        e = scoreEngineFor({ hw: inst.hw, container: c });
+        if (!e) return;
+        PANEL_SCORERS.set(c, e);
+    }
+    e.judge(j, section);
+};
+setInterval(() => {   // panels removed (layout change, split view closed)
+    for (const [c, e] of PANEL_SCORERS) if (!c.isConnected) { e.destroy(); PANEL_SCORERS.delete(c); }
+}, 2000);
+window.__hwtPanelScores = () => [...PANEL_SCORERS].filter(([c]) => c.isConnected).map(([container, e]) => Object.assign({ container }, e.get()));
 
 // ── 6. Compact stats card (multiplayer) + hide it on drums ──────────────
 // Side-by-side multiplayer windows leave little room for the full card, so
@@ -1856,4 +1926,86 @@
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { ensure(); apply(get()); });
     else { ensure(); apply(get()); }
     setInterval(ensure, 2000);   // other plugins re-render the row
+})();
+
+// ── 8. Split view: results side by side ─────────────────────────────────
+// When a song ends in split view, one card lists every panel: its part,
+// score, accuracy (2 decimals), best streak and notes hit, guitar panels
+// from their own scorer (section 5b) and drum panels from the drums plugin
+// (window.__drumsPanelResults). The top score gets the crown.
+(function splitResults() {
+    const ss = () => window.slopsmithSplitscreen;
+    const active = () => { try { return !!(ss() && ss().isActive && ss().isActive()); } catch (_) { return false; } };
+    const esc = (x) => String(x == null ? '' : x).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const n = (x) => Math.round(x || 0).toLocaleString('en-US');
+    function panelOf(canvas) {
+        try { const i = ss().panelIndexFor(canvas); return Number.isFinite(i) && i >= 0 ? i : null; } catch (_) { return null; }
+    }
+    function partName(container) {
+        const sel = container && container.querySelector('select');
+        const o = sel && sel.selectedOptions && sel.selectedOptions[0];
+        return o ? o.textContent.trim() : '';
+    }
+    function collect() {
+        const rows = [];
+        try {
+            for (const g of (window.__hwtPanelScores ? window.__hwtPanelScores() : [])) {
+                if (!g.notes) continue;
+                const cv = g.container.querySelector('canvas');
+                rows.push({ panel: panelOf(cv), part: partName(g.container), score: g.score,
+                    acc: 100 * g.hits / g.notes, streak: g.bestStreak, hit: g.hits, total: g.notes });
+            }
+        } catch (e) { console.warn('[highway_tweaks] split results (guitar):', e); }
+        try {
+            for (const d of (window.__drumsPanelResults ? window.__drumsPanelResults() : [])) {
+                const st = d.state, done = st.notesHit + st.notesMissed;
+                if (!done) continue;
+                rows.push({ panel: panelOf(d.canvas), part: 'Drums · ' + d.difficulty, score: d.score,
+                    acc: 100 * st.notesHit / done, streak: st.maxCombo, hit: st.notesHit, total: st.totalNotes, fc: st.fullCombo });
+            }
+        } catch (e) { console.warn('[highway_tweaks] split results (drums):', e); }
+        return rows.sort((a, b) => (a.panel ?? 99) - (b.panel ?? 99));
+    }
+    function show(rows) {
+        const best = Math.max(...rows.map((r) => r.score));
+        const ov = document.createElement('div');
+        ov.className = 'hwt-split-results';
+        ov.style.cssText = 'position:fixed;inset:0;z-index:320;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.55);font-family:system-ui,sans-serif';
+        const cs = (window.slopsmith && window.slopsmith.currentSong) || {};
+        ov.innerHTML = '<div style="min-width:30rem;max-width:94vw;background:#0e1322;border:1px solid #2b3556;border-radius:14px;padding:20px 24px;color:#cbd5e1;box-shadow:0 20px 60px rgba(0,0,0,.6)">' +
+            '<div style="text-align:center;font-size:12px;letter-spacing:3px;color:#8b95a5">RESULTS</div>' +
+            '<div style="text-align:center;font-size:17px;color:#f1f5f9;margin:2px 0 14px">' + esc(cs.title || '') + (cs.artist ? '<span style="color:#8b95a5"> — ' + esc(cs.artist) + '</span>' : '') + '</div>' +
+            '<table style="width:100%;border-collapse:collapse;font-size:14px">' +
+            '<tr style="color:#8b95a5;font-size:11px;letter-spacing:1px"><td>PLAYER</td><td>PART</td><td style="text-align:right">SCORE</td><td style="text-align:right">ACCURACY</td><td style="text-align:right">BEST STREAK</td><td style="text-align:right">NOTES</td></tr>' +
+            rows.map((r) => {
+                const top = r.score === best && rows.length > 1;
+                return '<tr style="border-top:1px solid rgba(255,255,255,.08)">' +
+                    '<td style="padding:8px 0;font-weight:800;color:' + (top ? '#ffc531' : '#f1f5f9') + '">' + (top ? '👑 ' : '') + 'P' + (r.panel != null ? r.panel + 1 : '?') + '</td>' +
+                    '<td>' + esc(r.part) + '</td>' +
+                    '<td style="text-align:right;font-weight:900;font-size:18px;color:' + (top ? '#ffc531' : '#f1f5f9') + '">' + n(r.score) + '</td>' +
+                    '<td style="text-align:right">' + r.acc.toFixed(2) + '%</td>' +
+                    '<td style="text-align:right">' + (r.fc ? '<b style="color:#ffc531">FC</b>' : r.streak) + '</td>' +
+                    '<td style="text-align:right;color:#8b95a5">' + r.hit + ' / ' + r.total + '</td></tr>';
+            }).join('') + '</table>' +
+            '<div style="text-align:center"><button class="hwt-sr-close" style="margin-top:16px;padding:6px 22px;border-radius:8px;border:1px solid #3a4670;background:#1b2440;color:#f1f5f9;cursor:pointer">Close</button></div></div>';
+        const onKey = (e) => { if (e.key === 'Escape' || e.key === 'Enter') { e.preventDefault(); close(); } };
+        function close() {
+            ov.remove();
+            document.removeEventListener('keydown', onKey, true);
+            try { window.slopsmith.off('song:loading', close); } catch (_) { /* ignore */ }
+        }
+        ov.addEventListener('click', (e) => { if (e.target === ov || e.target.closest('.hwt-sr-close')) close(); });
+        document.addEventListener('keydown', onKey, true);
+        document.body.appendChild(ov);
+        try { window.slopsmith.on('song:loading', close); } catch (_) { /* ignore */ }
+    }
+    const bus = window.slopsmith;
+    if (bus && bus.on) {
+        bus.on('song:ended', () => {
+            if (!active()) return;
+            // Let the last judgments, solo bonuses and drum bonuses land first.
+            setTimeout(() => { const rows = collect(); if (rows.length) show(rows); }, 1500);
+        });
+    }
+    window.highwayTweaksSplitResults = () => { const rows = collect(); if (rows.length) show(rows); return rows; };
 })();
