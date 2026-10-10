@@ -208,6 +208,13 @@ changes apply right away to a song that is playing in another panel:
   oldest fades out in 30 ms). GM sounds now ring their natural length (cymbals were cut at 0.5 s), with a
   closed / pedal hi-hat choking the open one. A note the kit has no sound for (some Alesis modules send
   hi-hat hits as note 24) plays its lane's sound.
+- **Hi-hat pedal** (`drums_hh_pedal_v1`, 5.17, on by default): the pedal position the kit sends as CC4. If
+  the module sends separate closed (42) / open (46) notes they are trusted and a half-closed pedal turns an
+  open hit into the kit's semi-open sound (note 23, DRS kit); a module that sends one note for every hit gets
+  closed / semi-open / open from the pedal (≥ 85 % / 45–85 % / below). Closing the pedal chokes a ringing open
+  hat, plus a pedal "chick" when it came down fast and the kit never sends note 44. CC4 direction: high =
+  closed, unless the module's 42 / 46 notes show it's reversed. Checked with `tools/sync-bench/hihat.mjs`.
+  Sampled kits load the first hit of every layer first (playable then), the other round-robins after.
 - **Velocity curve** (`drums_vel_curve_v1`, pads only): Linear, Soft (velocity^0.65: light hits come out
   stronger, for pads that read low) or Hard (velocity^1.5).
 - **Room** (`drums_room_v1`, default 35%): every kit plays through a drum bus with a stereo room (a

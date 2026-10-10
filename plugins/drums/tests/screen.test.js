@@ -491,3 +491,48 @@ test('_soundNote: a note the kit has no sound for plays its lane sound (Alesis h
     assert.equal(mod._soundNote(24), 42);
     assert.equal(mod._soundNote(99), 99, 'unmapped: unchanged');
 });
+
+test('hi-hat pedal: one-note modules get closed / semi-open / open from CC4', () => {
+    const mod = freshPlugin();
+    global.performance = global.performance || { now: () => 0 };
+    mod._hhReset();
+    assert.equal(mod._hhArticulation(46, 46, true), 46, 'no CC4 yet: note as sent');
+    mod._hhPedalMove(127);
+    assert.equal(mod._hhArticulation(46, 46, true), 42, 'pedal down: closed');
+    mod._hhPedalMove(80);
+    assert.equal(mod._hhArticulation(46, 46, true), mod.HH_SEMI_NOTE, 'half way: semi-open');
+    assert.equal(mod._hhArticulation(46, 46, false), 46, 'kit without a semi-open sound: open');
+    mod._hhPedalMove(0);
+    assert.equal(mod._hhArticulation(42, 42, true), 42, 'a closed-hat note stays closed');
+    assert.equal(mod._hhArticulation(46, 46, true), 46, 'pedal up: open');
+    assert.equal(mod._hhArticulation(38, 38, true), 38, 'not a hi-hat pad');
+    mod._saveCfg('hhPedal', 'off');
+    assert.equal(mod._hhArticulation(42, 42, true), 42, 'pedal off: notes only');
+});
+
+test('hi-hat pedal: modules that split 42 / 46 are trusted, and the CC4 direction is learnt', () => {
+    const mod = freshPlugin();
+    global.performance = global.performance || { now: () => 0 };
+    mod._hhReset();
+    // this module sends CC4 0 when closed and 127 when open (reversed)
+    for (const [v, n] of [[0, 42], [5, 42], [127, 46], [120, 46]]) { mod._hhPedalMove(v); mod._hhLearn(n); }
+    assert.equal(mod._hh.closedHigh, false);
+    mod._hhPedalMove(0);   // closed in this module's direction
+    assert.equal(mod._hhArticulation(42, 42, true), 42);
+    mod._hhPedalMove(60);  // half
+    assert.equal(mod._hhArticulation(46, 46, true), mod.HH_SEMI_NOTE);
+    mod._hhPedalMove(127); // open
+    assert.equal(mod._hhArticulation(46, 46, true), 46);
+    assert.equal(mod._hhArticulation(42, 42, true), 42, 'a closed note stays closed');
+});
+
+test('hi-hat pedal: a hi-hat pad on an unknown note (Alesis 24) follows the pedal', () => {
+    const mod = freshPlugin();
+    global.performance = global.performance || { now: () => 0 };
+    mod._hhReset();
+    mod._saveCfg('customMapping', { 24: 'hihat' });
+    mod._hhPedalMove(0);
+    assert.equal(mod._hhArticulation(24, 42, true), 46);
+    mod._hhPedalMove(127);
+    assert.equal(mod._hhArticulation(24, 42, true), 42);
+});

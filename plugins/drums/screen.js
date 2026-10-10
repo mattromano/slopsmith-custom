@@ -108,6 +108,9 @@ const STORE_KEYS = {
     // Velocity curve for pad hits (VEL_CURVES): how the kit's MIDI velocity
     // maps to the hit strength the drum sounds use.
     velCurve:       'drums_vel_curve_v1',
+    // Hi-hat pedal (CC4): 'auto' = the pedal position picks closed / semi-open
+    // / open and closing it chokes the hat; 'off' = notes only.
+    hhPedal:        'drums_hh_pedal_v1',
 };
 
 // Valid preset ids — kept here so _saveCfg can validate before persisting
@@ -260,6 +263,7 @@ const _cfg = {
         const raw = _readStore(STORE_KEYS.timing);
         return Object.prototype.hasOwnProperty.call(TIMING_PRESETS, raw) ? raw : 'normal';
     })(),
+    hhPedal:        _readStore(STORE_KEYS.hhPedal) === 'off' ? 'off' : 'auto',
     velCurve:       (function () {
         const raw = _readStore(STORE_KEYS.velCurve);
         return _VALID_VEL_CURVES.has(raw) ? raw : 'linear';
@@ -302,6 +306,9 @@ function _saveCfg(key, val) {
     }
     if (key === 'timing' && !Object.prototype.hasOwnProperty.call(TIMING_PRESETS, val)) {
         val = 'normal';
+    }
+    if (key === 'hhPedal' && val !== 'off') {
+        val = 'auto';
     }
     if (key === 'velCurve' && !_VALID_VEL_CURVES.has(val)) {
         val = 'linear';
@@ -949,8 +956,14 @@ function _loadSampleKit(kitId) {
         const manifest = _validateKitManifest(await res.json());
         if (!manifest) throw new Error('kit.json is not a valid kit');
         entry.manifest = manifest;
+        // Playable sooner: the first hit of every layer first (the kit is
+        // ready then), the other round-robins afterwards in the background
+        // (a hit uses whichever of its layer's files are decoded).
+        const first = new Set();
+        for (const n of Object.values(manifest.notes)) for (const l of n.layers) first.add(l.files[0]);
+        const rest = manifest.files.filter((f) => !first.has(f));
         let failed = 0;
-        await Promise.all(manifest.files.map(async (f) => {
+        const load = (list) => Promise.all(list.map(async (f) => {
             try {
                 const r = await fetch(base + f + '?v=' + ASSET_VERSION);
                 if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -960,7 +973,11 @@ function _loadSampleKit(kitId) {
                 console.warn('[Drums] Kit sample ' + dir + '/' + f + ' failed:', e);
             }
         }));
-        if (failed === manifest.files.length) throw new Error('no samples decoded');
+        const t0 = performance.now();
+        await load([...first]);
+        if (failed === first.size) throw new Error('no samples decoded');
+        entry.readyMs = performance.now() - t0;
+        entry.complete = load(rest).then(() => { entry.completeMs = performance.now() - t0; });
         return entry;
     })().catch((e) => { delete _sampleKits[kitId]; throw e; });
     _sampleKits[kitId] = entry;
@@ -1451,13 +1468,102 @@ function _autoSchedule(notes, chords, auto, owner) {
     }
 }
 
+// ── Hi-hat pedal (CC4) ──
+// E-kits send the pedal position as CC4. Some modules also send different
+// notes for closed (42) and open (46) hits, others one note for every hit
+// (Alesis Nitro and up). So: when the module splits closed / open notes,
+// they are trusted and a half-closed pedal turns an open hit into the
+// semi-open sound (kit note 23, if the kit has one); when it sends one note,
+// the pedal picks closed / semi-open / open. Closing the pedal chokes a
+// ringing open hat, with a pedal "chick" if the kit never sends note 44.
+// Direction: CC4 high = pedal down (closed) by default; learnt from which
+// values come with 42 vs 46 when the module splits them.
+const HH_SEMI_NOTE = 23;
+const _hh = { value: null, closedHigh: true, at42: [], at46: [], seen44: false, prevC: null, prevWall: 0, openWall: -1e9 };
+function _hhReset() {
+    Object.assign(_hh, { value: null, closedHigh: true, at42: [], at46: [], seen44: false, prevC: null, prevWall: 0, openWall: -1e9 });
+}
+// 0 = fully open .. 1 = fully closed, or null before the first CC4.
+function _hhClosedness() {
+    if (_hh.value == null) return null;
+    const c = _hh.value / 127;
+    return _hh.closedHigh ? c : 1 - c;
+}
+function _hhSplits() { return _hh.at42.length >= 2 && _hh.at46.length >= 2; }
+function _hhLearn(midi) {
+    if (_hh.value == null) return;
+    const list = midi === 42 ? _hh.at42 : midi === 46 ? _hh.at46 : null;
+    if (!list) return;
+    list.push(_hh.value);
+    if (list.length > 24) list.shift();
+    if (_hhSplits()) {
+        const mean = (a) => a.reduce((x, y) => x + y, 0) / a.length;
+        _hh.closedHigh = mean(_hh.at42) >= mean(_hh.at46);
+    }
+}
+function _isHihatPad(midi, snd) {
+    if (midi === 42 || midi === 46 || snd === 42 || snd === 46) return true;
+    const map = _baseMapping();
+    return !!(map && map[midi] === 'hihat');
+}
+// The sound for a hi-hat stroke given the pedal (pure apart from _hh; tested).
+function _hhArticulation(midi, snd, hasSemi) {
+    if (_cfg.hhPedal === 'off' || midi === 44 || !_isHihatPad(midi, snd)) return snd;
+    const c = _hhClosedness();
+    if (c == null) return snd;
+    const semi = hasSemi ? HH_SEMI_NOTE : 46;
+    // A closed-hat note from the module is always closed (a module that sends
+    // it tells closed from open itself, and its CC4 direction may be unknown yet).
+    if (midi === 42) return 42;
+    if (_hhSplits()) return c >= 0.45 ? semi : 46;
+    if (c >= 0.85) return 42;
+    return c >= 0.45 ? semi : 46;
+}
+// Cut ringing notes at audio time t (sampled kit voices and GM voices).
+function _chokeNotes(notes, t) {
+    for (const c of notes) {
+        for (const v of (_kitVoices[c] || [])) {
+            if (v.t0 > t) continue;
+            try { v.gain.gain.cancelScheduledValues(t); v.gain.gain.setTargetAtTime(0, t, 0.012); v.src.stop(t + 0.1); } catch (_) { /* gone */ }
+        }
+        for (const v of (_gmVoices[c] || [])) {
+            if (v.t0 > t) continue;
+            try { v.env.gain.cancelScheduledValues(t); v.env.gain.setTargetAtTime(0, t, 0.012); v.src.stop(t + 0.1); } catch (_) { /* gone */ }
+        }
+    }
+}
+// A CC4 message: track the pedal; closing it chokes the open hat (+ chick).
+function _hhPedalMove(value) {
+    _hh.value = value;
+    if (_cfg.hhPedal === 'off') return;
+    const c = _hhClosedness();
+    const wall = performance.now();
+    const prevC = _hh.prevC, prevWall = _hh.prevWall;
+    _hh.prevC = c; _hh.prevWall = wall;
+    if (c < 0.45) _hh.openWall = wall;
+    if (prevC == null || !(prevC < 0.85 && c >= 0.85)) return;
+    if (!_audioCtx || window.__drumsMutePads) return;
+    const t = _audioCtx.currentTime;
+    _chokeNotes([46, HH_SEMI_NOTE], t);
+    // Chick: the pedal came down from open quickly, and the kit doesn't send its own pedal note.
+    const dt = wall - _hh.openWall;
+    if (!_hh.seen44 && dt < 250) {
+        const vel = Math.max(30, Math.min(110, Math.round(110 - dt * 0.35)));
+        _synthEnsureCtx();
+        _synthPlayNote(44, vel, 0);
+    }
+}
+
 function _synthDrumHit(midiNote, velocity) {
     if (!_audioCtx || !_synthGain) return;
     // Sync Lab mutes pad sounds during its calibration song: they reach the
     // ears ~50 ms after the stick (Web Audio output latency) and pull timing.
     if (window.__drumsMutePads) return;
     _synthEnsureCtx();
-    _synthPlayNote(_soundNote(midiNote), _curveVelocity(velocity, _cfg.velCurve), 0);
+    if (midiNote === 44) _hh.seen44 = true;
+    _hhLearn(midiNote);
+    const snd = _hhArticulation(midiNote, _soundNote(midiNote), _hasSound(HH_SEMI_NOTE));
+    _synthPlayNote(snd, _curveVelocity(velocity, _cfg.velCurve), 0);
 }
 
 function _synthSetVolume(vol) {
@@ -2081,6 +2187,8 @@ function _midiOnMessage(e) {
 
     if (cmd === 0x90 && velocity > 0) {
         target._handleDrumHit(note, velocity, e.timeStamp);
+    } else if (cmd === 0xB0 && note === 4) {
+        _hhPedalMove(velocity);   // (data bytes: controller 4, value)
     }
     // Drums don't need note-off handling (one-shot hits)
 }
@@ -4542,7 +4650,7 @@ window.__drumsSetInputOffset = (ms) => {
 window.__drumsGetConfig = () => Object.assign({}, _cfg);
 window.__drumsRefreshParams = () => { for (const i of _instances) { try { i._assistsChanged(); } catch (_) { /* ignore */ } } };
 window.__drumsSetPadVolume = (v) => { _synthSetVolume(v); return _cfg.synthVolume; };
-window.__drumsDebug = { midi: (data, timeStamp) => _midiOnMessage({ data, timeStamp }), audioCtx: () => _audioCtx, monitor: _midiMon, routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
+window.__drumsDebug = { midi: (data, timeStamp) => _midiOnMessage({ data, timeStamp }), audioCtx: () => _audioCtx, monitor: _midiMon, hh: _hh, kit: () => _sampleKit, routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
 // Split view: every drum panel's results (highway_tweaks' comparison card).
 window.__drumsPanelResults = () => {
     const out = [];
@@ -4844,6 +4952,7 @@ function _pageFill() {
     q('timing').innerHTML = _timingOptions(_cfg.timing);
     q('kit').innerHTML = _kitOptions(_cfg.kit);
     q('velCurve').innerHTML = _optList(VEL_CURVE_IDS, VEL_CURVE_NAMES, _cfg.velCurve);
+    q('hhPedal').checked = _cfg.hhPedal !== 'off';
     q('channel').innerHTML = '<option value="-1">All channels</option>'
         + Array.from({ length: 16 }, (_, i) => `<option value="${i}">${i + 1}${i === 9 ? ' (drums)' : ''}</option>`).join('');
     q('channel').value = String(_cfg.midiChannel);
@@ -4885,6 +4994,7 @@ function _pageWire() {
     };
     q('test').onclick = () => { _synthPlayTest(); };
     q('velCurve').onchange = function () { _saveCfg('velCurve', this.value); };
+    q('hhPedal').onchange = function () { _saveCfg('hhPedal', this.checked ? 'auto' : 'off'); };
     q('monToggle').onclick = () => {
         if (_midiMon.on) _midiMon.on = false; else { _midiMonStart(); _synthInit(); }
         const st = _page.querySelector('[data-dr="monState"]');
@@ -4957,6 +5067,7 @@ function _resetDrumSettings() {
     _setAutoVolume(0.8);
     _setRoom(0.35);
     _saveCfg('velCurve', 'linear');
+    _saveCfg('hhPedal', 'auto');
     _saveCfg('midiChannel', -1);
     _saveCfg('view', 'auto');
     _saveCfg('inputOffsetMs', 0);
@@ -5033,7 +5144,7 @@ if (typeof module !== 'undefined' && module.exports) {
         matchesArrangement: createFactory.matchesArrangement,
         _isDrumsArrangement, _preferredKitSource, _kitSource, _midiAutoChoice,
         _webMidiShim: () => _webMidiShim(), _resetWebMidiShim: () => { _shim = null; },
-        _midiOnMessage, _midiDiag, _midiMon, _midiMonStart, _midiMonSummary, _curveVelocity, VEL_CURVES, _soundNote, LANE_SOUND_NOTE, GM_NOTE_DB,
+        _midiOnMessage, _midiDiag, _midiMon, _midiMonStart, _midiMonSummary, _curveVelocity, VEL_CURVES, _soundNote, _hh, _hhReset, _hhArticulation, _hhLearn, _hhPedalMove, HH_SEMI_NOTE, LANE_SOUND_NOTE, GM_NOTE_DB,
         AUTO_LEVEL_IDS, TIMING_PRESETS, TIMING_IDS, DRUM_KITS, KIT_IDS,
         _autoAt, _laneIsAuto, _timingParams, _autoNotesBetween, _isAutoMidi, _setAssist, _saveCfg, _cfg: () => _cfg,
         _drumWafVar, _drumWafUrl, _kitSf, _drumTabFor, DEFAULT_KIT, _kitIsSampled, _kitBaseUrl,
