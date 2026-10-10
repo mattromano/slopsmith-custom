@@ -21,7 +21,7 @@
 (function () {
     'use strict';
     if (window.__highwayTweaks) return;
-    window.__highwayTweaks = { version: '1.15.0' };
+    window.__highwayTweaks = { version: '1.16.0' };
 
     // ── 1. String colours ───────────────────────────────────────────────
     // G = saturated mid-tone orange, B = pale icy aqua: they differ on the
@@ -1777,4 +1777,83 @@
     window.addEventListener('multiplayer:room', apply);
     setInterval(apply, 300);
     apply();
+})();
+
+// ── 7. Minimise the player controls tray ────────────────────────────────
+// A ▾ button at the end of the bottom controls row hides the row, so the
+// highway gets the space back; while hidden, a slim pill at the bottom
+// centre has Play/Pause and ▴ Controls to bring the row back. Remembered
+// per browser (localStorage hwtTrayMin).
+(function trayMinimise() {
+    const KEY = 'hwtTrayMin';
+    const get = () => { try { return localStorage.getItem(KEY) === '1'; } catch (_) { return false; } };
+    const set = (v) => { try { localStorage.setItem(KEY, v ? '1' : '0'); } catch (_) { /* ignore */ } };
+    const css = document.createElement('style');
+    css.textContent = `
+        html.hwt-tray-min #player-controls { display: none !important; }
+        .hwt-tray-btn { margin-left: auto; padding: 4px 10px; border-radius: 8px; font: 700 12px system-ui, sans-serif;
+            color: #9ca3af; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); cursor: pointer; }
+        .hwt-tray-btn:hover { color: #f1f5f9; background: rgba(255,255,255,.12); }
+        .hwt-tray-pill { position: fixed; left: 50%; bottom: 6px; transform: translateX(-50%); z-index: 120; display: none;
+            gap: 4px; padding: 3px; border-radius: 999px; background: rgba(15,20,32,.82); border: 1px solid rgba(255,255,255,.12);
+            box-shadow: 0 4px 16px rgba(0,0,0,.5); opacity: .55; transition: opacity .2s; }
+        .hwt-tray-pill:hover { opacity: 1; }
+        html.hwt-tray-min .hwt-tray-pill { display: flex; }
+        .hwt-tray-pill button { padding: 3px 12px; border-radius: 999px; border: 0; background: transparent; color: #e5e7eb;
+            font: 700 12px system-ui, sans-serif; cursor: pointer; }
+        .hwt-tray-pill button:hover { background: rgba(255,255,255,.12); }
+    `;
+    document.head.appendChild(css);
+
+    function relayout() {
+        try { if (window.highway && typeof window.highway.resize === 'function') window.highway.resize(); } catch (_) { /* ignore */ }
+        window.dispatchEvent(new Event('resize'));
+    }
+    function apply(min) {
+        document.documentElement.classList.toggle('hwt-tray-min', min);
+        const play = document.querySelector('.hwt-tray-pill [data-a="play"]');
+        if (play) play.textContent = (window.slopsmith && window.slopsmith.isPlaying) ? '❚❚' : '▶';
+        requestAnimationFrame(relayout);
+        setTimeout(relayout, 60);
+    }
+    function toggle(min) { set(min); apply(min); }
+
+    function ensure() {
+        const bar = document.getElementById('player-controls');
+        if (bar && !bar.querySelector('.hwt-tray-btn')) {
+            const b = document.createElement('button');
+            b.className = 'hwt-tray-btn';
+            b.textContent = '▾';
+            b.title = 'Hide the controls (more room for the highway)';
+            b.setAttribute('aria-label', 'Hide player controls');
+            b.addEventListener('click', (e) => { e.stopPropagation(); toggle(true); });
+            bar.appendChild(b);
+        }
+        const host = document.getElementById('player') || document.body;
+        if (!host.querySelector(':scope > .hwt-tray-pill')) {
+            const p = document.createElement('div');
+            p.className = 'hwt-tray-pill';
+            p.innerHTML = '<button data-a="play" title="Play / pause">▶</button><button data-a="show" title="Show the controls">▴ Controls</button>';
+            p.addEventListener('click', (e) => {
+                const a = e.target.closest('button') && e.target.closest('button').dataset.a;
+                if (a === 'play' && typeof window.togglePlay === 'function') window.togglePlay();
+                else if (a === 'show') toggle(false);
+            });
+            host.appendChild(p);
+        }
+    }
+    const bus = window.slopsmith;
+    if (bus && bus.on) {
+        for (const ev of ['song:play', 'song:resume', 'song:pause', 'song:ended', 'song:stop']) {
+            bus.on(ev, () => {
+                const play = document.querySelector('.hwt-tray-pill [data-a="play"]');
+                if (play) play.textContent = (ev === 'song:play' || ev === 'song:resume') ? '❚❚' : '▶';
+            });
+        }
+        bus.on('song:loaded', () => { ensure(); apply(get()); });
+        bus.on('screen:changed', () => { ensure(); apply(get()); });
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => { ensure(); apply(get()); });
+    else { ensure(); apply(get()); }
+    setInterval(ensure, 2000);   // other plugins re-render the row
 })();
