@@ -10,3 +10,4 @@ songs:
   - {title: Big-Box Store Heart, tab: Big-Box Store Heart, audio: "- 02 "}
   - {title: The Luna Project, tab: The Luna Project, audio: "- 05 "}
   - {title: 30days30days30days, tab: "Kory Gregory-30days30days30days", audio: "- 07 "}
+  - {title: "Sure Could (A Random Exercise in Life-Altering Party Fouls)", tab: "Sure Could [transcribed]", audio: "- 04 ", tracks: "0:Lead,0:Rhythm,1:Bass", variant: transcribed}
