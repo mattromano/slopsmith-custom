@@ -123,7 +123,7 @@ def test_bundled_drum_sounds_are_served_locally():
         assert c.get(f"/api/plugins/drums/sounds/{bad}").status_code == 404, bad
 
 
-SAMPLED_KITS = ("crocell", "virtuosity")   # screen.js DRUM_KITS type 'samples'
+SAMPLED_KITS = ("drs", "crocell", "virtuosity")   # screen.js DRUM_KITS type 'samples'
 GM_NOTES = [35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 57, 58, 59]
 
 
@@ -211,3 +211,36 @@ def test_drums_library_filter_patch(monkeypatch):
     assert db._build_where(arrangements_has=["Lead"], naming_mode="smart") == ("WHERE title != '' AND HAS(?)", ["Lead"])
     assert routes.allow_drums_library_filter() is True
     assert db._build_where(arrangements_has=["Drums"], naming_mode="smart")[1] == ["Drums"]
+
+
+def _mod():
+    spec = importlib.util.spec_from_file_location("drums_routes_log_test", PLUGIN_DIR / "routes.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_midi_log_appends_one_line_per_recording(tmp_path):
+    import json
+    mod = _mod()
+    p = mod.append_midi_log(tmp_path, json.dumps({"log": [[0, 153, 38, 90]], "summary": {}}).encode())
+    mod.append_midi_log(tmp_path, json.dumps({"log": []}).encode())
+    lines = p.read_text(encoding="utf-8").splitlines()
+    assert p == tmp_path / "drums" / "midi_log.jsonl"
+    assert len(lines) == 2 and json.loads(lines[0])["log"] == [[0, 153, 38, 90]]
+
+
+def test_midi_log_rejects_bad_bodies(tmp_path):
+    import pytest
+    mod = _mod()
+    for body in (b"[]", b'{"log": 1}', b"x" * (mod.MIDI_LOG_MAX + 1)):
+        with pytest.raises(ValueError):
+            mod.append_midi_log(tmp_path, body)
+
+
+def test_midi_log_route_is_local_only(tmp_path):
+    mod = _mod()
+    app = FastAPI()
+    mod.setup(app, {"config_dir": tmp_path})
+    r = TestClient(app).post("/api/plugins/drums/midi-log", json={"log": []})
+    assert r.status_code == 403   # TestClient's host is "testclient"

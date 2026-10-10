@@ -115,6 +115,11 @@
                 <span data-dr="volumeText" style="font-size:.75rem;color:#9ca3af;width:2.5rem;text-align:right;"></span></div>
         </div>
         <div class="dr-row">
+            <div><div class="dr-t">Velocity curve</div>
+                <div class="dr-d">How hard you hit sets how loud and how bright each drum sounds. Soft: light hits come out stronger (if your pads read low). Hard: you have to hit harder for the full sound.</div></div>
+            <div class="dr-ctl"><select class="drums-velcurve-select" data-dr="velCurve" aria-label="Velocity curve"></select></div>
+        </div>
+        <div class="dr-row">
             <div><div class="dr-t">Room</div>
                 <div class="dr-d">Room ambience on the drum sounds: stereo space instead of a flat, dry kit. Adds no delay.</div></div>
             <div class="dr-ctl"><input type="range" class="drums-room-slider" data-dr="room" min="0" max="100" aria-label="Room ambience">
@@ -141,6 +146,17 @@
             <div class="dr-pads" data-dr="pads"></div>
             <div class="dr-last" data-dr="last"></div>
         </div>
+        <details>
+            <summary>MIDI monitor</summary>
+            <div class="dr-d" style="margin:.2rem 0 .5rem;">Shows exactly what your kit sends: every note with its velocity range, and controller messages such as the hi-hat pedal (CC4) or cymbal chokes. Record, hit each pad from very soft to very hard, open and close the hi-hat pedal, then Save.</div>
+            <div class="dr-ctl" style="justify-content:flex-start;">
+                <button type="button" class="dr-btn dr-primary" data-dr="monToggle">● Record</button>
+                <button type="button" class="dr-btn" data-dr="monClear">Clear</button>
+                <button type="button" class="dr-btn" data-dr="monSave">Save log</button>
+                <span data-dr="monState" style="font-size:.72rem;color:#9ca3af;"></span>
+            </div>
+            <pre data-dr="monOut" style="font:.72rem/1.4 ui-monospace,Consolas,monospace;color:#cbd5e1;background:#0b0b18;border:1px solid #1f2937;border-radius:.5rem;padding:.6rem .8rem;margin:.6rem 0 0;max-height:22rem;overflow:auto;white-space:pre;"></pre>
+        </details>
         <details>
             <summary>Pad mapping <span class="drums-map-source" style="color:#6b7280;font-size:.75rem;"></span></summary>
             <div class="dr-d" style="margin:.2rem 0 .3rem;">Click Learn next to a lane, then hit the pad you want for it.</div>

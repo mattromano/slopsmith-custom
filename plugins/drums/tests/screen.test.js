@@ -275,7 +275,7 @@ test('assists: _autoAt follows the difficulty ceiling; _saveCfg validates the ne
     const cfg = mod._cfg();
     assert.equal(cfg.autoKick, 'off');
     assert.equal(cfg.timing, 'normal');
-    assert.equal(cfg.kit, 'crocell');
+    assert.equal(cfg.kit, 'drs');
     mod._saveCfg('autoKick', 'medium');
     mod._saveCfg('autoCymbals', 'all');
     assert.deepEqual(mod._autoAt('easy'), { kick: true, cymbals: true });
@@ -286,7 +286,7 @@ test('assists: _autoAt follows the difficulty ceiling; _saveCfg validates the ne
     mod._saveCfg('synthVolume', 7);
     assert.equal(cfg.autoKick, 'off');
     assert.equal(cfg.timing, 'normal');
-    assert.equal(cfg.kit, 'crocell');
+    assert.equal(cfg.kit, 'drs');
     assert.equal(cfg.synthVolume, 1);
     assert.equal(mod._timingParams(), null);
     mod._saveCfg('timing', 'relaxed');
@@ -306,7 +306,7 @@ test('assists: _laneIsAuto maps 2D lanes (kick; hi-hat/crash/ride)', () => {
 test('kits: every kit resolves to bundled sound files', () => {
     const mod = freshPlugin();
     const fs = require('node:fs');
-    assert.equal(mod.DEFAULT_KIT, 'crocell');
+    assert.equal(mod.DEFAULT_KIT, 'drs');
     assert.ok(mod.KIT_IDS.includes(mod.DEFAULT_KIT));
     assert.deepEqual([...mod.KIT_IDS].sort(), Object.keys(mod.DRUM_KITS).sort());
     for (const id of mod.KIT_IDS) {
@@ -319,7 +319,7 @@ test('kits: every kit resolves to bundled sound files', () => {
             assert.ok(m, id);
             for (const n of mod.DRUM_MIDI_NOTES) assert.ok(m.notes[n], id + ' note ' + n);
             for (const f of m.files) assert.ok(fs.existsSync(path.join(__dirname, '..', 'sounds', 'kits', dir, f)), f);
-            assert.deepEqual(m.chokes[42], [46]);
+            assert.ok(m.chokes[42].includes(46), id + ': closed hi-hat chokes the open one');
             continue;
         }
         const sf = mod._kitSf(id);
@@ -370,7 +370,7 @@ test('sample kits: _validateKitManifest normalises and rejects bad input', () =>
         [1, 60, ['snare_v1_a.ogg']],
         [80, 127, ['snare_v2_a.ogg', 'snare_v2_b.ogg']],
     ]);
-    assert.deepEqual(m.notes[42].layers[0], { lo: 1, hi: 127, files: ['hh.ogg'], gain: 1 });
+    assert.deepEqual(m.notes[42].layers[0], { lo: 1, hi: 127, files: ['hh.ogg'], gain: 1, ref: null });
     assert.equal(m.notes[42].gain, 0);
     assert.equal(m.gain, 4);
     assert.deepEqual(m.chokes, { 42: [46] });
@@ -380,7 +380,7 @@ test('sample kits: _validateKitManifest normalises and rejects bad input', () =>
 test('sample kits: _pickKitLayer picks the layer by velocity, nearest when in a gap', () => {
     const mod = freshPlugin();
     const L = [{ lo: 1, hi: 40, id: 'pp' }, { lo: 41, hi: 90, id: 'mf' }, { lo: 100, hi: 127, id: 'ff' }];
-    const pick = (vel) => mod._pickKitLayer(L, vel).id;
+    const pick = (vel) => mod._pickKitLayer(L, vel, () => 0.999).id;   // no boundary blending
     assert.equal(pick(1), 'pp');
     assert.equal(pick(40), 'pp');
     assert.equal(pick(41), 'mf');
@@ -393,6 +393,27 @@ test('sample kits: _pickKitLayer picks the layer by velocity, nearest when in a 
     assert.equal(pick('x'), 'pp');
     assert.equal(mod._pickKitLayer([], 100), null);
     assert.equal(mod._pickKitLayer(null, 100), null);
+});
+
+test('sample kits: _pickKitLayer blends across a layer boundary by how close the velocity is', () => {
+    const mod = freshPlugin();
+    const L = [{ lo: 1, hi: 60, id: 'a' }, { lo: 61, hi: 127, id: 'b' }];
+    const share = (vel) => { let up = 0; for (let i = 0; i < 1000; i++) if (mod._pickKitLayer(L, vel, () => i / 1000).id === 'b') up++; return up / 1000; };
+    assert.equal(share(40), 0, 'far below the boundary: lower layer only');
+    assert.equal(share(100), 1);
+    assert.ok(share(58) > 0.1 && share(58) < 0.5, 'just below: sometimes the upper layer');
+    assert.ok(share(63) > 0.5 && share(63) < 0.9, 'just above: sometimes the lower layer');
+    assert.ok(share(60) < share(61), 'more upper-layer hits as velocity rises');
+});
+
+test('sample kits: levelled layers follow the velocity law across layers', () => {
+    const mod = freshPlugin();
+    const law = mod.KIT_VEL_LAW;
+    // two layers levelled onto the law (gain = (ref / 127) ** law relative to a full-strength 1)
+    const lo = { lo: 1, hi: 60, ref: 30, gain: 1 }, hi = { lo: 61, hi: 127, ref: 94, gain: 1 };
+    const lvl = (l, v) => mod._kitHitGain(l, v) * Math.pow(l.ref / 127, law);
+    for (const v of [20, 60, 61, 100]) assert.ok(Math.abs(lvl(lo, v) - lvl(hi, v)) < 1e-12, 'same level from either layer at ' + v);
+    assert.ok(Math.abs(20 * Math.log10(lvl(hi, 20) / lvl(hi, 127)) - 20 * law * Math.log10(20 / 127)) < 1e-9);
 });
 
 test('sample kits: _kitHitGain rises gently across a layer', () => {
@@ -429,4 +450,44 @@ test('auto notes: _autoNotesBetween returns the auto kick / cymbal notes in (fro
     assert.deepEqual(mod._autoNotesBetween(notes, chords, 0, 3, { kick: false, cymbals: false }), []);
     assert.deepEqual(mod._autoNotesBetween(notes, chords, 3, 3, { kick: true }), [], 'empty window');
     assert.equal(mod._cfg().autoVolume, 0.8);
+});
+
+test('MIDI monitor: _midiMonSummary gives per-note velocity stats and controller ranges', () => {
+    const mod = freshPlugin();
+    const log = [[0, 0x99, 38, 20], [5, 0x99, 38, 90], [9, 0x99, 38, 60], [12, 0x89, 38, 0], [13, 0x99, 38, 0],
+        [20, 0xB9, 4, 127], [30, 0xB9, 4, 0], [40, 0xA9, 49, 100], [50, 0xD9, 7, 0]];
+    const s = mod._midiMonSummary(log);
+    assert.deepEqual(s.notes[38], { count: 3, ch: 10, min: 20, median: 60, max: 90 });
+    assert.deepEqual(s.ctrls.cc4, { count: 2, min: 0, max: 127 });
+    assert.equal(s.ctrls.polyAT49.count, 1);
+    assert.equal(s.ctrls.chanAT.max, 7);
+    assert.equal(s.other.noteOff, 2, 'note-off and note-on velocity 0');
+});
+
+test('MIDI monitor: records raw messages only while on, skipping clock / active sensing', () => {
+    const mod = freshPlugin();
+    global.performance = global.performance || { now: () => 0 };
+    mod._midiOnMessage({ data: [0x99, 36, 100], timeStamp: 10 });
+    assert.equal(mod._midiMon.log.length, 0);
+    mod._midiMonStart();
+    mod._midiOnMessage({ data: [0xFE] });
+    mod._midiOnMessage({ data: [0xB9, 4, 64], timeStamp: mod._midiMon.t0 + 12.34 });
+    assert.deepEqual(mod._midiMon.log, [[12.3, 0xB9, 4, 64]]);
+});
+
+test('velocity curve: linear keeps velocity, soft lifts and hard lowers light hits, ends fixed', () => {
+    const mod = freshPlugin();
+    for (const v of [1, 40, 100, 127]) assert.equal(mod._curveVelocity(v, 'linear'), v);
+    assert.ok(mod._curveVelocity(40, 'soft') > 40);
+    assert.ok(mod._curveVelocity(40, 'hard') < 40);
+    assert.equal(mod._curveVelocity(127, 'soft'), 127);
+    assert.equal(mod._curveVelocity(127, 'hard'), 127);
+    assert.ok(mod._curveVelocity(1, 'hard') >= 1);
+});
+
+test('_soundNote: a note the kit has no sound for plays its lane sound (Alesis hi-hat on note 24)', () => {
+    const mod = freshPlugin();
+    mod._saveCfg('customMapping', { 24: 'hihat', 36: 'kick' });
+    assert.equal(mod._soundNote(24), 42);
+    assert.equal(mod._soundNote(99), 99, 'unmapped: unchanged');
 });

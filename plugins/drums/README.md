@@ -154,9 +154,15 @@ controls are wired by `screen.js`). It holds the same per-browser settings as th
 changes apply right away to a song that is playing in another panel:
 
 - **Difficulty & assists** — default difficulty, auto kick, auto cymbals, hit timing, pro cymbals.
-- **Drum sounds** — kit (with a ▶ Play test groove) and volume (0% = silent, for kits whose module makes the sound).
+- **Drum sounds** — kit (with a ▶ Play test groove), volume (0% = silent, for kits whose module makes the
+  sound), velocity curve and room.
 - **Your kit (MIDI)** — input, channel, a **pad tester** (each hit lights the lane it counts as and plays the
-  kit sound; the page borrows the MIDI connection only while it is showing), and the Learn mapping table.
+  kit sound; the page borrows the MIDI connection only while it is showing), a **MIDI monitor** and the Learn
+  mapping table.
+- **MIDI monitor** (5.16): Record shows every raw message the kit sends (notes with min / median / max
+  velocity per note and the lane it counts as, controllers such as the hi-hat pedal's CC4, aftertouch);
+  **Save log** appends the recording as one JSON line to `<config>/drums/midi_log.jsonl`
+  (`POST /api/plugins/drums/midi-log`, local only).
 - **Display & controls** — view, input offset, keyboard drumming, 2D lane layout / labels / hit counter.
 - **Reset drum settings** — back to defaults; keeps the MIDI input and the pad mapping.
 
@@ -169,20 +175,41 @@ changes apply right away to a song that is playing in another panel:
   dimmed, flash at the strikeline as if played, and pad hits on them are ignored (no overhits). Cymbals = the
   chart's yellow / blue / green cymbal notes (hi-hat, ride, crash). The 2D view ignores those lanes in its
   hit counter. Changing it mid-song rescores from the current position, like a difficulty change.
-  The auto notes are **played on the drum kit sound** as they reach the strikeline (scheduled ~60 ms ahead
-  on the audio clock), so muting the drum stem doesn't leave holes. Their volume is **Auto note volume**
+  The auto notes are **played on the drum kit sound**, so muting the drum stem doesn't leave holes. Since
+  5.15.1 they are timed from the song's own audio clock: each note's song time is mapped to the stems
+  AudioContext and then to the drum AudioContext through both contexts' `getOutputTimestamp`, scheduled
+  100 ms ahead by one forward-only schedule shared by all drum panels (no note plays twice), and cancelled
+  on pause / seek. Measured (`tools/sync-bench/autosched.mjs`): heard 0.1 ± 0.1 ms from the stem's note
+  (was +28 ± 16 ms with occasional double hits, from scheduling off the frame clock). Their volume is **Auto note volume**
   (`drums_auto_volume_v1`, default 80%), separate from the pad volume, so pads can stay silent when the
   kit module makes its own sound.
 - **Hit timing** (`drums_timing_v1`, 3D view): Relaxed ±130 ms, Forgiving ±100 ms, Normal ±70 ms (YARG's
   default), Precision (YARG's dynamic window that tightens on fast notes).
-- **Kit** (`drums_kit_v1`): the sound set for pad hits; only the chosen kit is loaded. Default **Crocell
-  (rock)**: a real sampled kit (CrocellKit, CC BY 4.0) with 4 velocity layers × 2 round-robins per piece, so
-  soft and hard hits sound different and repeated hits don't sound identical; a closed / pedal hi-hat cuts a
-  ringing open hi-hat. **Virtuosity (jazz)** is the same kind of kit (Virtuosity Drums, CC0). The sampled
+- **Kit** (`drums_kit_v1`): the sound set for pad hits; only the chosen kit is loaded. Default **DRS
+  (studio, multi-mic)** (5.16): DRSKit 2.1 (DrumGizmo, CC BY 4.0), built from all 13 microphones of every hit
+  (close mics, overheads and the real room mics) with our own stereo mix from the drummer's view, up to
+  8 velocity layers × 3 hits per drum and full cymbal decays. **Crocell (rock)** is a sampled kit from
+  CrocellKit's stereo mix (4 velocity layers × 2), **Virtuosity (jazz)** the same kind of kit (Virtuosity
+  Drums, CC0). In the sampled kits soft and hard hits sound different, repeated hits don't sound identical,
+  and a closed / pedal hi-hat cuts a ringing open hi-hat. The sampled
   kits (`sounds/kits/`, ~4–5 MB each, Ogg Vorbis) are fetched and decoded when picked and play through
   plain `AudioBufferSourceNode`s for low latency; the GM kits (JCLive, FluidR3 GM, SB Live!, Chaos) are one
   WebAudioFont sample per note. A saved GM kit choice is kept; a missing kit folder falls back to JCLive.
   Sources, licences and the build script: `sounds/README.md`, `NOTICE.md`, `tools/build_sample_kit.py`.
+- **Balance and dynamics** (5.16): every kit is levelled so the pieces sit in a natural drum mix by
+  *perceived* loudness (K-weighted, loudest 400 ms in the first 1.5 s, so a swelling crash counts), against
+  the target in `tools/sync-bench/balance.mjs` (kick = snare, toms −2 dB, hi-hat −7 / open −4, crash −4,
+  ride −7 …): sampled kits in `kit.json` note gains, GM kits in `GM_NOTE_DB` (`tools/apply_balance.py`).
+  Loudness follows one velocity law for every kit, `20 × 1.75 × log10(v/127)` dB (20 → 127 = 28 dB).
+  Sampled kits' layers are levelled onto it (`tools/kit_loudness.py`, layer `ref` + `gain`), so only the
+  tone changes between layers, and hits near a layer boundary take either layer at random (±7 velocity),
+  so there's no fixed velocity where the tone jumps. GM kits (one sample per piece) get a darker low-pass
+  on softer hits, so soft sounds soft in tone. Up to 4 voices per drum / 6 per cymbal ring at once (the
+  oldest fades out in 30 ms). GM sounds now ring their natural length (cymbals were cut at 0.5 s), with a
+  closed / pedal hi-hat choking the open one. A note the kit has no sound for (some Alesis modules send
+  hi-hat hits as note 24) plays its lane's sound.
+- **Velocity curve** (`drums_vel_curve_v1`, pads only): Linear, Soft (velocity^0.65: light hits come out
+  stronger, for pads that read low) or Hard (velocity^1.5).
 - **Room** (`drums_room_v1`, default 35%): every kit plays through a drum bus with a stereo room (a
   convolution reverb on a generated room impulse response, RT60 ~0.7 s, early reflections different left and
   right) plus a gentle low shelf and presence lift. The GM kits are mono samples, so each piece is also placed

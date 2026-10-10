@@ -11,7 +11,9 @@
      "files": [
       "kick2_v1_a.ogg",
       "kick2_v1_b.ogg"
-     ]
+     ],
+     "ref": 25.0,
+     "gain": 0.197
     },
     {
      "lo": 50,
@@ -19,7 +21,9 @@
      "files": [
       "kick2_v2_a.ogg",
       "kick2_v2_b.ogg"
-     ]
+     ],
+     "ref": 66.0,
+     "gain": 0.587
     },
     {
      "lo": 83,
@@ -27,7 +31,9 @@
      "files": [
       "kick2_v3_a.ogg",
       "kick2_v3_b.ogg"
-     ]
+     ],
+     "ref": 97.5,
+     "gain": 0.82
     },
     {
      "lo": 113,
@@ -35,9 +41,12 @@
      "files": [
       "kick2_v4_a.ogg",
       "kick2_v4_b.ogg"
-     ]
+     ],
+     "ref": 120.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.0
   },
   "36": {
    "piece": "kick",
@@ -48,7 +57,9 @@
      "files": [
       "kick_v1_a.ogg",
       "kick_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.214
     },
     {
      "lo": 52,
@@ -56,7 +67,9 @@
      "files": [
       "kick_v2_a.ogg",
       "kick_v2_b.ogg"
-     ]
+     ],
+     "ref": 67.0,
+     "gain": 0.573
     },
     {
      "lo": 83,
@@ -64,7 +77,9 @@
      "files": [
       "kick_v3_a.ogg",
       "kick_v3_b.ogg"
-     ]
+     ],
+     "ref": 96.0,
+     "gain": 0.804
     },
     {
      "lo": 110,
@@ -72,9 +87,12 @@
      "files": [
       "kick_v4_a.ogg",
       "kick_v4_b.ogg"
-     ]
+     ],
+     "ref": 118.5,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.161
   },
   "37": {
    "piece": "sidestick",
@@ -85,7 +103,9 @@
      "files": [
       "sidestick_v1_a.ogg",
       "sidestick_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.463
     },
     {
      "lo": 52,
@@ -93,7 +113,9 @@
      "files": [
       "sidestick_v2_a.ogg",
       "sidestick_v2_b.ogg"
-     ]
+     ],
+     "ref": 65.5,
+     "gain": 0.918
     },
     {
      "lo": 80,
@@ -101,7 +123,9 @@
      "files": [
       "sidestick_v3_a.ogg",
       "sidestick_v3_b.ogg"
-     ]
+     ],
+     "ref": 94.0,
+     "gain": 1.059
     },
     {
      "lo": 109,
@@ -109,9 +133,12 @@
      "files": [
       "sidestick_v4_a.ogg",
       "sidestick_v4_b.ogg"
-     ]
+     ],
+     "ref": 118.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.977
   },
   "38": {
    "piece": "snare",
@@ -122,7 +149,9 @@
      "files": [
       "snare_v1_a.ogg",
       "snare_v1_b.ogg"
-     ]
+     ],
+     "ref": 25.5,
+     "gain": 0.446
     },
     {
      "lo": 51,
@@ -130,7 +159,9 @@
      "files": [
       "snare_v2_a.ogg",
       "snare_v2_b.ogg"
-     ]
+     ],
+     "ref": 66.0,
+     "gain": 0.824
     },
     {
      "lo": 82,
@@ -138,7 +169,9 @@
      "files": [
       "snare_v3_a.ogg",
       "snare_v3_b.ogg"
-     ]
+     ],
+     "ref": 95.5,
+     "gain": 0.94
     },
     {
      "lo": 110,
@@ -146,9 +179,12 @@
      "files": [
       "snare_v4_a.ogg",
       "snare_v4_b.ogg"
-     ]
+     ],
+     "ref": 118.5,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.861
   },
   "40": {
    "piece": "rimshot",
@@ -159,7 +195,9 @@
      "files": [
       "rimshot_v1_a.ogg",
       "rimshot_v1_b.ogg"
-     ]
+     ],
+     "ref": 28.0,
+     "gain": 0.177
     },
     {
      "lo": 56,
@@ -167,7 +205,9 @@
      "files": [
       "rimshot_v2_a.ogg",
       "rimshot_v2_b.ogg"
-     ]
+     ],
+     "ref": 70.0,
+     "gain": 0.644
     },
     {
      "lo": 85,
@@ -175,7 +215,9 @@
      "files": [
       "rimshot_v3_a.ogg",
       "rimshot_v3_b.ogg"
-     ]
+     ],
+     "ref": 98.5,
+     "gain": 0.836
     },
     {
      "lo": 113,
@@ -183,9 +225,12 @@
      "files": [
       "rimshot_v4_a.ogg",
       "rimshot_v4_b.ogg"
-     ]
+     ],
+     "ref": 120.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.135
   },
   "41": {
    "piece": "ftom2",
@@ -196,7 +241,9 @@
      "files": [
       "ftom2_v1_a.ogg",
       "ftom2_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.33
     },
     {
      "lo": 52,
@@ -204,7 +251,9 @@
      "files": [
       "ftom2_v2_a.ogg",
       "ftom2_v2_b.ogg"
-     ]
+     ],
+     "ref": 66.0,
+     "gain": 0.829
     },
     {
      "lo": 81,
@@ -212,7 +261,9 @@
      "files": [
       "ftom2_v3_a.ogg",
       "ftom2_v3_b.ogg"
-     ]
+     ],
+     "ref": 94.5,
+     "gain": 1.011
     },
     {
      "lo": 109,
@@ -220,9 +271,12 @@
      "files": [
       "ftom2_v4_a.ogg",
       "ftom2_v4_b.ogg"
-     ]
+     ],
+     "ref": 118.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.638
   },
   "42": {
    "piece": "hhclosed",
@@ -233,7 +287,9 @@
      "files": [
       "hhclosed_v1_a.ogg",
       "hhclosed_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.354
     },
     {
      "lo": 52,
@@ -241,7 +297,9 @@
      "files": [
       "hhclosed_v2_a.ogg",
       "hhclosed_v2_b.ogg"
-     ]
+     ],
+     "ref": 66.0,
+     "gain": 0.728
     },
     {
      "lo": 81,
@@ -249,7 +307,9 @@
      "files": [
       "hhclosed_v3_a.ogg",
       "hhclosed_v3_b.ogg"
-     ]
+     ],
+     "ref": 95.0,
+     "gain": 0.949
     },
     {
      "lo": 110,
@@ -257,9 +317,12 @@
      "files": [
       "hhclosed_v4_a.ogg",
       "hhclosed_v4_b.ogg"
-     ]
+     ],
+     "ref": 118.5,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.202
   },
   "43": {
    "piece": "ftom1",
@@ -270,7 +333,9 @@
      "files": [
       "ftom1_v1_a.ogg",
       "ftom1_v1_b.ogg"
-     ]
+     ],
+     "ref": 25.5,
+     "gain": 0.402
     },
     {
      "lo": 51,
@@ -278,7 +343,9 @@
      "files": [
       "ftom1_v2_a.ogg",
       "ftom1_v2_b.ogg"
-     ]
+     ],
+     "ref": 66.0,
+     "gain": 0.804
     },
     {
      "lo": 82,
@@ -286,7 +353,9 @@
      "files": [
       "ftom1_v3_a.ogg",
       "ftom1_v3_b.ogg"
-     ]
+     ],
+     "ref": 94.0,
+     "gain": 0.87
     },
     {
      "lo": 107,
@@ -294,9 +363,12 @@
      "files": [
       "ftom1_v4_a.ogg",
       "ftom1_v4_b.ogg"
-     ]
+     ],
+     "ref": 117.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.646
   },
   "44": {
    "piece": "hhpedal",
@@ -307,7 +379,9 @@
      "files": [
       "hhpedal_v1_a.ogg",
       "hhpedal_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.499
     },
     {
      "lo": 52,
@@ -315,7 +389,9 @@
      "files": [
       "hhpedal_v2_a.ogg",
       "hhpedal_v2_b.ogg"
-     ]
+     ],
+     "ref": 64.0,
+     "gain": 0.445
     },
     {
      "lo": 77,
@@ -323,7 +399,9 @@
      "files": [
       "hhpedal_v3_a.ogg",
       "hhpedal_v3_b.ogg"
-     ]
+     ],
+     "ref": 91.0,
+     "gain": 0.64
     },
     {
      "lo": 106,
@@ -331,9 +409,12 @@
      "files": [
       "hhpedal_v4_a.ogg",
       "hhpedal_v4_b.ogg"
-     ]
+     ],
+     "ref": 116.5,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.799
   },
   "45": {
    "piece": "tom2",
@@ -344,7 +425,9 @@
      "files": [
       "tom2_v1_a.ogg",
       "tom2_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.25
     },
     {
      "lo": 52,
@@ -352,7 +435,9 @@
      "files": [
       "tom2_v2_a.ogg",
       "tom2_v2_b.ogg"
-     ]
+     ],
+     "ref": 67.0,
+     "gain": 0.786
     },
     {
      "lo": 83,
@@ -360,7 +445,9 @@
      "files": [
       "tom2_v3_a.ogg",
       "tom2_v3_b.ogg"
-     ]
+     ],
+     "ref": 96.5,
+     "gain": 0.91
     },
     {
      "lo": 111,
@@ -368,9 +455,12 @@
      "files": [
       "tom2_v4_a.ogg",
       "tom2_v4_b.ogg"
-     ]
+     ],
+     "ref": 119.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.484
   },
   "46": {
    "piece": "hhopen",
@@ -381,7 +471,9 @@
      "files": [
       "hhopen_v1_a.ogg",
       "hhopen_v1_b.ogg"
-     ]
+     ],
+     "ref": 25.0,
+     "gain": 0.179
     },
     {
      "lo": 50,
@@ -389,7 +481,9 @@
      "files": [
       "hhopen_v2_a.ogg",
       "hhopen_v2_b.ogg"
-     ]
+     ],
+     "ref": 65.5,
+     "gain": 0.573
     },
     {
      "lo": 82,
@@ -397,7 +491,9 @@
      "files": [
       "hhopen_v3_a.ogg",
       "hhopen_v3_b.ogg"
-     ]
+     ],
+     "ref": 96.0,
+     "gain": 0.845
     },
     {
      "lo": 111,
@@ -405,9 +501,12 @@
      "files": [
       "hhopen_v4_a.ogg",
       "hhopen_v4_b.ogg"
-     ]
+     ],
+     "ref": 119.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.148
   },
   "47": {
    "piece": "tom2",
@@ -418,7 +517,9 @@
      "files": [
       "tom2_v1_a.ogg",
       "tom2_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.25
     },
     {
      "lo": 52,
@@ -426,7 +527,9 @@
      "files": [
       "tom2_v2_a.ogg",
       "tom2_v2_b.ogg"
-     ]
+     ],
+     "ref": 67.0,
+     "gain": 0.786
     },
     {
      "lo": 83,
@@ -434,7 +537,9 @@
      "files": [
       "tom2_v3_a.ogg",
       "tom2_v3_b.ogg"
-     ]
+     ],
+     "ref": 96.5,
+     "gain": 0.91
     },
     {
      "lo": 111,
@@ -442,9 +547,12 @@
      "files": [
       "tom2_v4_a.ogg",
       "tom2_v4_b.ogg"
-     ]
+     ],
+     "ref": 119.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.49
   },
   "48": {
    "piece": "tom1",
@@ -455,7 +563,9 @@
      "files": [
       "tom1_v1_a.ogg",
       "tom1_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.5,
+     "gain": 0.324
     },
     {
      "lo": 53,
@@ -463,7 +573,9 @@
      "files": [
       "tom1_v2_a.ogg",
       "tom1_v2_b.ogg"
-     ]
+     ],
+     "ref": 68.0,
+     "gain": 0.711
     },
     {
      "lo": 84,
@@ -471,7 +583,9 @@
      "files": [
       "tom1_v3_a.ogg",
       "tom1_v3_b.ogg"
-     ]
+     ],
+     "ref": 97.5,
+     "gain": 0.891
     },
     {
      "lo": 112,
@@ -479,9 +593,12 @@
      "files": [
       "tom1_v4_a.ogg",
       "tom1_v4_b.ogg"
-     ]
+     ],
+     "ref": 119.5,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.603
   },
   "49": {
    "piece": "crash",
@@ -492,7 +609,9 @@
      "files": [
       "crash_v1_a.ogg",
       "crash_v1_b.ogg"
-     ]
+     ],
+     "ref": 25.5,
+     "gain": 0.269
     },
     {
      "lo": 51,
@@ -500,7 +619,9 @@
      "files": [
       "crash_v2_a.ogg",
       "crash_v2_b.ogg"
-     ]
+     ],
+     "ref": 67.0,
+     "gain": 0.671
     },
     {
      "lo": 84,
@@ -508,7 +629,9 @@
      "files": [
       "crash_v3_a.ogg",
       "crash_v3_b.ogg"
-     ]
+     ],
+     "ref": 98.0,
+     "gain": 0.785
     },
     {
      "lo": 113,
@@ -516,9 +639,12 @@
      "files": [
       "crash_v4_a.ogg",
       "crash_v4_b.ogg"
-     ]
+     ],
+     "ref": 120.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.495
   },
   "50": {
    "piece": "tom1",
@@ -529,7 +655,9 @@
      "files": [
       "tom1_v1_a.ogg",
       "tom1_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.5,
+     "gain": 0.324
     },
     {
      "lo": 53,
@@ -537,7 +665,9 @@
      "files": [
       "tom1_v2_a.ogg",
       "tom1_v2_b.ogg"
-     ]
+     ],
+     "ref": 68.0,
+     "gain": 0.711
     },
     {
      "lo": 84,
@@ -545,7 +675,9 @@
      "files": [
       "tom1_v3_a.ogg",
       "tom1_v3_b.ogg"
-     ]
+     ],
+     "ref": 97.5,
+     "gain": 0.891
     },
     {
      "lo": 112,
@@ -553,9 +685,12 @@
      "files": [
       "tom1_v4_a.ogg",
       "tom1_v4_b.ogg"
-     ]
+     ],
+     "ref": 119.5,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.603
   },
   "51": {
    "piece": "ride",
@@ -566,7 +701,9 @@
      "files": [
       "ride_v1_a.ogg",
       "ride_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.399
     },
     {
      "lo": 52,
@@ -574,7 +711,9 @@
      "files": [
       "ride_v2_a.ogg",
       "ride_v2_b.ogg"
-     ]
+     ],
+     "ref": 67.5,
+     "gain": 0.783
     },
     {
      "lo": 84,
@@ -582,7 +721,9 @@
      "files": [
       "ride_v3_a.ogg",
       "ride_v3_b.ogg"
-     ]
+     ],
+     "ref": 96.0,
+     "gain": 0.799
     },
     {
      "lo": 109,
@@ -590,9 +731,12 @@
      "files": [
       "ride_v4_a.ogg",
       "ride_v4_b.ogg"
-     ]
+     ],
+     "ref": 118.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.189
   },
   "52": {
    "piece": "china",
@@ -603,7 +747,9 @@
      "files": [
       "china_v1_a.ogg",
       "china_v1_b.ogg"
-     ]
+     ],
+     "ref": 25.5,
+     "gain": 0.443
     },
     {
      "lo": 51,
@@ -611,7 +757,9 @@
      "files": [
       "china_v2_a.ogg",
       "china_v2_b.ogg"
-     ]
+     ],
+     "ref": 64.5,
+     "gain": 0.651
     },
     {
      "lo": 79,
@@ -619,7 +767,9 @@
      "files": [
       "china_v3_a.ogg",
       "china_v3_b.ogg"
-     ]
+     ],
+     "ref": 91.5,
+     "gain": 0.792
     },
     {
      "lo": 105,
@@ -627,9 +777,12 @@
      "files": [
       "china_v4_a.ogg",
       "china_v4_b.ogg"
-     ]
+     ],
+     "ref": 116.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.484
   },
   "53": {
    "piece": "bell",
@@ -640,7 +793,9 @@
      "files": [
       "bell_v1_a.ogg",
       "bell_v1_b.ogg"
-     ]
+     ],
+     "ref": 25.5,
+     "gain": 0.401
     },
     {
      "lo": 51,
@@ -648,7 +803,9 @@
      "files": [
       "bell_v2_a.ogg",
       "bell_v2_b.ogg"
-     ]
+     ],
+     "ref": 65.0,
+     "gain": 0.647
     },
     {
      "lo": 80,
@@ -656,7 +813,9 @@
      "files": [
       "bell_v3_a.ogg",
       "bell_v3_b.ogg"
-     ]
+     ],
+     "ref": 94.5,
+     "gain": 1.18
     },
     {
      "lo": 110,
@@ -664,9 +823,12 @@
      "files": [
       "bell_v4_a.ogg",
       "bell_v4_b.ogg"
-     ]
+     ],
+     "ref": 118.5,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.189
   },
   "55": {
    "piece": "splash",
@@ -677,7 +839,9 @@
      "files": [
       "splash_v1_a.ogg",
       "splash_v1_b.ogg"
-     ]
+     ],
+     "ref": 20.0,
+     "gain": 0.194
     },
     {
      "lo": 40,
@@ -685,7 +849,9 @@
      "files": [
       "splash_v2_a.ogg",
       "splash_v2_b.ogg"
-     ]
+     ],
+     "ref": 55.0,
+     "gain": 0.817
     },
     {
      "lo": 71,
@@ -693,7 +859,9 @@
      "files": [
       "splash_v3_a.ogg",
       "splash_v3_b.ogg"
-     ]
+     ],
+     "ref": 90.5,
+     "gain": 0.73
     },
     {
      "lo": 111,
@@ -701,9 +869,12 @@
      "files": [
       "splash_v4_a.ogg",
       "splash_v4_b.ogg"
-     ]
+     ],
+     "ref": 119.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.135
   },
   "57": {
    "piece": "crash2",
@@ -714,7 +885,9 @@
      "files": [
       "crash2_v1_a.ogg",
       "crash2_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.722
     },
     {
      "lo": 52,
@@ -722,7 +895,9 @@
      "files": [
       "crash2_v2_a.ogg",
       "crash2_v2_b.ogg"
-     ]
+     ],
+     "ref": 67.0,
+     "gain": 0.821
     },
     {
      "lo": 83,
@@ -730,7 +905,9 @@
      "files": [
       "crash2_v3_a.ogg",
       "crash2_v3_b.ogg"
-     ]
+     ],
+     "ref": 97.5,
+     "gain": 0.964
     },
     {
      "lo": 113,
@@ -738,9 +915,12 @@
      "files": [
       "crash2_v4_a.ogg",
       "crash2_v4_b.ogg"
-     ]
+     ],
+     "ref": 120.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 0.394
   },
   "58": {
    "piece": "ftom1",
@@ -751,7 +931,9 @@
      "files": [
       "ftom1_v1_a.ogg",
       "ftom1_v1_b.ogg"
-     ]
+     ],
+     "ref": 25.5,
+     "gain": 0.402
     },
     {
      "lo": 51,
@@ -759,7 +941,9 @@
      "files": [
       "ftom1_v2_a.ogg",
       "ftom1_v2_b.ogg"
-     ]
+     ],
+     "ref": 66.0,
+     "gain": 0.804
     },
     {
      "lo": 82,
@@ -767,7 +951,9 @@
      "files": [
       "ftom1_v3_a.ogg",
       "ftom1_v3_b.ogg"
-     ]
+     ],
+     "ref": 94.0,
+     "gain": 0.87
     },
     {
      "lo": 107,
@@ -775,7 +961,9 @@
      "files": [
       "ftom1_v4_a.ogg",
       "ftom1_v4_b.ogg"
-     ]
+     ],
+     "ref": 117.0,
+     "gain": 1.0
     }
    ]
   },
@@ -788,7 +976,9 @@
      "files": [
       "ride_v1_a.ogg",
       "ride_v1_b.ogg"
-     ]
+     ],
+     "ref": 26.0,
+     "gain": 0.399
     },
     {
      "lo": 52,
@@ -796,7 +986,9 @@
      "files": [
       "ride_v2_a.ogg",
       "ride_v2_b.ogg"
-     ]
+     ],
+     "ref": 67.5,
+     "gain": 0.783
     },
     {
      "lo": 84,
@@ -804,7 +996,9 @@
      "files": [
       "ride_v3_a.ogg",
       "ride_v3_b.ogg"
-     ]
+     ],
+     "ref": 96.0,
+     "gain": 0.799
     },
     {
      "lo": 109,
@@ -812,9 +1006,12 @@
      "files": [
       "ride_v4_a.ogg",
       "ride_v4_b.ogg"
-     ]
+     ],
+     "ref": 118.0,
+     "gain": 1.0
     }
-   ]
+   ],
+   "gain": 1.148
   }
  },
  "chokes": {

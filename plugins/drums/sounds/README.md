@@ -14,7 +14,12 @@ nothing from third-party sites.
 - `kits/<kit>/` — real multi-sampled acoustic kits with velocity layers (screen.js `DRUM_KITS` entries with
   `type: 'samples'`), served by `routes.py` at `/api/plugins/drums/sounds/kits/<kit>/<file>` (folder and file
   names whitelisted by `_KIT_DIR` / `_KIT_FILE`, the path must resolve inside `sounds/kits`):
-  - `crocell/` — CrocellKit 1.1 (DrumGizmo) stereo mix, **CC BY 4.0**, rock/metal kit (default kit). 4.7 MB.
+  - `drs/` — DRSKit 2.1 (DrumGizmo), **CC BY 4.0**, jazz-to-rock studio kit (default kit). Our own stereo mix of
+    its 13 microphones (close, overheads, real room). 6.3 MB, 4–8 velocity layers × 2–3 hits per piece; note
+    23 is the semi-open hi-hat (for the hi-hat pedal; not a GM note). ~130 MB once decoded. Built with
+    `python -I plugins/drums/tools/build_drumgizmo_kit.py drs <DRSKit folder>` from
+    https://drumgizmo.org/kits/DRSKit/DRSKit2_1.zip (2.8 GB).
+  - `crocell/` — CrocellKit 1.1 (DrumGizmo) stereo mix, **CC BY 4.0**, rock/metal kit. 4.7 MB.
   - `virtuosity/` — Virtuosity Drums (Versilian Studios / Karoryfer), **CC0**, jazz kit. 3.6 MB.
 
   Each holds `kit.json` + `<piece>_v<layer>_<a|b>.ogg` (Ogg Vorbis q5, 48 kHz stereo). `kit.json`:
@@ -24,7 +29,11 @@ nothing from third-party sites.
   `python -I plugins/drums/tools/build_sample_kit.py <crocell|virtuosity> <source folder>` (downloads:
   https://drumgizmo.org/kits/CrocellKit/CrocellKit_Stereo_MIX.rar, extract it; and
   https://github.com/sfzinstruments/virtuosity_drums). The script documents how hits are picked and trimmed.
-  Licences and credits: `../NOTICE.md`.
+  After building, `python -I plugins/drums/tools/kit_loudness.py <kit>` levels the layers onto the velocity
+  law (adds layer `ref` + `gain`), then `tools/sync-bench/balance.mjs` (OUT=balance.json) and
+  `python -I plugins/drums/tools/apply_balance.py balance.json` set each piece's level (note `gain`).
+  The .ogg files are not in git (`*.ogg` is ignored): they live in the installed plugin and are rebuilt
+  from the sources. Licences and credits: `../NOTICE.md`.
 
 The WebAudioFont files were downloaded unmodified on 2026-10-09. To add a WebAudioFont kit: download its 22 files, add the set to
 `DRUM_KITS`, `_SOUND_NAME` and the kit test in `tests/test_routes.py`. To add a sampled kit: add it to

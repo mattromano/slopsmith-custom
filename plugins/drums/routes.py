@@ -16,6 +16,10 @@ GET /api/plugins/drums/kit-mapping
     The e-kit's pad mapping from Clone Hero's active MIDI profile (read live, so remapping the kit
     in Clone Hero carries over). screen.js uses it as the default MIDI map when no Learn map is saved.
 
+POST /api/plugins/drums/midi-log
+    The settings screen's MIDI monitor: appends one recording (JSON: summary + raw messages) as a line
+    to <config>/drums/midi_log.jsonl. Loopback clients only, 8 MB max.
+
 GET /api/plugins/drums/native-midi, WS /ws/plugins/drums/midi?id=<n>
     Direct MIDI input (native_midi.py, WinMM): the kit's inputs when the browser's Web MIDI can't see
     them (Windows MIDI Service). The socket streams {"d": [bytes], "t": perf ms} per message and answers
@@ -310,8 +314,28 @@ def native_midi_routes(app, log=None):
     return hub
 
 
+MIDI_LOG_MAX = 8 * 1024 * 1024
+
+
+def append_midi_log(config_dir, body: bytes):
+    """Validate a MIDI monitor recording and append it to <config_dir>/drums/midi_log.jsonl.
+    Returns the file path, or raises ValueError."""
+    if len(body) > MIDI_LOG_MAX:
+        raise ValueError("too large")
+    data = json.loads(body.decode("utf-8"))
+    if not isinstance(data, dict) or not isinstance(data.get("log"), list):
+        raise ValueError("expected {log: [...]}")
+    out_dir = Path(config_dir) / "drums"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / "midi_log.jsonl"
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(data, separators=(",", ":")) + "\n")
+    return path
+
+
 def setup(app, context):
     log = context.get("log") if isinstance(context, dict) else None
+    config_dir = context.get("config_dir") if isinstance(context, dict) else None
     allow_drums_library_filter()
     try:
         native_midi_routes(app, log)
@@ -343,6 +367,21 @@ def setup(app, context):
         # screen.js adds ?v=<plugin version> to every kit request, so a rebuilt kit is refetched.
         return Response(body, media_type=_KIT_TYPES[path.suffix],
                         headers={"Cache-Control": "public, max-age=604800"})
+
+    @app.post("/api/plugins/drums/midi-log")
+    async def drums_midi_log(request: Request):
+        host = request.client.host if request.client else ""
+        if host not in ("127.0.0.1", "::1", "localhost"):
+            return JSONResponse({"error": "local only"}, status_code=403)
+        if config_dir is None:
+            return JSONResponse({"error": "no config dir"}, status_code=500)
+        try:
+            path = append_midi_log(config_dir, await request.body())
+        except (ValueError, UnicodeDecodeError) as e:
+            return JSONResponse({"error": str(e)}, status_code=400)
+        except OSError as e:
+            return JSONResponse({"error": str(e)}, status_code=500)
+        return {"ok": True, "path": str(path)}
 
     @app.get("/api/plugins/drums/kit-mapping")
     def drums_kit_mapping():

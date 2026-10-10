@@ -105,6 +105,9 @@ const STORE_KEYS = {
     // Room: how much room ambience (stereo convolution reverb) the drum
     // sounds get, 0..1. The dry sound is never delayed by it.
     room:           'drums_room_v1',
+    // Velocity curve for pad hits (VEL_CURVES): how the kit's MIDI velocity
+    // maps to the hit strength the drum sounds use.
+    velCurve:       'drums_vel_curve_v1',
 };
 
 // Valid preset ids — kept here so _saveCfg can validate before persisting
@@ -120,6 +123,16 @@ const _VALID_DIFFICULTIES = new Set(DIFFICULTY_IDS);
 const AUTO_LEVEL_IDS = ['off', 'easy', 'medium', 'hard', 'all'];
 const AUTO_LEVEL_NAMES = { off: 'Off', easy: 'Easy only', medium: 'Easy – Medium', hard: 'Easy – Hard', all: 'Every difficulty' };
 const _VALID_AUTO_LEVELS = new Set(AUTO_LEVEL_IDS);
+// Pad velocity curves: exponent on velocity/127. Soft: light hits come out
+// stronger (pads that read low); hard: it takes a harder hit for full sound.
+const VEL_CURVES = { soft: 0.65, linear: 1, hard: 1.5 };
+const VEL_CURVE_IDS = ['soft', 'linear', 'hard'];
+const VEL_CURVE_NAMES = { soft: 'Soft (light hits louder)', linear: 'Linear', hard: 'Hard (hit harder for full sound)' };
+const _VALID_VEL_CURVES = new Set(VEL_CURVE_IDS);
+function _curveVelocity(v, curve) {
+    const x = Math.max(1, Math.min(127, Number(v) || 1)) / 127;
+    return Math.max(1, Math.min(127, Math.round(127 * Math.pow(x, VEL_CURVES[curve] || 1))));
+}
 
 // Hit window presets for the 3D view's engine (engine.js params.hitWindow).
 // Normal = YARG's default 140 ms window (±70 ms).
@@ -138,15 +151,16 @@ const TIMING_IDS = ['relaxed', 'forgiving', 'normal', 'precision'];
 // in sounds/ (one sample per note). See sounds/README.md. Only the chosen
 // kit is loaded.
 const DRUM_KITS = {
-    crocell:    { name: 'Crocell (rock)', type: 'samples', dir: 'crocell', note: 'real sampled rock kit, velocity layers (default)' },
+    drs:        { name: 'DRS (studio, multi-mic)', type: 'samples', dir: 'drs', note: 'real kit from 13 mics with our own mix and a real room, 4-8 velocity layers x 2-3 hits (default)' },
+    crocell:    { name: 'Crocell (rock)', type: 'samples', dir: 'crocell', note: 'real sampled rock kit, velocity layers' },
     virtuosity: { name: 'Virtuosity (jazz)', type: 'samples', dir: 'virtuosity', note: 'real sampled jazz kit, velocity layers' },
     jclive: { name: 'JCLive', sf: 'JCLive_sf2_file', note: 'tight, dry GM rock kit' },
     fluid:  { name: 'FluidR3 GM', sf: 'FluidR3_GM_sf2_file', note: 'full acoustic GM kit with room' },
     sblive: { name: 'Sound Blaster Live!', sf: 'SBLive_sf2', note: 'punchy, bright GM kit' },
     chaos:  { name: 'Chaos', sf: 'Chaos_sf2_file', note: 'lighter, softer GM kit' },
 };
-const KIT_IDS = ['crocell', 'virtuosity', 'jclive', 'fluid', 'sblive', 'chaos'];
-const DEFAULT_KIT = 'crocell';
+const KIT_IDS = ['drs', 'crocell', 'virtuosity', 'jclive', 'fluid', 'sblive', 'chaos'];
+const DEFAULT_KIT = 'drs';
 // Safe localStorage reader — getItem can throw SecurityError in
 // sandboxed iframes, under Safari on file://, or when storage is
 // disabled for the origin. An unguarded throw during the _cfg
@@ -246,6 +260,10 @@ const _cfg = {
         const raw = _readStore(STORE_KEYS.timing);
         return Object.prototype.hasOwnProperty.call(TIMING_PRESETS, raw) ? raw : 'normal';
     })(),
+    velCurve:       (function () {
+        const raw = _readStore(STORE_KEYS.velCurve);
+        return _VALID_VEL_CURVES.has(raw) ? raw : 'linear';
+    })(),
     kit:            (function () {
         const raw = _readStore(STORE_KEYS.kit);
         return Object.prototype.hasOwnProperty.call(DRUM_KITS, raw) ? raw : DEFAULT_KIT;
@@ -284,6 +302,9 @@ function _saveCfg(key, val) {
     }
     if (key === 'timing' && !Object.prototype.hasOwnProperty.call(TIMING_PRESETS, val)) {
         val = 'normal';
+    }
+    if (key === 'velCurve' && !_VALID_VEL_CURVES.has(val)) {
+        val = 'linear';
     }
     if (key === 'kit' && !Object.prototype.hasOwnProperty.call(DRUM_KITS, val)) {
         val = DEFAULT_KIT;
@@ -775,6 +796,36 @@ function _kitIsSampled(kitId) { const k = DRUM_KITS[kitId]; return !!(k && k.typ
 // and alternate tom3 (58) produce audio rather than scoring silently.
 const DRUM_MIDI_NOTES = [35, 36, 37, 38, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 55, 57, 58, 59];
 
+// A pad sound for each lane, used when the kit sends a note this kit has no
+// sound for (e.g. hi-hat hits some Alesis modules send as note 24).
+const LANE_SOUND_NOTE = { kick: 36, snare: 38, hihat: 42, tom1: 48, tom2: 45, tom3: 43, ride: 51, crash: 49 };
+function _hasSound(midi) {
+    return _sampleKit ? !!(_sampleKit.manifest && _sampleKit.manifest.notes[midi]) : !!_drumPresets[midi];
+}
+function _soundNote(midi) {
+    if (_hasSound(midi)) return midi;
+    const map = _baseMapping();
+    let lane = map ? map[midi] : null;
+    if (!lane && _midiToLane[midi] != null) lane = DRUM_LANES[_midiToLane[midi]] && DRUM_LANES[_midiToLane[midi]].id;
+    return (lane && LANE_SOUND_NOTE[lane]) || midi;
+}
+
+// Per-piece level (dB) of the General MIDI kits, so the pieces sit in a
+// natural drum mix: measured loudness (K-weighted, loudest 400 ms in the
+// first 1.5 s, velocity 100) matched to KIT_MIX_TARGET_DB by
+// tools/sync-bench/balance.mjs. Sampled kits carry theirs in kit.json.
+const GM_NOTE_DB = {
+    jclive: { 35: -4.8, 36: -4.7, 37: -6.8, 38: 4.7, 40: 1.2, 41: -5.8, 42: 1.2, 43: -5.5, 44: 2.9, 45: -5.1, 46: -3.4, 47: -5.5, 48: -5.0, 49: 0.7, 50: -3.7, 51: 0.7, 52: -11.3, 53: -7.4, 55: -9.6, 57: 1.9, 59: -3.6 },
+    fluid: { 35: -2.4, 36: -2.3, 37: -8.1, 38: 2.3, 40: 3.9, 41: -2.2, 42: -5.7, 43: -3.6, 44: -8.0, 45: 0.8, 46: -1.9, 47: 0.5, 48: 0.8, 49: -12.0, 50: 1.8, 51: -7.4, 52: -11.4, 53: -8.1, 55: -9.5, 57: -12.0, 59: -6.3 },
+    sblive: { 35: -2.8, 36: -2.5, 37: -2.2, 38: 2.5, 40: 3.5, 41: -3.7, 42: 5.8, 43: -3.1, 44: -0.8, 45: -2.5, 46: 1.5, 47: -2.2, 48: -1.3, 49: -9.5, 50: -0.9, 51: 2.1, 52: -7.5, 53: -2.1, 55: -3.2, 57: -9.3, 59: 2.6 },
+    chaos: { 35: -2.8, 36: -3.0, 37: 4.7, 38: 3.0, 40: 3.9, 41: -0.8, 42: 3.2, 43: -0.1, 44: -1.7, 45: -0.1, 46: -4.8, 47: 1.0, 48: 0.2, 49: -3.4, 50: 1.5, 51: 11.7, 52: 0.1, 53: 6.3, 55: 0.9, 57: 0.1, 59: 12.0 },
+};
+function _gmNoteGain(kitId, midi) {
+    const t = GM_NOTE_DB[kitId];
+    const db = t && Number.isFinite(t[midi]) ? t[midi] : 0;
+    return Math.pow(10, db / 20);
+}
+
 function _drumWafVar(note, sf)  { return '_drum_' + note + '_0_' + sf; }
 function _drumWafUrl(note, sf)  { return WAF_BASE + '128' + note + '_0_' + sf + '.js'; }
 
@@ -809,7 +860,8 @@ function _validateKitManifest(m) {
             if (!fl.length) continue;
             let lo = clampVel(num(l.lo, 1)), hi = clampVel(num(l.hi, 127));
             if (hi < lo) { const t = lo; lo = hi; hi = t; }
-            layers.push({ lo, hi, files: fl, gain: clampGain(l.gain) });
+            const ref = typeof l.ref === 'number' && l.ref >= 1 && l.ref <= 127 ? l.ref : null;
+            layers.push({ lo, hi, files: fl, gain: clampGain(l.gain), ref });
             fl.forEach((f) => files.add(f));
         }
         if (!layers.length) continue;
@@ -829,28 +881,54 @@ function _validateKitManifest(m) {
     return out;
 }
 
-// The layer for a velocity: the one whose range holds it, else the nearest range.
-function _pickKitLayer(layers, velocity) {
+// How loudness follows velocity, for every kit: level = 20 * LAW * log10(v / 127)
+// dB (velocity 64 -> -10 dB, 20 -> -28 dB, like a real drum from ff down to
+// a ghost note). Sampled kits: tools/kit_loudness.py levels each layer onto it.
+const KIT_VEL_LAW = 1.75;
+// Layers are blended across their boundaries: within LAYER_BLEND velocity of
+// one, the hit takes the upper or lower layer at random, weighted by how
+// close it is, so there is no fixed velocity where the tone suddenly changes.
+const LAYER_BLEND = 7;
+
+// The layer for a velocity: the one whose range holds it, else the nearest
+// range; near a boundary, sometimes its neighbour (LAYER_BLEND). rnd: () -> [0, 1).
+function _pickKitLayer(layers, velocity, rnd) {
     if (!layers || !layers.length) return null;
-    const v = Math.max(1, Math.min(127, Math.round(Number(velocity) || 0)));
-    let best = null, bestD = Infinity;
-    for (const l of layers) {
-        if (v >= l.lo && v <= l.hi) return l;
-        const d = v < l.lo ? l.lo - v : v - l.hi;
-        if (d < bestD) { bestD = d; best = l; }
+    const v = Math.max(1, Math.min(127, Number(velocity) || 0));
+    const vi = Math.round(v);
+    let idx = -1, bestD = Infinity;
+    for (let i = 0; i < layers.length; i++) {
+        const l = layers[i];
+        if (vi >= l.lo && vi <= l.hi) { idx = i; break; }
+        const d = vi < l.lo ? l.lo - vi : vi - l.hi;
+        if (d < bestD) { bestD = d; idx = i; }
     }
-    return best;
+    const r = typeof rnd === 'function' ? rnd : Math.random;
+    const l = layers[idx];
+    if (vi >= l.lo && vi <= l.hi) {
+        const up = layers[idx + 1], down = layers[idx - 1];
+        const bUp = l.hi + 0.5, bDown = l.lo - 0.5;
+        if (up && bUp - v < LAYER_BLEND) {
+            if (r() < (LAYER_BLEND - (bUp - v)) / (2 * LAYER_BLEND)) return up;
+        } else if (down && v - bDown < LAYER_BLEND) {
+            if (r() < (LAYER_BLEND - (v - bDown)) / (2 * LAYER_BLEND)) return down;
+        }
+    }
+    return l;
 }
 
-// Gain for a hit inside its layer: the layer's samples already carry the
-// loudness of that dynamic, so only a gentle slope across the layer's range
-// (0.6 at its bottom .. 1 at its top) smooths the step between layers.
+// Gain for a hit. Levelled layers (kit.json "ref"): the layer is on the
+// velocity law at ref, so scaling by (v / ref) ** LAW keeps loudness on one
+// smooth curve whichever layer plays. Older kits: a gentle slope across the
+// layer (0.6 at its bottom .. 1 at its top).
 function _kitHitGain(layer, velocity) {
     if (!layer) return 0;
     const v = Math.max(1, Math.min(127, Number(velocity) || 0));
+    const g = layer.gain == null ? 1 : layer.gain;
+    if (layer.ref) return g * Math.pow(v / layer.ref, KIT_VEL_LAW);
     const span = layer.hi - layer.lo;
     const t = span > 0 ? Math.max(0, Math.min(1, (v - layer.lo) / span)) : 1;
-    return (0.6 + 0.4 * t) * (layer.gain == null ? 1 : layer.gain);
+    return (0.6 + 0.4 * t) * g;
 }
 
 const _sampleKits = {};       // kitId -> { manifest, buffers: {file: AudioBuffer}, promise }
@@ -897,6 +975,11 @@ function _dropSampleKitsExcept(kitId) {
     }
 }
 
+// Voices that may ring at once per piece (cymbals and open hi-hat ring long
+// and overlap naturally; drums are dampened by the next stroke).
+const _CYMBAL_NOTES = new Set([46, 49, 51, 52, 53, 55, 57, 59]);
+function _voiceLimit(midi) { return _CYMBAL_NOTES.has(midi) ? 6 : 4; }
+
 function _sampleKitHit(kit, midiNote, velocity, when, dest) {
     const n = kit.manifest.notes[midiNote];
     if (!n) return;
@@ -932,7 +1015,16 @@ function _sampleKitHit(kit, midiNote, velocity, when, dest) {
     const list = (_kitVoices[midiNote] = (_kitVoices[midiNote] || []));
     const voice = { src, gain: g, t0: t };
     list.push(voice);
-    if (list.length > 12) list.shift();
+    // Voice limit per piece: on a fast roll the oldest ring fades out (30 ms,
+    // no click) instead of piling up into mud.
+    while (list.length > _voiceLimit(midiNote)) {
+        const old = list.shift();
+        try {
+            old.gain.gain.cancelScheduledValues(t);
+            old.gain.gain.setTargetAtTime(0, t, 0.01);
+            old.src.stop(t + 0.06);
+        } catch (_) { /* already stopped */ }
+    }
     src.onended = () => {
         const l = _kitVoices[midiNote];
         const i = l ? l.indexOf(voice) : -1;
@@ -1059,6 +1151,53 @@ function _panFor(dest, midi) {
     return node;
 }
 
+// How long a GM drum sound may ring (s; the player cuts it there, or at the
+// sample's own end). Was 0.5 s for everything, which chopped cymbals off.
+function _gmDuration(midi) {
+    if (_CYMBAL_NOTES.has(midi)) return midi === 46 ? 2.2 : 4.5;
+    if (midi === 41 || midi === 43 || midi === 45 || midi === 47 || midi === 48 || midi === 50 || midi === 58) return 1.6;
+    return 1.0;
+}
+// Closed / pedal hi-hat cut a ringing open hi-hat (as the sampled kits' chokes).
+const GM_CHOKES = { 42: [46], 44: [46] };
+const _gmVoices = {};   // midi -> [{env, src, t0}]
+function _gmChoke(midi, t) {
+    for (const c of (GM_CHOKES[midi] || [])) {
+        for (const v of (_gmVoices[c] || [])) {
+            if (v.t0 > t) continue;
+            try {
+                v.env.gain.cancelScheduledValues(t);
+                v.env.gain.setTargetAtTime(0, t, 0.012);
+                v.src.stop(t + 0.1);
+            } catch (_) { /* already stopped */ }
+        }
+        _gmVoices[c] = [];
+    }
+}
+
+// GM kits have one sample per piece, so a soft hit would only be quieter.
+// Softer hits go through a darker low-pass (5 shared filters per piece and
+// bus, IIR so no delay): soft sounds soft in tone, as a real drum does.
+const _lpNodes = new Map();   // dest bus -> Map('midi:band' -> BiquadFilterNode)
+function _gmTarget(dest, midi, x) {
+    const pan = _panFor(dest, midi);
+    const band = Math.min(5, Math.floor(x / 0.17));
+    if (band >= 5 || typeof _audioCtx.createBiquadFilter !== 'function') return pan;
+    let m = _lpNodes.get(dest);
+    if (!m) { m = new Map(); _lpNodes.set(dest, m); }
+    const key = midi + ':' + band;
+    let lp = m.get(key);
+    if (!lp) {
+        lp = _audioCtx.createBiquadFilter();
+        lp.type = 'lowpass';
+        lp.frequency.value = 2000 * Math.pow(2, band * 0.55);   // 2.0 / 2.9 / 4.3 / 6.3 / 9.2 kHz
+        lp.Q.value = 0.5;
+        lp.connect(pan);
+        m.set(key, lp);
+    }
+    return lp;
+}
+
 // The WebAudioFont player, loaded only when a GM kit is used.
 async function _ensureWafPlayer() {
     if (_synthPlayer) return true;
@@ -1145,9 +1284,17 @@ function _synthPlayNote(midiNote, velocity, when, dest) {
     if (_sampleKit) return _sampleKitHit(_sampleKit, midiNote, velocity, when, dest) || null;
     const preset = _drumPresets[midiNote];
     if (!preset || !_synthPlayer) return null;
-    const isPad = dest === _synthGain;
-    const env = _synthPlayer.queueWaveTable(_audioCtx, _panFor(dest, midiNote), preset, when || 0, midiNote, when ? 0.6 : 0.5,
-        (velocity / 127) * (isPad ? _cfg.synthVolume : 1));
+    // (The pad volume is the pad bus gain; it used to be applied here too.)
+    const x = Math.max(1, Math.min(127, Number(velocity) || 1)) / 127;
+    const t = Math.max(when || 0, _audioCtx.currentTime);
+    _gmChoke(midiNote, t);
+    const env = _synthPlayer.queueWaveTable(_audioCtx, _gmTarget(dest, midiNote, x), preset, when || 0, midiNote, _gmDuration(midiNote),
+        Math.pow(x, KIT_VEL_LAW) * _gmNoteGain(_cfg.kit, midiNote));
+    if (env && env.audioBufferSourceNode) {
+        const list = (_gmVoices[midiNote] = _gmVoices[midiNote] || []);
+        list.push({ env, src: env.audioBufferSourceNode, t0: t });
+        if (list.length > 8) list.shift();
+    }
     return (env && env.audioBufferSourceNode) || null;
 }
 
@@ -1310,7 +1457,7 @@ function _synthDrumHit(midiNote, velocity) {
     // ears ~50 ms after the stick (Web Audio output latency) and pull timing.
     if (window.__drumsMutePads) return;
     _synthEnsureCtx();
-    _synthPlayNote(midiNote, velocity, 0);
+    _synthPlayNote(_soundNote(midiNote), _curveVelocity(velocity, _cfg.velCurve), 0);
 }
 
 function _synthSetVolume(vol) {
@@ -1862,7 +2009,56 @@ function _routeTarget() {
     return _activeInstance;
 }
 
+// ── MIDI monitor (Plugins → Drums) ──
+// Records every raw message from the kit (notes, controllers such as the
+// hi-hat pedal, aftertouch) with its time, plus per-note velocity and
+// per-controller value stats, so what the kit really sends can be seen and
+// saved (POST /api/plugins/drums/midi-log -> <config>/drums/midi_log.jsonl).
+const _midiMon = { on: false, t0: 0, log: [], drawn: false };
+const MIDI_MON_MAX = 50000;
+function _midiMonRecord(e) {
+    if (!_midiMon.on || !e || !e.data || !e.data.length) return;
+    const st = e.data[0] & 0xFF;
+    if (st >= 0xF8) return;   // clock / active sensing
+    const t = Number.isFinite(e.timeStamp) && e.timeStamp > 0 ? e.timeStamp : performance.now();
+    if (_midiMon.log.length < MIDI_MON_MAX) {
+        _midiMon.log.push([Math.round((t - _midiMon.t0) * 10) / 10, st, (e.data[1] | 0) & 0x7F, (e.data[2] | 0) & 0x7F]);
+    }
+    if (!_midiMon.drawn) {
+        _midiMon.drawn = true;
+        const draw = () => { _midiMon.drawn = false; _pageMonRender(); };
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(draw); else setTimeout(draw, 50);
+    }
+}
+function _midiMonStart() { _midiMon.on = true; _midiMon.t0 = performance.now(); _midiMon.log = []; }
+// Per note-on note: count + velocity min / median / max; per controller (CC,
+// aftertouch): count + value min / max; other message kinds counted. Pure (tested).
+function _midiMonSummary(log) {
+    const notes = {}, ctrls = {}, other = {};
+    for (const [, st, d1, d2] of log) {
+        const cmd = st & 0xF0, ch = (st & 0x0F) + 1;
+        if (cmd === 0x90 && d2 > 0) {
+            const n = (notes[d1] = notes[d1] || { count: 0, vels: [], ch });
+            n.count++; n.vels.push(d2);
+        } else if (cmd === 0xB0 || cmd === 0xA0 || cmd === 0xD0) {
+            const k = cmd === 0xB0 ? 'cc' + d1 : cmd === 0xA0 ? 'polyAT' + d1 : 'chanAT';
+            const v = cmd === 0xD0 ? d1 : d2;
+            const c = (ctrls[k] = ctrls[k] || { count: 0, min: 127, max: 0 });
+            c.count++; c.min = Math.min(c.min, v); c.max = Math.max(c.max, v);
+        } else {
+            const k = cmd === 0x80 || cmd === 0x90 ? 'noteOff' : 'status' + cmd.toString(16);
+            other[k] = (other[k] || 0) + 1;
+        }
+    }
+    for (const k of Object.keys(notes)) {
+        const v = notes[k].vels.slice().sort((a, b) => a - b);
+        notes[k] = { count: v.length, ch: notes[k].ch, min: v[0], median: v[v.length >> 1], max: v[v.length - 1] };
+    }
+    return { notes, ctrls, other };
+}
+
 function _midiOnMessage(e) {
+    _midiMonRecord(e);
     // Only the focused instance receives MIDI. Module-level
     // _activeInstance is the routing slot; it points at null when
     // no instance is focused (splitscreen toggled off mid-session
@@ -4346,7 +4542,7 @@ window.__drumsSetInputOffset = (ms) => {
 window.__drumsGetConfig = () => Object.assign({}, _cfg);
 window.__drumsRefreshParams = () => { for (const i of _instances) { try { i._assistsChanged(); } catch (_) { /* ignore */ } } };
 window.__drumsSetPadVolume = (v) => { _synthSetVolume(v); return _cfg.synthVolume; };
-window.__drumsDebug = { midi: (data, timeStamp) => _midiOnMessage({ data, timeStamp }), audioCtx: () => _audioCtx, routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
+window.__drumsDebug = { midi: (data, timeStamp) => _midiOnMessage({ data, timeStamp }), audioCtx: () => _audioCtx, monitor: _midiMon, routeTarget: () => _routeTarget(), diag: () => Object.assign({}, _midiDiag) };
 // Split view: every drum panel's results (highway_tweaks' comparison card).
 window.__drumsPanelResults = () => {
     const out = [];
@@ -4595,6 +4791,45 @@ function _pageRoomText() {
     if (el) el.textContent = Math.round(_cfg.room * 100) + '%';
 }
 
+function _pageMonRender() {
+    const out = _page && _page.querySelector('[data-dr="monOut"]');
+    if (!out) return;
+    const btn = _page.querySelector('[data-dr="monToggle"]');
+    if (btn) btn.textContent = _midiMon.on ? '■ Stop' : '● Record';
+    const sum = _midiMonSummary(_midiMon.log);
+    const lines = [];
+    const lane = (n) => { const i = _midiToLaneIdx(Number(n)); return i >= 0 && DRUM_LANES[i] ? (_LANE_NAMES[DRUM_LANES[i].id] || DRUM_LANES[i].label) : '-'; };
+    const nk = Object.keys(sum.notes).map(Number).sort((a, b) => a - b);
+    if (nk.length) lines.push('note  lane        hits   vel min / median / max');
+    for (const n of nk) {
+        const x = sum.notes[n];
+        lines.push(String(n).padEnd(6) + lane(n).padEnd(12) + String(x.count).padEnd(7) + x.min + ' / ' + x.median + ' / ' + x.max);
+    }
+    for (const [k, c] of Object.entries(sum.ctrls)) lines.push(k.padEnd(18) + String(c.count).padEnd(7) + 'value ' + c.min + '..' + c.max);
+    for (const [k, c] of Object.entries(sum.other)) lines.push(k.padEnd(18) + c);
+    const recent = _midiMon.log.slice(-10).map(([t, st, a, b]) => (t / 1000).toFixed(3).padStart(8) + ' s  ' + st.toString(16).toUpperCase() + ' ' + a + ' ' + b);
+    if (recent.length) lines.push('', 'last messages (time, status hex, data):', ...recent);
+    out.textContent = lines.length ? lines.join('\n') : (_midiMon.on ? 'Recording: hit the pads…' : 'Not recording.');
+}
+
+async function _pageMonSave() {
+    const st = _page && _page.querySelector('[data-dr="monState"]');
+    if (!_midiMon.log.length) { if (st) st.textContent = 'Nothing recorded yet.'; return; }
+    const body = {
+        saved: new Date().toISOString(),
+        device: (_midiInput && (_midiInput.name || _midiInput.key)) || null,
+        summary: _midiMonSummary(_midiMon.log),
+        log: _midiMon.log,
+    };
+    try {
+        const r = await fetch('/api/plugins/drums/midi-log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const j = await r.json().catch(() => ({}));
+        if (st) st.textContent = r.ok ? 'Saved ' + _midiMon.log.length + ' messages to ' + (j.path || 'the drums log') + '.' : 'Save failed (HTTP ' + r.status + ').';
+    } catch (e) {
+        if (st) st.textContent = 'Save failed: ' + e;
+    }
+}
+
 function _pageVolumeText() {
     const el = _page && _page.querySelector('[data-dr="volumeText"]');
     if (el) el.textContent = Math.round(_cfg.synthVolume * 100) + '%';
@@ -4608,6 +4843,7 @@ function _pageFill() {
     q('autoCymbals').innerHTML = _autoOptions(_cfg.autoCymbals);
     q('timing').innerHTML = _timingOptions(_cfg.timing);
     q('kit').innerHTML = _kitOptions(_cfg.kit);
+    q('velCurve').innerHTML = _optList(VEL_CURVE_IDS, VEL_CURVE_NAMES, _cfg.velCurve);
     q('channel').innerHTML = '<option value="-1">All channels</option>'
         + Array.from({ length: 16 }, (_, i) => `<option value="${i}">${i + 1}${i === 9 ? ' (drums)' : ''}</option>`).join('');
     q('channel').value = String(_cfg.midiChannel);
@@ -4628,6 +4864,7 @@ function _pageFill() {
     _pageVolumeText();
     _pageAutoVolumeText();
     _pageRenderPads();
+    _pageMonRender();
     _refreshAllMappingTables();
     _midiUpdateAllDeviceLists();
 }
@@ -4647,6 +4884,15 @@ function _pageWire() {
         _synthInit().then(() => _synthSetKit(id)).then(_synthPlayTest);
     };
     q('test').onclick = () => { _synthPlayTest(); };
+    q('velCurve').onchange = function () { _saveCfg('velCurve', this.value); };
+    q('monToggle').onclick = () => {
+        if (_midiMon.on) _midiMon.on = false; else { _midiMonStart(); _synthInit(); }
+        const st = _page.querySelector('[data-dr="monState"]');
+        if (st) st.textContent = '';
+        _pageMonRender();
+    };
+    q('monClear').onclick = () => { _midiMon.log = []; _midiMon.t0 = performance.now(); _pageMonRender(); };
+    q('monSave').onclick = () => { _pageMonSave(); };
     q('volume').oninput = function () { _synthSetVolume(parseInt(this.value, 10) / 100); _pageVolumeText(); };
     q('room').oninput = function () { _setRoom(parseInt(this.value, 10) / 100); _pageRoomText(); };
     q('autoVolume').oninput = function () { _synthInit(); _setAutoVolume(parseInt(this.value, 10) / 100); _pageAutoVolumeText(); };
@@ -4710,6 +4956,7 @@ function _resetDrumSettings() {
     _synthSetVolume(0.7);
     _setAutoVolume(0.8);
     _setRoom(0.35);
+    _saveCfg('velCurve', 'linear');
     _saveCfg('midiChannel', -1);
     _saveCfg('view', 'auto');
     _saveCfg('inputOffsetMs', 0);
@@ -4786,11 +5033,11 @@ if (typeof module !== 'undefined' && module.exports) {
         matchesArrangement: createFactory.matchesArrangement,
         _isDrumsArrangement, _preferredKitSource, _kitSource, _midiAutoChoice,
         _webMidiShim: () => _webMidiShim(), _resetWebMidiShim: () => { _shim = null; },
-        _midiOnMessage, _midiDiag,
+        _midiOnMessage, _midiDiag, _midiMon, _midiMonStart, _midiMonSummary, _curveVelocity, VEL_CURVES, _soundNote, LANE_SOUND_NOTE, GM_NOTE_DB,
         AUTO_LEVEL_IDS, TIMING_PRESETS, TIMING_IDS, DRUM_KITS, KIT_IDS,
         _autoAt, _laneIsAuto, _timingParams, _autoNotesBetween, _isAutoMidi, _setAssist, _saveCfg, _cfg: () => _cfg,
         _drumWafVar, _drumWafUrl, _kitSf, _drumTabFor, DEFAULT_KIT, _kitIsSampled, _kitBaseUrl,
-        _validateKitManifest, _pickKitLayer, _kitHitGain, KIT_FILE_RE, KIT_DIR_RE, DRUM_MIDI_NOTES,
+        _validateKitManifest, _pickKitLayer, _kitHitGain, KIT_VEL_LAW, LAYER_BLEND, KIT_FILE_RE, KIT_DIR_RE, DRUM_MIDI_NOTES,
     };
 }
 
