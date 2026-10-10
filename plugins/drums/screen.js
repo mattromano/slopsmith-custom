@@ -4218,7 +4218,6 @@ try {
 // this song only: the picker and the saved choice stay as they are, and
 // the next non-drum song gets the picked view back. Stands down when the
 // core already does this (this repo's core: _instrumentVizOverride).
-const _GUITAR_VIZ = new Set(['default', 'highway_3d']);
 let _drumsOverride = false;
 
 function _isDrumsArrangement(si) {
@@ -4237,7 +4236,10 @@ function _drumsTakeover() {
     const hw = window.highway;
     if (!sel || !hw || typeof hw.setRenderer !== 'function') return;
     const picked = sel.value;
-    if (!_GUITAR_VIZ.has(picked)) { _drumsOverride = false; return; }
+    // Any view other than the Drum Highway itself (or Auto, which core
+    // already resolves to it for drums) is a guitar-style view: a Drums
+    // arrangement always goes to the Drum Highway.
+    if (picked === 'drums' || picked === 'auto' || !picked) { _drumsOverride = false; return; }
     const si = typeof hw.getSongInfo === 'function' ? (hw.getSongInfo() || {}) : {};
     if (_isDrumsArrangement(si)) {
         if (_drumsOverride) return;
@@ -4359,12 +4361,86 @@ function _drumsEndCard(session, badge) {
     try { window.slopsmith.on('song:loading', close); } catch (_) { /* ignore */ }
 }
 
+// ── One drum highway ────────────────────────────────────────────────
+// Core and splitscreen offer every view for every arrangement: a split
+// panel's picker had "Lead (Drum Highway)", "Bass (Drum Highway)" (guitar
+// notes read as drums), "Drums (3D Highway)", "Drums (Tab View)", "Drums
+// (Piano Highway)", "Drums (JT)" and a plain "Drums" (the guitar view), and
+// the main view picker a separate "Drum Highway". Tidy them to one rule:
+// a Drums arrangement is shown by the Drum Highway, as one "Drums" entry,
+// and no other arrangement is offered on it. The selected entry is never
+// removed (a panel saved as the drums player keeps its setting on a song
+// without drums and shows "No drum chart"); a Drums arrangement selected in
+// any other view is switched to the Drum Highway.
+const _VIZ_OPT = /^__viz__:([^:]+):(\d+)$/;
+function _panelArrIndex(value) {
+    const v = String(value);
+    if (/^\d+$/.test(v)) return +v;
+    const m = _VIZ_OPT.exec(v) || /^[^:]+:(\d+)$/.exec(v);   // viz option, or the jumping-tab "<prefix>:<i>"
+    return m ? +(m[2] !== undefined ? m[2] : m[1]) : -1;
+}
+function _tidyPanelSelect(sel) {
+    const opts = [...sel.options];
+    if (!opts.some((o) => _VIZ_OPT.test(o.value))) return;   // not an arrangement picker
+    const drums = new Set(opts.filter((o) => /^\d+$/.test(o.value) && DRUMS_PATTERNS.test(o.textContent || '')).map((o) => +o.value));
+    const drumVizIdx = new Map(opts.map((o) => [o, _VIZ_OPT.exec(o.value)]).filter(([, m]) => m && m[1] === 'drums').map(([o, m]) => [+m[2], o]));
+    const selected = sel.value;
+    // A Drums arrangement picked in some other view: move it to the Drum Highway.
+    const selIdx = _panelArrIndex(selected);
+    const selViz = _VIZ_OPT.exec(selected);
+    if (drums.has(selIdx) && !(selViz && selViz[1] === 'drums') && drumVizIdx.has(selIdx)) {
+        sel.value = drumVizIdx.get(selIdx).value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return;   // splitscreen rebuilds the picker; tidy again next pass
+    }
+    for (const o of opts) {
+        const i = _panelArrIndex(o.value);
+        if (i < 0) continue;   // Lyrics etc.
+        const m = _VIZ_OPT.exec(o.value);
+        const isDrumViz = !!(m && m[1] === 'drums');
+        // Hidden, not removed: the plain "Drums" entry still tells later
+        // passes which arrangement is the drums.
+        const hide = o.value !== selected && (drums.has(i) ? !isDrumViz : isDrumViz);
+        if (o.hidden !== hide) { o.hidden = hide; o.disabled = hide; }
+    }
+    // The one drum entry, named like the arrangement and placed with them.
+    for (const [i, o] of drumVizIdx) {
+        if (!drums.has(i) || !o.isConnected) continue;
+        const name = (opts.find((x) => x.value === String(i)) || {}).textContent || 'Drums';
+        if (o.textContent !== name) o.textContent = name;
+        const lastPlain = [...sel.options].filter((x) => /^\d+$/.test(x.value) && !x.hidden).pop();
+        if (lastPlain && o.previousElementSibling !== lastPlain && o !== lastPlain) lastPlain.after(o);
+        else if (!lastPlain && sel.options[0] !== o) sel.insertBefore(o, sel.options[0]);
+    }
+}
+function _tidyDrumChoices() {
+    try {
+        const wrap = document.getElementById('splitscreen-wrap');
+        if (wrap) wrap.querySelectorAll('select').forEach(_tidyPanelSelect);
+        // Main view picker: no separate "Drum Highway" (Drums opens in it by itself).
+        const vp = document.getElementById('viz-picker');
+        if (vp) {
+            const o = [...vp.options].find((x) => x.value === 'drums');
+            if (o && vp.value !== 'drums') o.remove();
+        }
+    } catch (e) { /* cosmetic: never break the page */ }
+}
+if (typeof document !== 'undefined' && typeof document.addEventListener === 'function') {
+    const tidyTimer = setInterval(_tidyDrumChoices, 1000);
+    if (tidyTimer && typeof tidyTimer.unref === 'function') tidyTimer.unref();   // node tests
+    document.addEventListener('mousedown', (e) => { if (e.target && e.target.tagName === 'SELECT') _tidyDrumChoices(); }, true);
+}
+
 try {
     if (window.slopsmith && typeof window.slopsmith.on === 'function') {
         window.slopsmith.on('song:ready', _drumsTakeover);
-        // An explicit pick mid-song is the user's call: stop overriding.
+        // A pick mid-song re-applies the rule once core has switched views:
+        // a Drums arrangement stays on the Drum Highway whatever is picked.
         document.addEventListener('change', (e) => {
-            if (e.target && e.target.id === 'viz-picker') _drumsOverride = false;
+            if (e.target && e.target.id === 'viz-picker') {
+                _drumsOverride = false;
+                setTimeout(_drumsTakeover, 150);
+            }
         }, true);
     }
 } catch (e) { /* no host */ }
