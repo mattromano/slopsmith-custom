@@ -4514,6 +4514,7 @@ function _addDrumsLibraryFilter() {
         window._getArrangements = wrapped;
         try { if (typeof window._renderLibFilterDrawer === 'function') window._renderLibFilterDrawer(); } catch (_) { /* drawer not built yet */ }
     }
+    _fixDrumStemFilter();
     const badge = window._arrangementBadgeHtml;
     if (typeof badge === 'function' && !badge.__drums) {
         const wrappedBadge = function (arrangement, nm) {
@@ -4525,6 +4526,36 @@ function _addDrumsLibraryFilter() {
         window._arrangementBadgeHtml = wrappedBadge;
     }
 }
+// The Filters drawer has two "Drums" pills: Arrangements (a drum chart) and Stems (a separated
+// drum audio track, which every Demucs-split song has, chart or not). Both made a chip reading
+// "Drums", so "Drums" under Stems listed songs with no drums to play. Rename the stem one
+// "Drum audio", and once move a saved stem filter to the chart filter (what "drum songs" means).
+// _STEM_DEFS / _libFilters are app.js top-level bindings, shared with plugin scripts.
+const _STEM_FILTER_MIGRATED = 'drums.libFilter.stemToChart';
+function _fixDrumStemFilter() {
+    try {
+        // eslint-disable-next-line no-undef
+        const defs = typeof _STEM_DEFS !== 'undefined' ? _STEM_DEFS : null;
+        const d = defs && defs.find((x) => x.id === 'drums');
+        if (d && d.label === 'Drums') d.label = 'Drum audio';
+    } catch (_) { /* older core */ }
+    try {
+        if (localStorage.getItem(_STEM_FILTER_MIGRATED)) return;
+        localStorage.setItem(_STEM_FILTER_MIGRATED, '1');
+        // eslint-disable-next-line no-undef
+        const f = typeof _libFilters !== 'undefined' ? _libFilters : null;
+        if (!f || !Array.isArray(f.stemsHas) || !f.stemsHas.includes('drums')) return;
+        f.stemsHas.splice(f.stemsHas.indexOf('drums'), 1);
+        if (!Array.isArray(f.arrHas)) f.arrHas = [];
+        if (!f.arrHas.includes('Drums')) f.arrHas.push('Drums');
+        if (typeof window._saveLibFilters === 'function') window._saveLibFilters();
+        else localStorage.setItem('slopsmith.libFilters', JSON.stringify(f));
+        if (typeof window._renderLibFilterDrawer === 'function') window._renderLibFilterDrawer();
+        if (typeof window._renderLibFilterChips === 'function') window._renderLibFilterChips();
+        if (typeof window.loadLibrary === 'function') window.loadLibrary(0);
+    } catch (_) { /* storage blocked */ }
+}
+
 try {
     if (typeof window !== 'undefined' && typeof document !== 'undefined' && document.querySelectorAll) {
         _addDrumsLibraryFilter();
