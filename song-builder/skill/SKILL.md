@@ -196,4 +196,7 @@ charts are exported in `Desktop\Slopsmith DLC - Best 10\DLC Builder\`.
 - `--only` titles may contain commas; matching is on all comma parts.
 - A song's tab length should be within a few seconds of the MP3. If not, it's the wrong recording
   or version.
-- No lyrics: whisperx isn't installed and lyrics text must come from the user (don't fetch lyrics).
+- Lyrics: never fetch them from the web. `scripts/lyrics_sync.py SONG.sloppak...` transcribes the song's own
+  vocals stem with local Whisper (large-v3, GPU; openai-whisper installed --no-deps in `.mirvenv`) into timed
+  `lyrics.json` (skips songs that have lyrics unless `--force`; backs up first; prints counts, not words).
+  Machine-made: expect some misheard words, worst on mumbled/doubled vocals. Skip Synth builds (no singing).
