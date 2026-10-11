@@ -72,15 +72,18 @@ def fill_gaps(song, primary, fillers, min_bars=2):
     """Return a copy of `song` whose track `primary` has every run of >= min_bars
     empty measures filled from the first filler track with notes in that bar.
     Filler notes are re-fretted on the same string for the primary's tuning
-    (dropped if out of range).  Returns (song_copy, filled_bar_count)."""
+    (dropped if out of range).  Returns (song_copy, filled_bar_count, sources) where
+    sources[k] is the track that bar k's notes come from (None = empty bar)."""
     import copy
+    tgt = song.tracks[primary]
+    n = len(tgt.measures)
+    empty = [not _measure_has_notes(m) for m in tgt.measures]
+    sources = [None if e else primary for e in empty]
     if not fillers:
-        return song, 0
+        return song, 0, sources
     s = copy.deepcopy(song)
     tgt = s.tracks[primary]
     tgt_tun = [st.value for st in tgt.strings]
-    n = len(tgt.measures)
-    empty = [not _measure_has_notes(m) for m in tgt.measures]
     filled = 0
     i = 0
     while i < n:
@@ -124,9 +127,45 @@ def fill_gaps(song, primary, fillers, min_bars=2):
                         b.notes = keep
                     prev_src = src
                 dst_m.voices = voices
+                sources[k] = src
                 filled += 1
         i = j
-    return s, filled
+    return s, filled, sources
+
+
+# Tone names that Tone Automation's name classifier sorts into Clean / Acoustic / OD / Dist.
+_TONE_WORDS = (("acoustic", "Acoustic"), ("nylon", "Acoustic"), ("distort", "Distortion"),
+               ("overdriv", "Crunch"), ("crunch", "Crunch"), ("clean", "Clean"), ("jazz", "Clean"))
+_GM_TONES = {24: "Acoustic", 25: "Acoustic", 29: "Crunch", 30: "Distortion"}  # GM programs; other guitars = Clean
+
+
+def track_tone(track):
+    """Tone name for a GP track: from its name, else its GM program."""
+    if gp2rs._is_bass_track(track):
+        return "Bass"
+    name = track.name.lower()
+    for word, tone in _TONE_WORDS:
+        if word in name:
+            return tone
+    return _GM_TONES.get(track.channel.instrument, "Clean")
+
+
+def tone_block(song, sources, xml, warp):
+    """{"base", "changes": [{"t", "name"}]} for an arrangement whose bars come from `sources`
+    (per GP measure): the tone switches at the first downbeat of a bar from a different-sounding part."""
+    tones = [track_tone(song.tracks[s]) if s is not None else None for s in sources]
+    base = cur = None
+    changes = []
+    for e in ET.fromstring(xml).find("ebeats"):
+        m = int(e.get("measure"))  # GP measure number (1-based; repeats replay it)
+        if m < 1 or m > len(tones) or tones[m - 1] is None or tones[m - 1] == cur:
+            continue
+        if cur is None:
+            base = tones[m - 1]
+        else:
+            changes.append({"t": round(float(warp(float(e.get("time")))), 3), "name": tones[m - 1]})
+        cur = tones[m - 1]
+    return {"base": base, "changes": changes} if base else None
 
 
 def _xml_notes(xml_str):
@@ -755,9 +794,9 @@ def main():
         y, _ = librosa.load(a.audio, sr=SR, mono=True)
         dur = len(y) / SR
 
-    xmls = {}
+    xmls, bar_sources = {}, {}
     for idx, name in picks:
-        src, nfill = fill_gaps(song, idx, fills[idx], a.fill_min_bars)
+        src, nfill, bar_sources[idx] = fill_gaps(song, idx, fills[idx], a.fill_min_bars)
         if fills[idx]:
             log(f"  {name}: filled {nfill} empty bars from tracks {fills[idx]}")
         xmls[idx] = polish_xml(_track_xml(src, idx, name))
@@ -875,6 +914,11 @@ def main():
         arr.name = name
         wire = arrangement_to_wire(arr)
         wire["name"] = name
+        tones = tone_block(song, bar_sources[idx], xmls[idx], warp)
+        if tones:
+            wire["tones"] = tones
+            log(f"  {name}: tone {tones['base']}" + (f", {len(tones['changes'])} tone changes"
+                                                     if tones["changes"] else ""))
         if first:
             r = ET.fromstring(wx)
             wire["beats"] = [{"time": float(e.get("time")), "measure": int(e.get("measure"))}
