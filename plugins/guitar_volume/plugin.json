@@ -1,0 +1,8 @@
+{
+  "id": "guitar_volume",
+  "name": "_Guitar Volume (master level for your amp sound)",
+  "version": "1.0.0",
+  "private": true,
+  "script": "screen.js",
+  "description": "One player-bar slider for the volume of the guitar you're playing (the native amp chain), on top of every preset's own level."
+}
