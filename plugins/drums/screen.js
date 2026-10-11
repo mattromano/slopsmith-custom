@@ -4339,8 +4339,13 @@ function createFactory(forceView) {
                 _latestTime = bundle.currentTime;
                 if (_view === '3d') {
                     if (_view3d) {
+                        const si = bundle.songInfo || {};
+                        const hasDrums = Array.isArray(si.arrangements)
+                            && si.arrangements.some((a) => a && DRUMS_PATTERNS.test(a.name || ''));
                         _view3d.render({ time: +bundle.currentTime || 0, session: null, wallNow: _now(),
-                            message: 'No drum chart in this song: ' + ((bundle.songInfo && bundle.songInfo.arrangement) || 'this part') + ' is not drums' });
+                            message: hasDrums
+                                ? 'Pick the Drums part: ' + (si.arrangement || 'this part') + ' is not drums'
+                                : 'This song has no drums' });
                     }
                     _placeBadge(null);
                     _placeTimingBtn(null);
