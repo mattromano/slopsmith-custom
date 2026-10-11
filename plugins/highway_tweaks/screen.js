@@ -1189,6 +1189,24 @@
                 body: JSON.stringify(entry), keepalive: true }).catch(() => {});
         } catch (_) { /* ignore */ }
     }
+    // Measured 2026-10-10 from this log: 1,443 hits on Murder / moody landed a steady +30..+37 ms
+    // late with drums input offset 0 (charts sit on the drum stem within a few ms). Set the input
+    // offset to +30 ms once; later changes (HUD Apply, Sync Lab, settings) are left alone.
+    try {
+        if (!localStorage.getItem('hwt.drumInputOffsetSeed')) {
+            const cur = Number(localStorage.getItem('drums_input_offset_ms') || 0);
+            const apply = () => {
+                if (typeof window.__drumsSetInputOffset === 'function') { window.__drumsSetInputOffset(30); return true; }
+                return false;
+            };
+            if (!cur) {
+                localStorage.setItem('drums_input_offset_ms', '30');   // read by the drums plugin at load
+                let n = 0;
+                const t = setInterval(() => { if (apply() || ++n > 40) clearInterval(t); }, 500);
+            }
+            localStorage.setItem('hwt.drumInputOffsetSeed', '1');
+        }
+    } catch (_) { /* storage blocked */ }
     window.addEventListener('drums:judgment', (e) => {
         const d = e && e.detail;
         if (!d || !Number.isFinite(d.noteTime) || !Number.isFinite(d.errMs)) return;
