@@ -4779,6 +4779,17 @@ function _tidyPanelSelect(sel) {
         sel.dispatchEvent(new Event('change', { bubbles: true }));
         return;   // splitscreen rebuilds the picker; tidy again next pass
     }
+    // The Drum Highway on a non-drums part while this song has Drums: a panel saved on a
+    // song without drums falls back to Lead and is saved that way, and every later song then
+    // opened it on Lead ("No drum chart"). Move it to this song's Drums.
+    if (selViz && selViz[1] === 'drums' && !drums.has(selIdx)) {
+        const target = [...drumVizIdx].find(([i]) => drums.has(i));
+        if (target) {
+            sel.value = target[1].value;
+            sel.dispatchEvent(new Event('change', { bubbles: true }));
+            return;
+        }
+    }
     for (const o of opts) {
         const i = _panelArrIndex(o.value);
         if (i < 0) continue;   // Lyrics etc.
