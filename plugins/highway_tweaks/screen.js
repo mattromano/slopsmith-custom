@@ -1165,6 +1165,50 @@
     window.addEventListener('beforeunload', () => flush('unload'));
 })();
 
+// ── 4c. Drum judgment log ───────────────────────────────────────────────
+// Every judged drum hit (drums plugin's `drums:judgment` event: note time,
+// pad, error ms with + = late) goes to the same log as kind
+// "drum_judgments", with the A/V and drums input offsets in use, when the
+// song ends or changes. The drums plugin itself only keeps the last 24 for
+// its HUD meter. Off with the same highwayTweaksNoJudgmentLog switch.
+(function drumJudgmentLog() {
+    let off = false;
+    try { off = localStorage.getItem('highwayTweaksNoJudgmentLog') === '1'; } catch (_) { /* ignore */ }
+    if (off) return;
+    let buf = [], song = null, inputOffset = null;
+    function flush(reason) {
+        if (!buf.length) return;
+        let av = null;
+        try { av = window.highway.getAvOffset(); } catch (_) { /* ignore */ }
+        const entry = { kind: 'drum_judgments', reason, song, av_offset_ms: av, input_offset_ms: inputOffset,
+            split: !!(window.slopsmithSplitscreen && window.slopsmithSplitscreen.isActive && window.slopsmithSplitscreen.isActive()),
+            events: buf };
+        buf = [];
+        try {
+            fetch('/api/plugins/highway_tweaks/log', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(entry), keepalive: true }).catch(() => {});
+        } catch (_) { /* ignore */ }
+    }
+    window.addEventListener('drums:judgment', (e) => {
+        const d = e && e.detail;
+        if (!d || !Number.isFinite(d.noteTime) || !Number.isFinite(d.errMs)) return;
+        if (!song) {
+            const cs = window.slopsmith && window.slopsmith.currentSong;
+            song = cs ? { filename: cs.filename, title: cs.title } : null;
+        }
+        inputOffset = d.inputOffsetMs;
+        buf.push({ t: Math.round(d.noteTime * 1000) / 1000, e: Math.round(d.errMs * 10) / 10, p: d.pad });
+        if (buf.length >= 4000) flush('full');
+    });
+    const bus = window.slopsmith;
+    if (bus && bus.on) {
+        bus.on('song:ended', () => flush('ended'));
+        bus.on('song:loading', () => { flush('next-song'); song = null; });
+        bus.on('song:stop', () => flush('stop'));
+    }
+    window.addEventListener('beforeunload', () => flush('unload'));
+})();
+
 // ── 5. Performance HUD + streak effects ─────────────────────────────────
 // Replaces note_detect's small accuracy/streak/count lines with:
 //  - a stats panel (top right, above the timing gauge): big accuracy, last-50
