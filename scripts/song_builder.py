@@ -36,6 +36,10 @@ ALBUM.yaml:
       audio: "01 "              # substring of the MP3 filename
       tracks: auto              # or an explicit spec "0+1:Lead,1+0:Rhythm,2:Bass"
       variant: Songsterr        # optional: appended to the title "(Songsterr)" and the file name
+      fill_min_bars: 1          # optional (song or album): fill empty runs this short (default 2)
+
+Every guitar arrangement gets tone names per section (Clean / Acoustic / Crunch / Distortion, from
+the GP track each bar comes from) so Tone Automation switches presets.
 """
 from __future__ import annotations
 
@@ -198,7 +202,7 @@ def load_jobs(cfg_path: Path) -> list[dict]:
         if tracks == "auto":
             tracks = spec_string(plan_tracks(info))
         method = s.get("method") or tuning.get(title)
-        jobs.append(dict(method=method, title=title, artist=s.get("artist", cfg["artist"]), album=s.get("album", cfg.get("album", "")),
+        jobs.append(dict(method=method, fill_min_bars=s.get("fill_min_bars", cfg.get("fill_min_bars")), title=title, artist=s.get("artist", cfg["artist"]), album=s.get("album", cfg.get("album", "")),
                          year=s.get("year", cfg.get("year", 0)), tab=tab, audio=audio, cover=cover, tracks=tracks,
                          slug=f"{short}_{slug}", out=out_dir / f"{slug}_-_{short}.sloppak",
                          names={int(x.split(':')[0].split('+')[0]): info[int(x.split(':')[0].split('+')[0])]["name"]
@@ -214,6 +218,8 @@ def build(job: dict, extra=(), out=None, tag="") -> dict:
            "--album", str(job["album"]), "--year", str(job["year"]), "--report", str(rep), *extra]
     if job.get("method") and "--method" not in extra:
         cmd += ["--method", job["method"]]
+    if job.get("fill_min_bars"):
+        cmd += ["--fill-min-bars", str(job["fill_min_bars"])]
     if job["cover"]:
         cmd += ["--cover", str(job["cover"])]
     t0 = time.time()
