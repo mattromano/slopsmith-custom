@@ -1,0 +1,21 @@
+artist: Royel Otis
+album: ""                       # per-song below
+year: 0
+audio_dir: C:/Users/mattr/Desktop/Slopsmith Targets/Royel Otis
+tab_dir: C:/Users/mattr/Desktop/Slopsmith Targets/Royel Otis/tabs
+short: Royel_Otis
+# Audio = Songsterr's synth MP3 export of each tab (no real recordings available).
+# variant "Synth" keeps these separate from real-recording builds later: swap in the MP3,
+# drop the variant, and rebuild.
+songs:
+  # person-written Songsterr tabs
+  - {title: Oysters In My Pocket, tab: Oysters In My Pocket-01-17-2025, audio: Oysters, variant: Synth}
+  - {title: Heading For The Door, tab: Heading For The Door, audio: Heading, album: PRATTS & PAIN, year: 2024, variant: Synth}
+  - {title: Til The Morning, tab: Til The Morning, audio: Til The Morning, album: PRATTS & PAIN, year: 2024, variant: Synth}
+  - {title: Egg Beater, tab: Egg Beater, audio: Egg Beater, variant: Synth}
+  - {title: say something, tab: say something, audio: say something, variant: Synth}
+  - {title: who's your boyfriend, tab: who’s your boyfriend-03-23, audio: boyfriend, variant: Synth}
+  - {title: Murder on the Dancefloor (Like A Version), tab: Murder on the Dance Floor (triple j, audio: Murder, variant: Synth}
+  # AI-generated tabs
+  - {title: moody, tab: moody, audio: moody, variant: Synth}
+  - {title: Linger (SiriusXM Session), tab: Linger, audio: Linger, variant: Synth}

@@ -1,0 +1,32 @@
+artist: Royel Otis
+album: ""                       # per-song below
+year: 0
+audio_dir: C:/Users/mattr/Music/AudioDownloads
+tab_dir: C:/Users/mattr/Desktop/Slopsmith Targets/Royel Otis/tabs
+short: Royel_Otis
+fill_min_bars: 1                # Lead gets every bar any guitar part plays (Matt plays Lead + Drums)
+# Real recordings (YouTube rips, 2026-10-10). The earlier "(Synth)" builds from royel_otis.yaml
+# stay as separate files. Where Songsterr has two tab versions, the one whose length matches wins.
+# Lead = the lead part with every silent bar filled from the other guitar parts; each bar keeps its
+# source part's tone (Clean / Acoustic / Crunch / Distortion) for Tone Automation.
+songs:
+  # person-written Songsterr tabs
+  - {title: Oysters In My Pocket, tab: [Oysters In My Pocket-01-17-2025, Oysters in My Pocke-09-13-2026], audio: Oysters, year: 2022,
+     tracks: "0+1:Lead,1+0:Rhythm,2:Bass"}
+  - {title: Heading For The Door, tab: Heading For The Door, audio: Heading For The Door, album: PRATTS & PAIN, year: 2024,
+     tracks: "0:Lead,1:Bass"}
+  - {title: Til The Morning, tab: Til The Morning, audio: Til The Morning, album: PRATTS & PAIN, year: 2024,
+     tracks: "0+1:Lead,1+0:Rhythm,2:Bass"}
+  - {title: Egg Beater, tab: Egg Beater, audio: Egg Beater, year: 2022,
+     tracks: "0:Lead,1:Bass"}
+  - {title: say something, tab: say something, audio: say something, year: 2025,
+     tracks: "0+1:Lead,1+0:Rhythm,2:Bass"}
+  - {title: who's your boyfriend, tab: your boyfriend (video version), audio: boyfriend, year: 2025,
+     tracks: "0+1:Lead,1+0:Rhythm,2:Bass"}
+  - {title: Murder on the Dancefloor (Like A Version), tab: Murder on the Dance Floor (triple j, audio: Murder, year: 2024,
+     tracks: "0+1:Lead,1+0:Rhythm,2:Bass"}
+  # AI-generated tabs
+  - {title: moody, tab: moody, audio: moody, year: 2025,
+     tracks: "0+1:Lead,1+0:Rhythm,2:Bass"}
+  - {title: Linger (SiriusXM Session), tab: Linger, audio: Linger, year: 2024,
+     tracks: "1+0:Lead,2:Bass"}        # one real guitar part (acoustic); a Rhythm would duplicate it

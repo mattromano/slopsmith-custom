@@ -151,3 +151,24 @@ Guitar Pro tabs, synced to the user's own MP3s, with split stems.
   torch 2.14.1+cu130 (GPU works on the RTX 5070 Ti).
 - Neither Slopsmith instance (Docker at :8000, desktop at :18000) was running. The library picks
   up new or changed sloppaks on the next scan.
+
+## Royel Otis (2026-10-10)
+- No drum charts exist anywhere (Chorus Encore, RhythmVerse). No real recordings: audio is Songsterr's
+  synth MP3 export of each tab (Plus "Download > MP3"), so every song carries variant "(Synth)".
+- YAML `_build/albums/royel_otis.yaml`; tabs + MP3s in `Desktop\Slopsmith Targets\Royel Otis`.
+- Built 9: A Egg Beater, Heading For The Door, moody; B Murder (LAV), Til The Morning, say something,
+  who's your boyfriend; C Linger (AI), Oysters. Grades are Basic Pitch vs synth timbre, not real-recording fit.
+- Drums from GP tracks on 7; Murder flagged (12% <30 ms), Linger tab has no drum track.
+- To upgrade: drop the real MP3 in, remove `variant: Synth`, rebuild.
+
+## Royel Otis: real recordings (2026-10-10)
+- Real MP3s (YouTube rips, no embedded art -> no covers) in `Music\AudioDownloads`; YAML `_build/albums/royel_otis_real.yaml`
+  (no variant, so the "(Synth)" builds stay as separate files). Same Songsterr tabs; Oysters picked the 09-13-2026 tab by length.
+- After tune (Oysters, Egg Beater, say something, Murder switched sync method): A Egg Beater, Heading For The Door,
+  Murder (LAV), moody; B Oysters, Til The Morning, say something, who's your boyfriend; C Linger (AI tab).
+- Drums from the GP tracks on 8 (all validated); Linger has no drum track. Solos: tab-marked in Heading and moody only.
+- To check: who's your boyfriend Lead +0.13 s / Rhythm -0.23 s (opposite signs, so not a global offset; check in game).
+- Lead + Drums focus (Matt only plays those): every Lead now takes all guitar parts (`fill_min_bars: 1`, explicit
+  `tracks`), and every arrangement carries tone names per section from the source track (gp_to_sloppak
+  `tone_block`): Til The Morning Acoustic<->Crunch, moody Acoustic<->Clean, Murder Distortion, rest Clean.
+- Tone Pack seeds +4 dB trims for Clean and Acoustic once (`tone-pack-trims-seed`); adjust in Settings -> Tone Pack.

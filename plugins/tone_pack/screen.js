@@ -15,6 +15,8 @@
     const HOME_KEY = 'tone-pack-home';        // preset to go back to after a song ('' = off)
     const METAL_KEY = 'tone-pack-metal-artists';  // newline list; songs by these use the metal preset
     const MIGRATE_KEY = 'tone-pack-targets-v';
+    const TRIM_SEED_KEY = 'tone-pack-trims-seed';  // SEED_TRIMS applied once
+    const SEED_TRIMS = { clean: 4, acoustic: 4 };   // dB
 
     // The user's own presets for the categories (asked for 2026-10-09): crunch and distortion play
     // Main Lead, leads play Metal Tone; songs by metal / MCR-style artists play Metal Tone for all
@@ -137,8 +139,19 @@
         const firstRun = localStorage.getItem(TA_KEY) === null;
         let migrated = 0;
         try { migrated = Number(localStorage.getItem(MIGRATE_KEY)) || 0; } catch (_) { /* ignore */ }
+        const trims = readJson(TRIM_KEY, {});
+        let trimSeed = 0;
+        try { trimSeed = Number(localStorage.getItem(TRIM_SEED_KEY)) || 0; } catch (_) { /* ignore */ }
+        if (trimSeed < 1) {
+            // Clean / Acoustic louder (asked for 2026-10-10), once; Settings → Tone Pack changes stay.
+            for (const [cat, db] of Object.entries(SEED_TRIMS)) {
+                if (!Number(trims[cat])) trims[cat] = db;
+            }
+            writeJson(TRIM_KEY, trims);
+            try { localStorage.setItem(TRIM_SEED_KEY, '1'); } catch (_) { /* ignore */ }
+        }
         const res = mergePack(pack, readJson(PRESETS_KEY, {}), readJson(TA_KEY, null), readJson(SEEN_KEY, []),
-            readJson(TRIM_KEY, {}), { preferred: migrated < 2 ? PREFERRED_TARGETS : null });
+            trims, { preferred: migrated < 2 ? PREFERRED_TARGETS : null });
         try { localStorage.setItem(MIGRATE_KEY, '2'); } catch (_) { /* ignore */ }
         if (firstRun) res.ta.enabled = true;            // never configured: turn Tone Automation on
         writeJson(PRESETS_KEY, res.presets);
