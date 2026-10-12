@@ -22,6 +22,10 @@
     // Main Lead, leads play Metal Tone; songs by metal / MCR-style artists play Metal Tone for all
     // their crunch / distortion. Applied once (MIGRATE_KEY); later target changes are the user's.
     const PREFERRED_TARGETS = { od: 'Main Lead', dist: 'Main Lead', solo: 'Metal Tone' };
+    // Clean and Acoustic had been left on Main Lead, so clean / acoustic songs (Royel Otis "moody")
+    // played the crunch lead tone (found 2026-10-12): point them at this pack's Clean / Acoustic
+    // presets, once (MIGRATE_KEY 3).
+    const PACK_TARGETS_V3 = ['clean', 'acoustic'];
     const METAL_PRESET = 'Metal Tone';
     const DEFAULT_METAL_ARTISTS = [
         'My Chemical Romance', 'Metallica', 'Megadeth', 'Slayer', 'Anthrax', 'Testament', 'Annihilator',
@@ -120,6 +124,12 @@
                 if (presets[name]) ta.targets[cat] = name;
             }
         }
+        if (opts && opts.packCats) {
+            for (const cat of opts.packCats) {
+                const name = (pack.targets || {})[cat];
+                if (name && presets[name]) ta.targets[cat] = name;
+            }
+        }
         // Idle fallback: the user's own default lead if there is one, else Crunch.
         if (!ta.targets.idle) {
             const own = Object.keys(presets).find(n => presets[n].generatedBy !== 'tone_pack');
@@ -151,14 +161,14 @@
             try { localStorage.setItem(TRIM_SEED_KEY, '1'); } catch (_) { /* ignore */ }
         }
         const res = mergePack(pack, readJson(PRESETS_KEY, {}), readJson(TA_KEY, null), readJson(SEEN_KEY, []),
-            trims, { preferred: migrated < 2 ? PREFERRED_TARGETS : null });
-        try { localStorage.setItem(MIGRATE_KEY, '2'); } catch (_) { /* ignore */ }
+            trims, { preferred: migrated < 2 ? PREFERRED_TARGETS : null, packCats: migrated < 3 ? PACK_TARGETS_V3 : null });
+        try { localStorage.setItem(MIGRATE_KEY, '3'); } catch (_) { /* ignore */ }
         if (firstRun) res.ta.enabled = true;            // never configured: turn Tone Automation on
         writeJson(PRESETS_KEY, res.presets);
         writeJson(TA_KEY, res.ta);
         writeJson(SEEN_KEY, res.seen);
         writeJson(STATE_KEY, { version: pack.version, kilohearts: !!pack.kilohearts, missing: pack.missing || [] });
-        if (res.added.length || res.updated.length || migrated < 2) {
+        if (res.added.length || res.updated.length || migrated < 3) {
             console.log('[tone-pack] added', res.added, 'updated', res.updated);
             const ta = window._aeToneAutomation;
             try { if (ta && ta.renderSettings) ta.renderSettings(); } catch (_) { /* audio plugin UI not ready */ }

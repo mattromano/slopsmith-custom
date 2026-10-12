@@ -104,3 +104,15 @@ test('preferred targets replace the category targets once', () => {
     assert.equal(r.ta.targets.solo, 'Metal Tone');
     assert.equal(r.ta.targets.bogus, undefined);
 });
+
+test('packCats points Clean / Acoustic at the pack presets even when set to a lead (once, migration 3)', () => {
+    const pk = { presets: { 'Auto · Clean': { nativePreset: 'c' }, 'Auto · Acoustic': { nativePreset: 'a' } },
+        targets: { clean: 'Auto · Clean', acoustic: 'Auto · Acoustic' } };
+    const ta = { targets: { clean: 'Main Lead', acoustic: 'Main Lead', od: 'Main Lead', idle: 'Main Lead' } };
+    const r = mergePack(pk, { 'Main Lead': { nativePreset: 'L' } }, ta, [], {}, { packCats: ['clean', 'acoustic'] });
+    assert.equal(r.ta.targets.clean, 'Auto · Clean');
+    assert.equal(r.ta.targets.acoustic, 'Auto · Acoustic');
+    assert.equal(r.ta.targets.od, 'Main Lead', 'other categories untouched');
+    const r2 = mergePack(pk, { 'Main Lead': { nativePreset: 'L' } }, { targets: { clean: 'Main Lead' } }, [], {}, {});
+    assert.equal(r2.ta.targets.clean, 'Main Lead', 'without the flag a user target stays');
+});
