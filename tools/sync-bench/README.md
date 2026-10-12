@@ -40,3 +40,15 @@ Two separate muted browsers (host + guest) in one room, both on this PC (process
 
 Measured along the way (seekprobe.mjs / rateprobe.mjs): a stems play or seek freezes the clock 120-160 ms
 before audio restarts; playbackRate changes take effect at once (1.003 -> clock 1.0024).
+
+## Frame-rate / lag profiling (2026-10-12)
+
+- `profile.mjs`: CPU profile + frame intervals of a song playing in the muted test browser
+  (`BASE=http://127.0.0.1:8002 SONG=... ARR=0 VW=2560 VH=1343`).
+- `liveprof.mjs` / `livetrace.mjs`: the same against Matt's REAL app, read-only. Needs Slopsmith started with
+  `Slopsmith.exe --remote-debugging-port=9229 --remote-debugging-address=127.0.0.1 --inspect=127.0.0.1:9230`;
+  liveprof waits until a song plays, then profiles renderer + main process; livetrace breaks the renderer's
+  non-JS time down by Chromium trace event.
+- Finding 10-12: in the real app the renderer main thread was 100 % busy while playing (~45 fps, a third of
+  frames held for 2 vsyncs), ~70 % of it native per-frame work (lifecycle / WillBeginMainFrame self time), with
+  only ~15 % JS; the same song at the same size in the test browser: 21 % busy, steady 60 fps.

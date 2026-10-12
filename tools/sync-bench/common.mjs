@@ -19,7 +19,7 @@ export async function launch() {
             '--disable-background-timer-throttling',
         ],
     });
-    const page = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+    const page = await browser.newPage({ viewport: { width: +(process.env.VW || 1600), height: +(process.env.VH || 900) } });
     const errors = [];
     page.on('pageerror', (e) => errors.push(String(e)));
     page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
