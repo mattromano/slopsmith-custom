@@ -21,8 +21,12 @@ import sys
 from pathlib import Path
 
 P = Path(os.environ["APPDATA"]) / "slopsmith-desktop" / "plugins"
+# The app ignores a user copy of some bundled plugins (audio_engine: "User-installed copy of bundled
+# plugin ... ignored; using bundled version" in the debug log), so patch the bundled copies too.
+BUNDLED = Path("C:/Program Files/Slopsmith/current/resources/slopsmith/plugins")
 BACKUP = Path(sys.argv[1]) if len(sys.argv) > 1 else None
-FILES = ["audio_engine/screen.js", "nam_tone/screen.js", "nam_rig_builder/screen.js"]
+NAMES = ["audio_engine/screen.js", "nam_tone/screen.js", "nam_rig_builder/screen.js"]
+FILES = [(root, rel) for root, tag in ((P, "user"), (BUNDLED, "bundled")) for rel in NAMES]
 OPS = "loadPreset|clearChain|loadNAMModel|loadIR|loadVST|removeProcessor|moveProcessor"
 CALL = re.compile(r"(?<![\w$.'])api\.(" + OPS + r")\(")
 MARK = "/* chain-lock prelude (slopsmith-custom/tools/patch_chain_lock.py) */"
@@ -50,8 +54,10 @@ PRELUDE = MARK + r"""
 })();
 """
 
-for rel in FILES:
-    f = P / rel
+for root, rel in FILES:
+    f = root / rel
+    tag = "bundled " if root == BUNDLED else ""
+    rel = tag + rel
     if not f.exists():
         print(f"{rel}: not installed, skipped")
         continue
@@ -66,7 +72,8 @@ for rel in FILES:
         print(f"{rel}: already patched")
         continue
     if BACKUP:
-        (BACKUP / rel).parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(f, BACKUP / rel)
+        dst = BACKUP / rel.replace(" ", "_")
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(f, dst)
     f.write_bytes(text.encode("utf-8"))
     print(f"{rel}: {n} chain calls routed through the queue")
