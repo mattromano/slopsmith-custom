@@ -1,0 +1,43 @@
+import { launch } from './common.mjs';
+const { browser, page, errors } = await launch();
+const W = +(process.env.VW || 2000), H = +(process.env.VH || 1000);
+await page.goto('http://127.0.0.1:8003/', { waitUntil: 'networkidle' });
+await page.waitForTimeout(2500);
+await page.evaluate(() => window.playSong('sloppak/My_Fault_-_Cheap_52.sloppak', 0));
+await page.waitForTimeout(9000);
+await page.evaluate(() => { const a = document.getElementById('audio'); a.pause(); a.currentTime = 30; });
+await page.waitForTimeout(800);
+const info = await page.evaluate(() => {
+  const c = document.getElementById('player-controls');
+  const bar = [...c.children].filter((e) => e.offsetParent !== null || e.className === 'pb-nav').map((e) => e.id || e.className || e.tagName);
+  const folders = Object.fromEntries([...document.querySelectorAll('.pb-folder')].map((f) => [f.dataset.folder, [...f.querySelectorAll('.pb-row')].filter((r) => r.style.display !== 'none').map((r) => r.querySelector('.pb-rl').textContent)]));
+  return { pb: !!window.__playerBar, bar, folders, h: c.getBoundingClientRect().height };
+});
+console.log(JSON.stringify(info, null, 1));
+await page.screenshot({ path: 'pb_bar.png', clip: { x: 0, y: H - 140, width: W, height: 140 } });
+await page.click('.pb-folder[data-folder="practice"] .pb-fbtn');
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'pb_practice.png', clip: { x: 0, y: H - 520, width: W, height: 520 } });
+await page.click('.pb-folder[data-folder="guitar"] .pb-fbtn');
+await page.waitForTimeout(300);
+await page.screenshot({ path: 'pb_guitar.png', clip: { x: 0, y: H - 520, width: W, height: 520 } });
+// pin "Loop" and check it lands on the bar, then unpin
+await page.click('.pb-folder[data-folder="practice"] .pb-fbtn');
+await page.click('.pb-row[data-row="loop"] .pb-pin');
+await page.keyboard.press('Escape');
+await page.waitForTimeout(200);
+const pinned = await page.evaluate(() => ({ onBar: !!document.querySelector('.pb-pins #btn-loop-a'), pins: window.__playerBar.pins() }));
+await page.screenshot({ path: 'pb_pinned.png', clip: { x: 0, y: H - 140, width: W, height: 140 } });
+await page.click('.pb-folder[data-folder="practice"] .pb-fbtn');
+await page.click('.pb-row[data-row="loop"] .pb-pin');
+const unpinned = await page.evaluate(() => !!document.querySelector('.pb-row[data-row="loop"] #btn-loop-a'));
+// do moved buttons still work? click Invert (view) and check the class toggles via its handler
+await page.keyboard.press('Escape');
+await page.click('.pb-folder[data-folder="view"] .pb-fbtn');
+const inv0 = await page.evaluate(() => document.getElementById('btn-invert').className);
+await page.click('#btn-invert');
+const inv1 = await page.evaluate(() => document.getElementById('btn-invert').className);
+await page.click('#btn-invert');
+console.log(JSON.stringify({ pinned, unpinned, invertToggles: inv0 !== inv1 }));
+console.log('errors', JSON.stringify(errors.filter((e) => !/audio-engine|404/.test(e)).slice(0, 5)));
+await browser.close();
