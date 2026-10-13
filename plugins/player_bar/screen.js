@@ -42,6 +42,7 @@
         { key: 'tuner', folder: 'guitar', label: 'Tuner', ids: ['btn-tuner-player'] },
         { key: 'capo', folder: 'guitar', label: 'Capo', ids: ['btn-capo'] },
         { key: 'pitch', folder: 'guitar', label: 'Pitch shift', ids: ['pitch-shift-ctl'] },
+        { key: 'retune', folder: 'guitar', label: 'Retune (live)', ids: ['lr-ctl'] },
         { key: 'transpose', folder: 'guitar', label: 'Chord names', ids: ['btn-transpose-chords'] },
         { key: 'midi', folder: 'guitar', label: 'MIDI', ids: ['btn-midi'] },
 

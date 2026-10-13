@@ -1,0 +1,1097 @@
+From db941510532bd14af26789d91d945c0ca0f2d0c2 Mon Sep 17 00:00:00 2001
+From: mattromano <42412983+mattromano@users.noreply.github.com>
+Date: Tue, 13 Oct 2026 13:06:21 -0700
+Subject: [PATCH] feat(audio): live pitch shift on the monitored guitar
+ (semitones + cents)
+
+LivePitchShifter: two-tap granular delay-line shifter with WSOLA splice
+alignment (search spans one low-string period, earliest strong peak, parabolic
+sub-sample refinement), so pitch is exact even on low E. ~10-15 ms added
+latency on down-tunings, ~8 ms for cents-only, bit-exact passthrough at 0.
+
+Runs in SourceChain right after input gain, so note detection, the gate and
+the tone chain hear the shifted guitar; the tuner's raw ring gets the dry
+signal through a mirror gate and getRawPitch undoes the ratio.
+
+Control rides on setTonePolish({ pitch: { semitones, cents, windowMs } }) so the
+0.2.9 IPC bridge needs no change; status is on getDeviceMetrics().livePitch.
+Adds the live_pitch ctest and an offline listening renderer.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/audio/AudioEngine.h         |   8 +
+ src/audio/CMakeLists.txt        |   1 +
+ src/audio/LivePitchShifter.cpp  | 269 ++++++++++++++++++++++++++++++++
+ src/audio/LivePitchShifter.h    |  97 ++++++++++++
+ src/audio/NodeAddon.cpp         |  30 ++++
+ src/audio/SourceChain.cpp       |  76 ++++++++-
+ src/audio/SourceChain.h         |  25 +++
+ tests/CMakeLists.txt            |   1 +
+ tests/live_pitch/CMakeLists.txt |   5 +
+ tests/live_pitch/render.cpp     | 169 ++++++++++++++++++++
+ tests/live_pitch/test.cpp       | 198 +++++++++++++++++++++++
+ 11 files changed, 874 insertions(+), 5 deletions(-)
+ create mode 100644 src/audio/LivePitchShifter.cpp
+ create mode 100644 src/audio/LivePitchShifter.h
+ create mode 100644 tests/live_pitch/CMakeLists.txt
+ create mode 100644 tests/live_pitch/render.cpp
+ create mode 100644 tests/live_pitch/test.cpp
+
+diff --git a/src/audio/AudioEngine.h b/src/audio/AudioEngine.h
+index 08a99ad..bdf738d 100644
+--- a/src/audio/AudioEngine.h
++++ b/src/audio/AudioEngine.h
+@@ -192,6 +192,14 @@ public:
+     // renderer exposes a per-preset toggle.
+     void setTonePolishEnabled(bool enabled) { source0().setTonePolishEnabled(enabled); }
+ 
++    // Live pitch shift of the monitored guitar (semitones*100 + cents, +/-500),
++    // with the grain window in ms. Default source only.
++    void setLivePitch(float cents, float windowMs) { source0().setLivePitch(cents, windowMs); }
++    float getLivePitchCents() const { return source0().getLivePitchCents(); }
++    float getLivePitchWindowMs() const { return source0().getLivePitchWindowMs(); }
++    float getLivePitchRatio() const { return source0().getLivePitchRatio(); }
++    double getLivePitchLatencyMs() const { return source0().getLivePitchLatencyMs(); }
++
+     // Backing track
+     void setBackingVolume(float vol) { backingVolume.store(vol); }
+     bool loadBackingTrack(const juce::File& file);
+diff --git a/src/audio/CMakeLists.txt b/src/audio/CMakeLists.txt
+index 9d18d56..143d81e 100644
+--- a/src/audio/CMakeLists.txt
++++ b/src/audio/CMakeLists.txt
+@@ -5,6 +5,7 @@ set(AUDIO_SOURCES
+     NodeAddon.cpp
+     NoiseGate.cpp
+     TonePolish.cpp
++    LivePitchShifter.cpp
+     AudioEngine.cpp
+     SourceChain.cpp
+     SignalChain.cpp
+diff --git a/src/audio/LivePitchShifter.cpp b/src/audio/LivePitchShifter.cpp
+new file mode 100644
+index 0000000..ae1cae7
+--- /dev/null
++++ b/src/audio/LivePitchShifter.cpp
+@@ -0,0 +1,269 @@
++#include "LivePitchShifter.h"
++
++#include <algorithm>
++#include <cmath>
++
++namespace
++{
++constexpr double kPi = 3.14159265358979323846;
++constexpr double kRatioSmoothSeconds = 0.03;
++constexpr double kMixFadeSeconds = 0.02;
++constexpr double kMaxGrainSeconds = 0.2;
++constexpr double kCorrSeconds = 0.005;
++// WSOLA search span. It must cover at least one period of the lowest string
++// (~14 ms reaches ~71 Hz, below drop-D) or splices leave a same-signed phase step
++// that biases low notes sharp/flat; the earliest strong match is preferred so
++// higher notes still splice close to the minimum delay.
++constexpr double kMinSearchSeconds = 0.014;
++constexpr double kSearchWindowFraction = 0.5;
++constexpr double kGoodMatchFraction = 0.95;
++
++uint64_t nextPow2(uint64_t v)
++{
++    uint64_t p = 1;
++    while (p < v) p <<= 1;
++    return p;
++}
++} // namespace
++
++void LivePitchShifter::prepare(double sampleRate, int /*maxBlockSize*/)
++{
++    sr = sampleRate > 0.0 ? sampleRate : 48000.0;
++
++    corrLen = std::clamp((int) std::lround(sr * kCorrSeconds), 32, 1024);
++    maxGrain = sr * kMaxGrainSeconds;
++    ratioCoeff = 1.0 - std::exp(-1.0 / (kRatioSmoothSeconds * sr));
++    mixStep = 1.0 / (kMixFadeSeconds * sr);
++
++    // Longest possible start delay: window + 2*search + guard, plus the
++    // correlation template reaching further back.
++    const double maxWindow = sr * kMaxWindowMs / 1000.0;
++    const double maxSearch = std::max(sr * kMinSearchSeconds, maxWindow * kSearchWindowFraction);
++    const double need = minDelay + maxWindow + maxSearch + corrLen + 64.0;
++    const uint64_t size = nextPow2((uint64_t) std::ceil(need));
++    line.assign((size_t) size, 0.0f);
++    mask = size - 1;
++    scores.assign((size_t) std::ceil(maxSearch) + 2, 0.0f);
++
++    reset();
++}
++
++void LivePitchShifter::reset()
++{
++    std::fill(line.begin(), line.end(), 0.0f);
++    writeIndex = 0;
++    ratio = 1.0;
++    mix = 0.0;
++    phase = 0.0;
++    tapA = {};
++    tapB = {};
++    tapsPrimed = false;
++    active.store(false, std::memory_order_relaxed);
++    reportedRatio.store(1.0f, std::memory_order_relaxed);
++    reportedLatency.store(0.0f, std::memory_order_relaxed);
++}
++
++void LivePitchShifter::setShiftCents(float cents)
++{
++    if (! std::isfinite(cents)) cents = 0.0f;
++    targetCents.store(std::clamp(cents, -kMaxShiftCents, kMaxShiftCents), std::memory_order_relaxed);
++}
++
++void LivePitchShifter::setWindowMs(float ms)
++{
++    if (! std::isfinite(ms)) ms = kDefaultWindowMs;
++    windowMs.store(std::clamp(ms, kMinWindowMs, kMaxWindowMs), std::memory_order_relaxed);
++}
++
++float LivePitchShifter::readHermite(double delay) const noexcept
++{
++    const double pos = (double) writeIndex - 1.0 - delay;
++    const double fl = std::floor(pos);
++    const float t = (float) (pos - fl);
++    const int64_t i = (int64_t) fl;
++    const float ym1 = line[(size_t) ((uint64_t) (i - 1) & mask)];
++    const float y0  = line[(size_t) ((uint64_t) i & mask)];
++    const float y1  = line[(size_t) ((uint64_t) (i + 1) & mask)];
++    const float y2  = line[(size_t) ((uint64_t) (i + 2) & mask)];
++    const float c1 = 0.5f * (y1 - ym1);
++    const float c2 = ym1 - 2.5f * y0 + 2.0f * y1 - 0.5f * y2;
++    const float c3 = 0.5f * (y2 - ym1) + 1.5f * (y0 - y1);
++    return ((c3 * t + c2) * t + c1) * t + y0;
++}
++
++void LivePitchShifter::updateGrainGeometry() noexcept
++{
++    const double window = sr * (double) windowMs.load(std::memory_order_relaxed) / 1000.0;
++    searchSpan = std::max(sr * kMinSearchSeconds, window * kSearchWindowFraction);
++    const double drift = std::abs(1.0 - ratio);
++    grainLen = drift > 1.0e-9 ? std::min(window / drift, maxGrain) : maxGrain;
++    grainLen = std::max(grainLen, 2.0 * (double) corrLen);
++    windowSpan = drift * grainLen;
++}
++
++double LivePitchShifter::chooseStartDelay(double otherDelay, double lo, double hi) const noexcept
++{
++    const int64_t w = (int64_t) writeIndex - 1;
++    const int64_t ref = (int64_t) std::lround(otherDelay);
++    const int step = std::max(1, (int) std::lround(sr / 48000.0));
++    const int jStep = 2 * step;
++
++    double refEnergy = 0.0;
++    for (int j = 0; j < corrLen; j += jStep)
++    {
++        const float r = line[(size_t) ((uint64_t) (w - ref - j) & mask)];
++        refEnergy += (double) r * r;
++    }
++    if (refEnergy < 1.0e-12)
++        return 0.5 * (lo + hi);
++
++    const int64_t dLo = (int64_t) std::ceil(lo);
++    const int64_t dHi = std::min((int64_t) std::floor(hi), dLo + (int64_t) (scores.size() - 1) * step);
++    const int count = (int) ((dHi - dLo) / step) + 1;
++    double bestScore = -1.0e30;
++    for (int k = 0; k < count; ++k)
++    {
++        const int64_t d = dLo + (int64_t) k * step;
++        double dot = 0.0, energy = 0.0;
++        for (int j = 0; j < corrLen; j += jStep)
++        {
++            const float c = line[(size_t) ((uint64_t) (w - d - j) & mask)];
++            const float r = line[(size_t) ((uint64_t) (w - ref - j) & mask)];
++            dot += (double) c * r;
++            energy += (double) c * c;
++        }
++        const double score = dot / std::sqrt((energy + 1.0e-12) * refEnergy);
++        scores[(size_t) k] = (float) score;
++        bestScore = std::max(bestScore, score);
++    }
++    // Earliest interior local peak that is nearly as good as the best one:
++    // phase-continuous like the global best, but with the least added delay. An
++    // edge sample is not a peak (its true maximum lies outside the range), so it
++    // is only used when the range holds no interior peak at all.
++    int pick = -1;
++    if (bestScore > 0.0)
++    {
++        const float good = (float) (bestScore * kGoodMatchFraction);
++        for (int k = 1; k + 1 < count; ++k)
++        {
++            const float sc = scores[(size_t) k];
++            if (sc >= good && sc >= scores[(size_t) k - 1] && sc >= scores[(size_t) k + 1])
++            {
++                pick = k;
++                break;
++            }
++        }
++    }
++    double offset = 0.0;
++    if (pick < 0)
++    {
++        pick = 0;
++        for (int k = 1; k < count; ++k)
++            if (scores[(size_t) k] > scores[(size_t) pick]) pick = k;
++    }
++    else
++    {
++        // Parabolic refinement to a sub-sample lag.
++        const double ym = scores[(size_t) pick - 1], y0 = scores[(size_t) pick], yp = scores[(size_t) pick + 1];
++        const double den = ym - 2.0 * y0 + yp;
++        if (den < 0.0)
++            offset = std::clamp(0.5 * (ym - yp) / den, -0.5, 0.5) * step;
++    }
++    const double best = (double) (dLo + (int64_t) pick * step) + offset;
++
++    // Keep the other tap's fractional offset so the tested integer lag is exact.
++    const double frac = otherDelay - (double) ref;
++    return std::clamp(best + frac, lo, hi);
++}
++
++void LivePitchShifter::restartTap(Tap& tap, const Tap& other) noexcept
++{
++    // Ratio < 1 (down): delay grows over the grain, so start near the minimum.
++    // Ratio > 1 (up): delay shrinks, so start a full window above the minimum.
++    const double lo = ratio <= 1.0 ? minDelay : minDelay + windowSpan;
++    const double hi = lo + searchSpan;
++    tap.delay = chooseStartDelay(other.delay, lo, hi);
++}
++
++void LivePitchShifter::process(float* mono, int numSamples) noexcept
++{
++    if (mono == nullptr || numSamples <= 0 || line.empty())
++        return;
++
++    const float cents = targetCents.load(std::memory_order_relaxed);
++    const bool engaged = cents > kEngageThresholdCents || cents < -kEngageThresholdCents;
++
++    if (! engaged && mix <= 0.0)
++    {
++        // Bypassed: keep the delay line warm for a click-free re-engage, but
++        // leave the signal bit-untouched.
++        for (int i = 0; i < numSamples; ++i)
++            line[(size_t) (writeIndex++ & mask)] = mono[i];
++        ratio = 1.0;
++        tapsPrimed = false;
++        active.store(false, std::memory_order_relaxed);
++        reportedRatio.store(1.0f, std::memory_order_relaxed);
++        reportedLatency.store(0.0f, std::memory_order_relaxed);
++        return;
++    }
++
++    active.store(true, std::memory_order_relaxed);
++    const double targetRatio = engaged ? std::pow(2.0, (double) cents / 1200.0) : ratio;
++
++    updateGrainGeometry();
++    if (! tapsPrimed)
++    {
++        phase = 0.0;
++        tapB.delay = minDelay + 0.5 * searchSpan;
++        restartTap(tapA, tapB);
++        tapsPrimed = true;
++    }
++
++    const double maxDelay = (double) line.size() - (double) corrLen - 8.0;
++    const double mixTarget = engaged ? 1.0 : 0.0;
++
++    for (int i = 0; i < numSamples; ++i)
++    {
++        const float x = mono[i];
++        line[(size_t) (writeIndex++ & mask)] = x;
++
++        ratio += (targetRatio - ratio) * ratioCoeff;
++        const double drift = 1.0 - ratio;
++        tapA.delay = std::clamp(tapA.delay + drift, minDelay, maxDelay);
++        tapB.delay = std::clamp(tapB.delay + drift, minDelay, maxDelay);
++
++        const double prev = phase;
++        phase += 1.0 / grainLen;
++        if (phase >= 1.0)
++        {
++            phase -= 1.0;
++            restartTap(tapA, tapB);
++        }
++        else if (prev < 0.5 && phase >= 0.5)
++        {
++            restartTap(tapB, tapA);
++        }
++
++        const double s = std::sin(kPi * phase);
++        const float gA = (float) (s * s);
++        const float wet = gA * readHermite(tapA.delay) + (1.0f - gA) * readHermite(tapB.delay);
++
++        if (mix < mixTarget) mix = std::min(mixTarget, mix + mixStep);
++        else if (mix > mixTarget) mix = std::max(mixTarget, mix - mixStep);
++
++        mono[i] = mix >= 1.0 ? wet : x + (wet - x) * (float) mix;
++    }
++
++    if (! engaged && mix <= 0.0)
++    {
++        ratio = 1.0;
++        tapsPrimed = false;
++        active.store(false, std::memory_order_relaxed);
++        reportedRatio.store(1.0f, std::memory_order_relaxed);
++        reportedLatency.store(0.0f, std::memory_order_relaxed);
++        return;
++    }
++
++    reportedRatio.store((float) ratio, std::memory_order_relaxed);
++    reportedLatency.store((float) (0.5 * (tapA.delay + tapB.delay) * mix), std::memory_order_relaxed);
++}
+diff --git a/src/audio/LivePitchShifter.h b/src/audio/LivePitchShifter.h
+new file mode 100644
+index 0000000..f8e2dbf
+--- /dev/null
++++ b/src/audio/LivePitchShifter.h
+@@ -0,0 +1,97 @@
++#pragma once
++#include <atomic>
++#include <cstdint>
++#include <vector>
++
++// LivePitchShifter — low-latency pitch shift for the live (monitored) guitar.
++//
++// Time-domain granular delay-line shifter: the input is written into a short
++// circular delay line and read back by two taps that move at `ratio` samples per
++// output sample, so each tap's delay drifts by (1 - ratio) per sample. Each tap
++// lives for one grain, faded with sin^2 / cos^2 windows that sum to exactly 1,
++// and restarts while silent. When a tap restarts, its start delay is chosen by
++// a WSOLA-style normalized cross-correlation against the other tap (which is at
++// full gain at that moment), so the two overlapping grains are phase-aligned and
++// chords don't comb/warble.
++//
++// Latency is the average tap delay: the splice point found by the search (up to
++// one low-string period, less for higher notes) plus half the window a grain
++// traverses, which shrinks for cents-only shifts because long grains drift less. At 0 cents the shifter is a true
++// bit-exact passthrough (zero latency); engaging/disengaging crossfades over
++// ~20 ms. Pure C++ (no JUCE) so it can be unit-tested standalone.
++//
++// Threading: setShiftCents / setWindowMs from any thread (atomics);
++// prepare/reset on the device thread while audio is stopped; process on the
++// audio thread (RT-safe: no allocation, no locks).
++class LivePitchShifter
++{
++public:
++    static constexpr float kMaxShiftCents = 500.0f;   // +/- 5 semitones
++    static constexpr float kMinWindowMs = 6.0f;
++    static constexpr float kMaxWindowMs = 40.0f;
++    static constexpr float kDefaultWindowMs = 14.0f;
++    static constexpr float kEngageThresholdCents = 0.05f;
++
++    void prepare(double sampleRate, int maxBlockSize);
++    void reset();
++
++    void setShiftCents(float cents);
++    float getShiftCents() const { return targetCents.load(std::memory_order_relaxed); }
++    void setWindowMs(float ms);
++    float getWindowMs() const { return windowMs.load(std::memory_order_relaxed); }
++
++    // True when a non-zero shift is requested.
++    bool isEngaged() const
++    {
++        const float c = targetCents.load(std::memory_order_relaxed);
++        return c > kEngageThresholdCents || c < -kEngageThresholdCents;
++    }
++    // True while any wet signal is being produced (engaged or fading out).
++    // When false, process() leaves the buffer untouched.
++    bool isActive() const { return active.load(std::memory_order_relaxed); }
++    // Current pitch ratio actually applied (1.0 when bypassed).
++    float getCurrentRatio() const { return reportedRatio.load(std::memory_order_relaxed); }
++    // Average added delay of the wet path in samples (0 when bypassed).
++    float getLatencySamples() const { return reportedLatency.load(std::memory_order_relaxed); }
++
++    // In-place mono processing.
++    void process(float* mono, int numSamples) noexcept;
++
++private:
++    struct Tap
++    {
++        double delay = 0.0;   // samples behind the write head
++    };
++
++    float readHermite(double delay) const noexcept;
++    double chooseStartDelay(double otherDelay, double lo, double hi) const noexcept;
++    void restartTap(Tap& tap, const Tap& other) noexcept;
++    void updateGrainGeometry() noexcept;
++
++    double sr = 48000.0;
++    std::vector<float> line;     // circular delay line (power-of-two size)
++    uint64_t mask = 0;
++    uint64_t writeIndex = 0;     // absolute count of samples written
++
++    std::atomic<float> targetCents{0.0f};
++    std::atomic<float> windowMs{kDefaultWindowMs};
++    std::atomic<bool> active{false};
++    std::atomic<float> reportedRatio{1.0f};
++    std::atomic<float> reportedLatency{0.0f};
++
++    // Audio-thread state.
++    double ratio = 1.0;          // smoothed pitch ratio
++    double ratioCoeff = 0.0;     // one-pole smoothing coefficient per sample
++    double mix = 0.0;            // dry(0) -> wet(1) crossfade position
++    double mixStep = 0.0;        // per-sample crossfade increment
++    double phase = 0.0;          // shared grain phasor in [0, 1)
++    double grainLen = 1.0;       // samples per grain
++    double windowSpan = 0.0;     // delay range one grain traverses (samples)
++    double minDelay = 4.0;       // keeps the 4-point interpolator behind the write head
++    double searchSpan = 0.0;     // WSOLA search span above the start delay (samples)
++    double maxGrain = 1.0;       // cap so tiny shifts don't make second-long grains
++    int corrLen = 256;           // correlation template length (samples)
++    mutable std::vector<float> scores;   // WSOLA candidate scores, sized in prepare()
++    Tap tapA, tapB;
++    bool tapsPrimed = false;
++};
+diff --git a/src/audio/NodeAddon.cpp b/src/audio/NodeAddon.cpp
+index caea995..d54b5d6 100644
+--- a/src/audio/NodeAddon.cpp
++++ b/src/audio/NodeAddon.cpp
+@@ -449,6 +449,15 @@ static Napi::Value GetDeviceMetrics(const Napi::CallbackInfo& info)
+     obj.Set("outputUnderflowCount", static_cast<double>(m.outputUnderflowCount));
+     obj.Set("outputRingFillFrames", m.outputRingFillFrames);
+     obj.Set("outputRingCapacityFrames", m.outputRingCapacityFrames);
++    // Live pitch shift status (lets the renderer detect native support and show
++    // the real added latency).
++    auto lp = Napi::Object::New(env);
++    lp.Set("supported", true);
++    lp.Set("cents", liveEngine->getLivePitchCents());
++    lp.Set("windowMs", liveEngine->getLivePitchWindowMs());
++    lp.Set("ratio", liveEngine->getLivePitchRatio());
++    lp.Set("latencyMs", liveEngine->getLivePitchLatencyMs());
++    obj.Set("livePitch", lp);
+     return obj;
+ }
+ 
+@@ -670,6 +679,27 @@ static Napi::Value SetTonePolish(const Napi::CallbackInfo& info)
+ 
+     auto o = info[0].As<Napi::Object>();
+ 
++    // Live pitch shift rides on this call so the installed app's IPC bridge
++    // (which forwards the payload untouched) needs no change:
++    //   { pitch: { semitones, cents, windowMs } }
++    // A pitch payload never touches Tone Polish.
++    if (o.Has("pitch"))
++    {
++        auto pv = o.Get("pitch");
++        if (! pv.IsObject())
++            return env.Undefined();
++        auto p = pv.As<Napi::Object>();
++        auto num = [&p](const char* key, double fallback) {
++            if (! p.Has(key)) return fallback;
++            auto v = p.Get(key);
++            return v.IsNumber() ? v.As<Napi::Number>().DoubleValue() : fallback;
++        };
++        const double cents = num("semitones", 0.0) * 100.0 + num("cents", 0.0);
++        const double windowMs = num("windowMs", liveEngine->getLivePitchWindowMs());
++        liveEngine->setLivePitch((float) cents, (float) windowMs);
++        return env.Undefined();
++    }
++
+     bool enabled = true;
+     if (o.Has("enabled"))
+     {
+diff --git a/src/audio/SourceChain.cpp b/src/audio/SourceChain.cpp
+index fa5ede5..d272982 100644
+--- a/src/audio/SourceChain.cpp
++++ b/src/audio/SourceChain.cpp
+@@ -1,6 +1,7 @@
+ #include "SourceChain.h"
+ #include "AudioSanitize.h"
+ 
++#include <algorithm>
+ #include <cmath>
+ 
+ // SourceChain — implementation. Method bodies are moved verbatim from
+@@ -29,13 +30,17 @@ void SourceChain::prepare(double sr, int blockSize)
+     // output > 0 case this storage stays unused.
+     if ((int) inputCaptureScratch.size() < blockSize)
+         inputCaptureScratch.assign((size_t) blockSize, 0.0f);
++    if ((int) dryTunerScratch.size() < blockSize)
++        dryTunerScratch.assign((size_t) blockSize, 0.0f);
+ 
+     signalChain.prepare(sr, blockSize);
+     pitchDetector.prepare(sr, blockSize);
+     mlNoteDetector.prepare(sr, blockSize);
+     noteVerifier.prepare(sr, blockSize);
+     noiseGate.prepare(sr, blockSize);
++    dryTunerGate.prepare(sr, blockSize);
+     tonePolish.prepare(sr);
++    livePitch.prepare(sr, blockSize);
+ }
+ 
+ void SourceChain::releaseResources()
+@@ -158,6 +163,30 @@ void SourceChain::processBlock(const float* const* inputData, int numInputChanne
+         monoSource = inputCaptureScratch.data();
+     }
+ 
++    // Live pitch shift (the guitar "retune"). Runs before every consumer below so
++    // the ML/YIN detectors, the gate and the tone chain hear the shifted guitar.
++    // A dry copy is kept for the tuner's raw ring so the tuner still reads the
++    // real strings. When the shift is off this whole block is a no-op and the
++    // signal is bit-identical to before.
++    bool dryTunerValid = false;
++    if (monoSource != nullptr)
++    {
++        float* mono = effectiveOutputChannels > 0 ? buffer.getWritePointer(0)
++                                                  : inputCaptureScratch.data();
++        const bool shifting = livePitch.isEngaged() || livePitch.isActive();
++        if (shifting && (int) dryTunerScratch.size() >= numSamples)
++        {
++            std::copy(mono, mono + numSamples, dryTunerScratch.begin());
++            dryTunerValid = true;
++        }
++        // Bypassed, this only records history (keeps a re-engage click-free)
++        // and leaves the samples untouched.
++        livePitch.process(mono, numSamples);
++        if (shifting)
++            for (int ch = 1; ch < filledOutputChannels; ++ch)
++                buffer.copyFrom(ch, 0, buffer, 0, 0, numSamples);
++    }
++
+     if (monoSource != nullptr)
+     {
+         // Feed the polyphonic ML detector the dry mono signal (pre-gate).
+@@ -188,8 +217,20 @@ void SourceChain::processBlock(const float* const* inputData, int numInputChanne
+         {
+             // monoSource aliases buffer ch0, which the gate just processed in place.
+             pitchDetector.pushSamples(monoSource, numSamples);
+-            // Same post-gate samples feed the tuner's raw-audio ring.
+-            pushRawAudioFrame(monoSource, numSamples);
++            // Same post-gate samples feed the tuner's raw-audio ring — except
++            // while the live pitch shift runs, when the tuner gets the dry
++            // strings through a mirror gate.
++            if (dryTunerValid)
++            {
++                float* dryPtr = dryTunerScratch.data();
++                juce::AudioBuffer<float> dryGateBuf(&dryPtr, 1, numSamples);
++                dryTunerGate.processBlock(dryGateBuf);
++                pushRawAudioFrame(dryPtr, numSamples);
++            }
++            else
++            {
++                pushRawAudioFrame(monoSource, numSamples);
++            }
+         }
+         else
+         {
+@@ -203,7 +244,17 @@ void SourceChain::processBlock(const float* const* inputData, int numInputChanne
+             juce::AudioBuffer<float> scratchGate(&scratchPtr, 1, numSamples);
+             noiseGate.processBlock(scratchGate);
+             pitchDetector.pushSamples(scratchPtr, numSamples);
+-            pushRawAudioFrame(scratchPtr, numSamples);
++            if (dryTunerValid)
++            {
++                float* dryPtr = dryTunerScratch.data();
++                juce::AudioBuffer<float> dryGateBuf(&dryPtr, 1, numSamples);
++                dryTunerGate.processBlock(dryGateBuf);
++                pushRawAudioFrame(dryPtr, numSamples);
++            }
++            else
++            {
++                pushRawAudioFrame(scratchPtr, numSamples);
++            }
+         }
+     }
+ 
+@@ -435,8 +486,23 @@ PitchDetector::Detection SourceChain::getRawPitchDetection() const
+     if (! audioRunning.load(std::memory_order_relaxed))
+         return {};
+ 
+-    // Always the raw YIN result — never the ML override.
+-    return pitchDetector.getLatestDetection();
++    // Always the raw YIN result — never the ML override. YIN hears the shifted
++    // guitar, so undo the live pitch ratio to report the real string pitch.
++    auto det = pitchDetector.getLatestDetection();
++    const float ratio = livePitch.getCurrentRatio();
++    if (det.frequency > 0.0f && ratio > 0.0f && std::abs(ratio - 1.0f) > 1.0e-6f)
++    {
++        static const char* names[] = { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
++        const float ref = pitchDetector.getTuningReference();
++        det.frequency /= ratio;
++        const float exact = 69.0f + 12.0f * std::log2(det.frequency / ref);
++        det.midiNote = (int) std::round(exact);
++        det.cents = 100.0f * (exact - (float) det.midiNote);
++        det.noteName = (det.midiNote >= 0 && det.midiNote <= 127)
++            ? juce::String(names[det.midiNote % 12]) + juce::String(det.midiNote / 12 - 1)
++            : juce::String("?");
++    }
++    return det;
+ }
+ 
+ ChordScorer::Result SourceChain::scoreChordWithMl(const ChordScorer::Request& req) const
+diff --git a/src/audio/SourceChain.h b/src/audio/SourceChain.h
+index 2962bb7..efa9689 100644
+--- a/src/audio/SourceChain.h
++++ b/src/audio/SourceChain.h
+@@ -2,6 +2,7 @@
+ #include "InputRingReader.h"
+ #include "NoiseGate.h"
+ #include "TonePolish.h"
++#include "LivePitchShifter.h"
+ #include "SignalChain.h"
+ #include "PitchDetector.h"
+ #include "ChordScorer.h"
+@@ -67,6 +68,7 @@ public:
+     {
+         signalChain.prepare(sr, blockSize);
+         noiseGate.prepare(sr, blockSize);
++        dryTunerGate.prepare(sr, blockSize);
+         tonePolish.prepare(sr);
+     }
+     void releaseMonitorChain() { signalChain.releaseResources(); }
+@@ -122,9 +124,27 @@ public:
+     void setNoiseGate(bool enabled, float thresholdDb, float releaseMs, float depthDb)
+     {
+         noiseGate.setParameters(enabled, thresholdDb, releaseMs, depthDb);
++        dryTunerGate.setParameters(enabled, thresholdDb, releaseMs, depthDb);
+     }
+     void setTonePolishEnabled(bool enabled) { tonePolish.setEnabled(enabled); }
+ 
++    // Live pitch shift of the monitored guitar (see LivePitchShifter.h). Applied
++    // right after input gain, so note detection, the gate and the tone chain all
++    // hear the shifted guitar; the tuner's raw ring keeps the dry strings.
++    void setLivePitch(float cents, float windowMs)
++    {
++        livePitch.setWindowMs(windowMs);
++        livePitch.setShiftCents(cents);
++    }
++    float getLivePitchCents() const { return livePitch.getShiftCents(); }
++    float getLivePitchWindowMs() const { return livePitch.getWindowMs(); }
++    float getLivePitchRatio() const { return livePitch.getCurrentRatio(); }
++    double getLivePitchLatencyMs() const
++    {
++        const double sr = sampleRate.load(std::memory_order_relaxed);
++        return sr > 0.0 ? livePitch.getLatencySamples() * 1000.0 / sr : 0.0;
++    }
++
+     void setInputGain(float gain) { inputGain.store(gain); }
+     float getInputGain() const { return inputGain.load(); }
+     void setChainOutputGain(float gain) { chainOutputGain.store(gain); }
+@@ -178,6 +198,8 @@ private:
+     MlNoteDetector mlNoteDetector;
+     NoiseGate noiseGate;
+     TonePolish tonePolish;
++    LivePitchShifter livePitch;
++    NoiseGate dryTunerGate;  // mirrors noiseGate's settings for the dry tuner feed
+     ChordScorer chordScorer;
+     NoteVerifier noteVerifier;  // constructed with *this as the InputRingReader
+ 
+@@ -210,6 +232,9 @@ private:
+     // Zero-output capture scratch, pre-sized in prepare() so the hot loop never
+     // allocates (input-only ASIO/JACK configs).
+     std::vector<float> inputCaptureScratch;
++    // Dry (pre-shift) mono copy for the tuner while the live pitch shift runs,
++    // pre-sized in prepare().
++    std::vector<float> dryTunerScratch;
+ 
+     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SourceChain)
+ };
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 9d5cddb..f479591 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -13,6 +13,7 @@ endif()
+ 
+ # Pure-helper tests (no JUCE / no platform deps) build everywhere.
+ add_subdirectory(audio_sanitize)
++add_subdirectory(live_pitch)
+ 
+ # Note: enable_testing() lives in the top-level CMakeLists.txt — calling it
+ # only here would register tests in build/tests/CTestTestfile.cmake but
+diff --git a/tests/live_pitch/CMakeLists.txt b/tests/live_pitch/CMakeLists.txt
+new file mode 100644
+index 0000000..f1cddeb
+--- /dev/null
++++ b/tests/live_pitch/CMakeLists.txt
+@@ -0,0 +1,5 @@
++# Pure, JUCE-free unit test for the live-guitar pitch shifter
++# (src/audio/LivePitchShifter.*): pitch accuracy, bit-exact bypass, latency.
++add_executable(live_pitch_test test.cpp ../../src/audio/LivePitchShifter.cpp)
++target_compile_features(live_pitch_test PRIVATE cxx_std_17)
++add_test(NAME live_pitch COMMAND live_pitch_test)
+diff --git a/tests/live_pitch/render.cpp b/tests/live_pitch/render.cpp
+new file mode 100644
+index 0000000..d154373
+--- /dev/null
++++ b/tests/live_pitch/render.cpp
+@@ -0,0 +1,169 @@
++// Offline listening render for LivePitchShifter. Usage:
++//   live_pitch_render <out_dir> [input.wav]
++// Without an input WAV it synthesizes a plucked-string guitar clip (open E chord
++// strum, power-chord chugs, single-note riff). Writes the dry clip plus shifted
++// versions at -1, -2 and -5 semitones and +37 cents for each latency mode, so the
++// shifter can be judged by ear before it goes into the app.
++#include "../../src/audio/LivePitchShifter.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdint>
++#include <cstdio>
++#include <cstring>
++#include <random>
++#include <string>
++#include <vector>
++
++namespace
++{
++constexpr int kSr = 48000;
++
++struct Pluck
++{
++    double hz;
++    double start;
++    float amp;
++};
++
++std::vector<float> synthGuitar()
++{
++    // Karplus-Strong strings; E standard open chord, E5 chugs, then a riff.
++    const double E2 = 82.41, B2 = 123.47, E3 = 164.81, Gs3 = 207.65, B3 = 246.94, E4 = 329.63;
++    std::vector<Pluck> plucks;
++    const double strum[] = { E2, B2, E3, Gs3, B3, E4 };
++    for (int i = 0; i < 6; ++i) plucks.push_back({ strum[i], 0.10 + 0.012 * i, 0.35f });
++    for (int k = 0; k < 8; ++k)
++        for (double f : { E2, B2, E3 }) plucks.push_back({ f, 2.2 + 0.25 * k, 0.4f });
++    const double riff[] = { E3, 196.0, 220.0, 246.94, 293.66, 246.94, 220.0, 196.0 };
++    for (int k = 0; k < 8; ++k) plucks.push_back({ riff[k], 4.4 + 0.2 * k, 0.45f });
++
++    std::vector<float> out((size_t) (kSr * 6.5), 0.0f);
++    std::mt19937 rng(3);
++    std::uniform_real_distribution<float> noise(-1.0f, 1.0f);
++    for (const auto& p : plucks)
++    {
++        const int len = (int) std::lround(kSr / p.hz);
++        std::vector<float> ring((size_t) len);
++        for (auto& s : ring) s = noise(rng) * p.amp;
++        const size_t start = (size_t) (p.start * kSr);
++        // Chugs are palm-muted: shorter decay.
++        const bool muted = p.start >= 2.2 && p.start < 4.4;
++        const float decay = muted ? 0.985f : 0.9985f;
++        size_t idx = 0;
++        for (size_t i = start; i < out.size(); ++i)
++        {
++            const size_t a = idx % (size_t) len, b = (idx + 1) % (size_t) len;
++            const float v = decay * 0.5f * (ring[a] + ring[b]);
++            ring[a] = v;
++            out[i] += v;
++            ++idx;
++            if (muted && i - start > (size_t) (0.22 * kSr)) break;
++        }
++    }
++    return out;
++}
++
++bool readWav(const char* path, std::vector<float>& out)
++{
++    FILE* f = std::fopen(path, "rb");
++    if (! f) return false;
++    std::vector<uint8_t> d;
++    uint8_t buf[65536];
++    size_t n;
++    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) d.insert(d.end(), buf, buf + n);
++    std::fclose(f);
++    if (d.size() < 44 || std::memcmp(d.data(), "RIFF", 4) != 0) return false;
++    int channels = 1, bits = 16, fmt = 1;
++    size_t pos = 12;
++    while (pos + 8 <= d.size())
++    {
++        const uint32_t sz = d[pos + 4] | (d[pos + 5] << 8) | (d[pos + 6] << 16) | ((uint32_t) d[pos + 7] << 24);
++        if (std::memcmp(&d[pos], "fmt ", 4) == 0)
++        {
++            fmt = d[pos + 8] | (d[pos + 9] << 8);
++            channels = d[pos + 10] | (d[pos + 11] << 8);
++            bits = d[pos + 22] | (d[pos + 23] << 8);
++        }
++        else if (std::memcmp(&d[pos], "data", 4) == 0)
++        {
++            const int bps = bits / 8;
++            const size_t frames = sz / (size_t) (bps * channels);
++            for (size_t i = 0; i < frames; ++i)
++            {
++                const uint8_t* s = &d[pos + 8 + i * (size_t) bps * channels];
++                float v = 0.0f;
++                if (fmt == 3 && bits == 32) std::memcpy(&v, s, 4);
++                else if (bits == 16) v = (int16_t) (s[0] | (s[1] << 8)) / 32768.0f;
++                else if (bits == 24) v = (float) ((int32_t) ((s[0] << 8) | (s[1] << 16) | ((uint32_t) s[2] << 24)) >> 8) / 8388608.0f;
++                out.push_back(v);
++            }
++            return true;
++        }
++        pos += 8 + sz + (sz & 1);
++    }
++    return false;
++}
++
++void writeWav(const std::string& path, const std::vector<float>& v)
++{
++    FILE* f = std::fopen(path.c_str(), "wb");
++    if (! f) return;
++    auto u32 = [f](uint32_t x) { std::fwrite(&x, 4, 1, f); };
++    auto u16 = [f](uint16_t x) { std::fwrite(&x, 2, 1, f); };
++    const uint32_t bytes = (uint32_t) v.size() * 2;
++    std::fwrite("RIFF", 1, 4, f); u32(36 + bytes); std::fwrite("WAVEfmt ", 1, 8, f);
++    u32(16); u16(1); u16(1); u32(kSr); u32(kSr * 2); u16(2); u16(16);
++    std::fwrite("data", 1, 4, f); u32(bytes);
++    for (float s : v)
++    {
++        const float c = s > 1.0f ? 1.0f : (s < -1.0f ? -1.0f : s);
++        u16((uint16_t) (int16_t) std::lround(c * 32767.0f));
++    }
++    std::fclose(f);
++}
++} // namespace
++
++int main(int argc, char** argv)
++{
++    if (argc < 2)
++    {
++        std::printf("usage: live_pitch_render <out_dir> [input.wav (48 kHz)]\n");
++        return 1;
++    }
++    const std::string dir = argv[1];
++    std::vector<float> dry;
++    if (argc >= 3 && ! readWav(argv[2], dry))
++    {
++        std::printf("could not read %s\n", argv[2]);
++        return 1;
++    }
++    if (dry.empty()) dry = synthGuitar();
++    writeWav(dir + "/00_dry.wav", dry);
++
++    struct Mode { const char* name; float ms; } modes[] = { { "tight", 8.0f }, { "balanced", 14.0f }, { "smooth", 22.0f } };
++    struct Shift { const char* name; float cents; } shifts[] = {
++        { "down1st", -100.0f }, { "down2st", -200.0f }, { "down5st", -500.0f }, { "up37c", 37.0f } };
++    for (const auto& s : shifts)
++        for (const auto& m : modes)
++        {
++            LivePitchShifter ps;
++            ps.prepare(kSr, 480);
++            ps.setWindowMs(m.ms);
++            ps.setShiftCents(s.cents);
++            auto out = dry;
++            double lat = 0.0;
++            int blocks = 0;
++            for (size_t p = 0; p < out.size(); p += 480)
++            {
++                const int n = (int) std::min<size_t>(480, out.size() - p);
++                ps.process(out.data() + p, n);
++                lat += ps.getLatencySamples();
++                ++blocks;
++            }
++            const std::string name = std::string(s.name) + "_" + m.name + ".wav";
++            writeWav(dir + "/" + name, out);
++            std::printf("%-22s mean added latency %.1f ms\n", name.c_str(), lat / blocks * 1000.0 / kSr);
++        }
++    return 0;
++}
+diff --git a/tests/live_pitch/test.cpp b/tests/live_pitch/test.cpp
+new file mode 100644
+index 0000000..4fbe411
+--- /dev/null
++++ b/tests/live_pitch/test.cpp
+@@ -0,0 +1,198 @@
++// Standalone tests for LivePitchShifter (src/audio/LivePitchShifter.*): pitch
++// accuracy, bit-exact bypass, bounded output, latency, block-size independence
++// and engage/disengage. No JUCE; plain asserts with a non-zero exit on failure.
++#include "../../src/audio/LivePitchShifter.h"
++
++#include <algorithm>
++#include <cmath>
++#include <cstdio>
++#include <random>
++#include <vector>
++
++namespace
++{
++constexpr double kSr = 48000.0;
++constexpr double kPi = 3.14159265358979323846;
++int failures = 0;
++
++void check(bool ok, const char* what)
++{
++    if (! ok)
++    {
++        std::printf("FAIL: %s\n", what);
++        ++failures;
++    }
++}
++
++std::vector<float> sine(double hz, double seconds, float amp = 0.5f)
++{
++    std::vector<float> v((size_t) (seconds * kSr));
++    for (size_t i = 0; i < v.size(); ++i)
++        v[i] = amp * (float) std::sin(2.0 * kPi * hz * (double) i / kSr);
++    return v;
++}
++
++struct RunResult
++{
++    std::vector<float> out;
++    double meanLatency = 0.0;
++};
++
++RunResult run(const std::vector<float>& in, float cents, float windowMs, int block)
++{
++    LivePitchShifter ps;
++    ps.prepare(kSr, block);
++    ps.setWindowMs(windowMs);
++    ps.setShiftCents(cents);
++    RunResult r;
++    r.out = in;
++    double latSum = 0.0;
++    int latCount = 0;
++    for (size_t pos = 0; pos < r.out.size(); pos += (size_t) block)
++    {
++        const int n = (int) std::min<size_t>((size_t) block, r.out.size() - pos);
++        ps.process(r.out.data() + pos, n);
++        if (pos > (size_t) (0.3 * kSr))
++        {
++            latSum += ps.getLatencySamples();
++            ++latCount;
++        }
++    }
++    r.meanLatency = latCount > 0 ? latSum / latCount : 0.0;
++    return r;
++}
++
++// Frequency from interpolated rising zero crossings over [from, end).
++double measureHz(const std::vector<float>& v, size_t from)
++{
++    double first = -1.0, last = -1.0;
++    int count = 0;
++    for (size_t i = from + 1; i < v.size(); ++i)
++    {
++        if (v[i - 1] < 0.0f && v[i] >= 0.0f)
++        {
++            const double t = (double) (i - 1) + v[i - 1] / (double) (v[i - 1] - v[i]);
++            if (first < 0.0) first = t;
++            else ++count;
++            last = t;
++        }
++    }
++    if (count < 2) return -1.0;
++    return kSr * count / (last - first);
++}
++
++double rmsDbRipple(const std::vector<float>& v, size_t from, size_t win)
++{
++    double lo = 1e30, hi = 0.0;
++    for (size_t s = from; s + win <= v.size(); s += win)
++    {
++        double e = 0.0;
++        for (size_t i = s; i < s + win; ++i) e += (double) v[i] * v[i];
++        const double rms = std::sqrt(e / win);
++        lo = std::min(lo, rms);
++        hi = std::max(hi, rms);
++    }
++    return 20.0 * std::log10(hi / std::max(lo, 1e-12));
++}
++} // namespace
++
++int main()
++{
++    std::setvbuf(stdout, nullptr, _IONBF, 0);
++
++    // 1. Bypass at 0 cents is bit-exact.
++    {
++        std::mt19937 rng(7);
++        std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
++        std::vector<float> in((size_t) kSr);
++        for (auto& s : in) s = dist(rng);
++        const auto r = run(in, 0.0f, 14.0f, 480);
++        check(r.out == in, "0 cents is bit-exact passthrough");
++        check(r.meanLatency == 0.0, "0 cents reports zero latency");
++    }
++
++    // 2. Pitch accuracy across shifts, frequencies, windows and block sizes.
++    const float shifts[] = { -500.0f, -200.0f, -100.0f, -12.0f, 37.0f, 100.0f, 500.0f };
++    const double freqs[] = { 82.41, 110.0, 440.0 };
++    const int blocks[] = { 32, 128, 480, 1024 };
++    double worstCents = 0.0;
++    for (float c : shifts)
++        for (double f : freqs)
++            for (int b : blocks)
++            {
++                const auto in = sine(f, 2.0);
++                const auto r = run(in, c, 14.0f, b);
++                const double got = measureHz(r.out, (size_t) (0.5 * kSr));
++                const double want = f * std::pow(2.0, c / 1200.0);
++                const double err = 1200.0 * std::log2(got / want);
++                worstCents = std::max(worstCents, std::abs(err));
++                if (! (std::abs(err) <= 3.0))
++                {
++                    std::printf("  %.2f Hz %+.0f c block %d: got %.3f want %.3f (%+.2f c)\n",
++                                f, c, b, got, want, err);
++                    check(false, "pitch within 3 cents");
++                }
++                bool finite = true;
++                float peak = 0.0f;
++                for (float s : r.out)
++                {
++                    finite = finite && std::isfinite(s);
++                    peak = std::max(peak, std::abs(s));
++                }
++                check(finite, "output finite");
++                check(peak <= 0.6f, "output bounded (0.5 amp in)");
++            }
++    std::printf("pitch: worst error %.3f cents\n", worstCents);
++
++    // 3. Latency per window (reported mean added delay) and level stability.
++    const float windows[] = { 10.0f, 14.0f, 22.0f };
++    const float latencyShifts[] = { -20.0f, -100.0f, -200.0f, -500.0f, 500.0f };
++    for (float w : windows)
++        for (float c : latencyShifts)
++        {
++            // Two-note "chord" so overlapping grains can comb if misaligned.
++            auto in = sine(110.0, 2.0, 0.3f);
++            const auto in2 = sine(164.8, 2.0, 0.25f);
++            for (size_t i = 0; i < in.size(); ++i) in[i] += in2[i];
++            const auto r = run(in, c, w, 480);
++            const double ms = r.meanLatency * 1000.0 / kSr;
++            const double ripple = rmsDbRipple(r.out, (size_t) (0.5 * kSr), (size_t) (0.05 * kSr));
++            std::printf("window %4.0f ms  shift %+5.0f c: latency %5.2f ms  level ripple %4.2f dB\n",
++                        w, c, ms, ripple);
++            check(ms > 0.0 && ms <= w + 14.0, "latency within window bound");
++            check(ripple < 3.0, "level ripple under 3 dB");
++        }
++
++    // 4. Disengage returns to bit-exact passthrough after the fade.
++    {
++        LivePitchShifter ps;
++        ps.prepare(kSr, 256);
++        ps.setShiftCents(-100.0f);
++        auto buf = sine(220.0, 0.5);
++        for (size_t p = 0; p < buf.size(); p += 256)
++            ps.process(buf.data() + p, (int) std::min<size_t>(256, buf.size() - p));
++        check(ps.isActive(), "engaged after -100 c");
++        ps.setShiftCents(0.0f);
++        std::vector<float> tail = sine(220.0, 0.1);
++        for (size_t p = 0; p + 256 <= tail.size(); p += 256) ps.process(tail.data() + p, 256);
++        check(! ps.isActive(), "inactive after fade-out");
++        const auto clean = sine(220.0, 0.1);
++        auto again = clean;
++        for (size_t p = 0; p + 256 <= again.size(); p += 256) ps.process(again.data() + p, 256);
++        check(again == clean, "bit-exact after disengage");
++    }
++
++    // 5. Parameter clamps.
++    {
++        LivePitchShifter ps;
++        ps.setShiftCents(-9999.0f);
++        check(ps.getShiftCents() == -LivePitchShifter::kMaxShiftCents, "cents clamp");
++        ps.setShiftCents(std::nanf(""));
++        check(ps.getShiftCents() == 0.0f, "NaN cents -> 0");
++        ps.setWindowMs(1000.0f);
++        check(ps.getWindowMs() == LivePitchShifter::kMaxWindowMs, "window clamp");
++    }
++
++    if (failures == 0) std::printf("live_pitch: all tests passed\n");
++    return failures == 0 ? 0 : 1;
++}
+-- 
+2.52.0.windows.1
+

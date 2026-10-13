@@ -1,7 +1,7 @@
 {
   "id": "player_bar",
   "name": "_Player Bar Folders",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "script": "screen.js",
   "description": "Tidies the player's bottom bar: the essentials stay visible, everything else goes into folders (Practice, Sound, Key & Pitch, View, Sync, More). Right-click an item to pin it to the bar."
