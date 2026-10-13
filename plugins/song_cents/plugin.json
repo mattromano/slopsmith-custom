@@ -1,0 +1,10 @@
+{
+  "id": "song_cents",
+  "name": "_Song Cents (real tuning offset of each recording)",
+  "version": "1.0.1",
+  "private": true,
+  "script": "screen.js",
+  "routes": "routes.py",
+  "settings": { "html": "settings.html" },
+  "description": "Shows how many cents a song's recording sits off its chart tuning (from the original PSARC, or measured from the stems) as a badge next to the tuning, and lets Live Retune match it."
+}

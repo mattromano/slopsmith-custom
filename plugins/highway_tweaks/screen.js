@@ -461,7 +461,9 @@
             // Browser detector: exact fractional semitones. Native verifier
             // takes integer tuning offsets, so it gets the rounded semitones;
             // any remainder (≤50 ¢) sits inside the pitch tolerance.
-            const OFF = '((Number(window.__hwtPitchCents) || 0) / 100)';
+            // Plus window.__hwtDetectExtraCents: Live Retune's "Match song" shifts the guitar by the
+            // recording's own offset (e.g. +45c), so the guitar sounds that far off the nominal chart.
+            const OFF = '(((Number(window.__hwtPitchCents) || 0) + (Number(window.__hwtDetectExtraCents) || 0)) / 100)';
             const ph = [];
             let pc = code;
             // (Matches the stock line or the capo-patched one above.)

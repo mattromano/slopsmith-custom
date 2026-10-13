@@ -8,6 +8,11 @@
 // field, which is how "not installed" is detected.
 //
 // This is separate from the pitch_shift plugin (which shifts the song's stems, not your playing).
+//
+// "Match song" adds the current song's recording offset (song_cents plugin, e.g. +45c on a sharp
+// Oasis record) so a standard-tuned guitar plays in tune with the record. That part is also handed
+// to note detection (window.__hwtDetectExtraCents, read by highway_tweaks' note_detect patch), since
+// the chart's notes are nominal and the guitar now sounds that many cents off them.
 (function () {
     'use strict';
     const KEY = 'liveRetune';
@@ -25,7 +30,7 @@
         const st = Math.max(-MAX_ST, Math.min(MAX_ST, Math.round(Number(s.semitones) || 0)));
         const c = Math.max(-100, Math.min(100, Math.round(Number(s.cents) || 0)));
         const mode = MODES.some((m) => m.id === s.mode) ? s.mode : 'balanced';
-        return { semitones: st, cents: c, mode };
+        return { semitones: st, cents: c, mode, match: !!s.match };
     }
 
     const state = load();
@@ -33,7 +38,12 @@
     let latencyMs = 0;
 
     const api = () => window.slopsmithDesktop && window.slopsmithDesktop.audio;
-    const totalCents = () => state.semitones * 100 + state.cents;
+    // The current song's recording offset when "Match song" is on (0 when unknown).
+    function matchCents() {
+        const cur = window.__songCents && window.__songCents.current;
+        return state.match && cur && typeof cur.cents === 'number' ? cur.cents : 0;
+    }
+    const totalCents = () => state.semitones * 100 + state.cents + matchCents();
     const windowMs = () => (MODES.find((m) => m.id === state.mode) || MODES[1]).ms;
 
     function save() {
@@ -42,9 +52,10 @@
 
     function apply() {
         const a = api();
+        window.__hwtDetectExtraCents = matchCents();
         if (!a || typeof a.setTonePolish !== 'function') return;
         Promise.resolve(a.setTonePolish({
-            pitch: { semitones: state.semitones, cents: state.cents, windowMs: windowMs() },
+            pitch: { semitones: state.semitones, cents: state.cents + matchCents(), windowMs: windowMs() },
         })).catch(() => {});
     }
 
@@ -78,6 +89,19 @@
         if (Number(sl.value) !== state.cents) sl.value = String(state.cents);
         cl.textContent = (state.cents > 0 ? '+' : '') + state.cents + 'c';
         if (md.value !== state.mode) md.value = state.mode;
+        const mb = document.getElementById('lr-match');
+        if (mb) {
+            const cur = window.__songCents && window.__songCents.current;
+            const sc = !cur ? '' : cur.source === 'pending' ? ' …'
+                : typeof cur.cents === 'number' ? ' ' + (cur.cents > 0 ? '+' : '') + cur.cents + 'c' : ' ?';
+            mb.textContent = 'Match song' + sc;
+            mb.setAttribute('aria-pressed', state.match ? 'true' : 'false');
+            mb.style.background = state.match ? 'rgba(14,116,144,.45)' : '';
+            mb.style.color = state.match ? '#e0f2fe' : '';
+            mb.title = !window.__songCents ? 'Needs the Song Cents plugin.'
+                : 'Shift by the recording’s own offset from the chart tuning so a standard-tuned guitar sounds in tune with the record'
+                  + (cur && cur.source && cur.source !== 'pending' ? ` (${cur.source === 'audio' ? 'measured from the recording' : 'from the chart'})` : '') + '.';
+        }
         if (supported === false) {
             info.textContent = 'not installed';
             info.title = 'The native engine in this app does not have the live retune. Run slopsmith-custom/tools/install_native_audio.py.';
@@ -142,11 +166,13 @@
         md.addEventListener('change', () => set({ mode: md.value }));
 
         const reset = btn('0', 'Back to standard (no shift)', () => set({ semitones: 0, cents: 0 }));
+        const match = btn('Match song', '', () => set({ match: !state.match }));
+        match.id = 'lr-match';
         const info = document.createElement('span');
         info.id = 'lr-info';
         info.className = 'tabular-nums text-gray-400';
 
-        wrap.append(name, down, st, up, sl, cl, md, reset, info);
+        wrap.append(name, down, st, up, sl, cl, md, reset, match, info);
         const after = document.getElementById('gv-label');
         if (after && after.parentNode === bar) after.after(wrap);
         else bar.append(wrap);
@@ -174,6 +200,7 @@
     }
 
     window.__liveRetune = { state, set, apply };
+    window.addEventListener('songcents:change', () => { apply(); render(); });
 
     const bus = window.slopsmith;
     if (bus && bus.on) bus.on('song:loaded', () => { ensure(); apply(); });

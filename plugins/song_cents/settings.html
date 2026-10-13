@@ -1,0 +1,10 @@
+<div>
+    <label class="text-sm font-medium text-gray-400 mb-2 block">Song Cents</label>
+    <p class="text-xs text-gray-500 mb-3">Shows how far each recording sits off its chart tuning (e.g. many Oasis songs are +25 to +50 cents sharp). Songs are measured automatically when you open them; scan to fill in the whole library. Measuring only decodes the guitar stem, nothing plays.</p>
+    <div class="flex items-center gap-3">
+        <button type="button" id="sc-scan-btn"
+            onclick="(function(b){var o=document.getElementById('sc-scan-status');if(!window.__songCents||!window.__songCents.scanLibrary){o.textContent='Plugin not loaded yet.';return;}b.disabled=true;o.textContent='Starting…';window.__songCents.scanLibrary(function(d,t,f){o.textContent=d+' / '+t+(f?' ('+f+' failed)':'');}).then(function(r){b.disabled=false;o.textContent=r?('Done: '+r.total+' songs'+(r.failed?', '+r.failed+' failed':'')):'Already scanning.';}).catch(function(e){b.disabled=false;o.textContent='Scan failed: '+e.message;});})(this)"
+            class="px-3 py-1.5 bg-dark-600 hover:bg-dark-500 rounded-lg text-xs text-gray-300">Scan library</button>
+        <span id="sc-scan-status" class="text-xs text-gray-500"></span>
+    </div>
+</div>
