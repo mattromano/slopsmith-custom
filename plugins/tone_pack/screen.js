@@ -206,6 +206,138 @@
         return out;
     }
 
+    // ── Song pedals (feat/open-source-pedals) ──────────────────────────────
+    // A song tone's Rocksmith pedals and racks (Rig Builder's bundled pedal set, with the song's own
+    // knob values) are wrapped around the amp + cab preset Tone Automation picked for that tone:
+    // pre-amp pedals first, post pedals and racks last. Each combination is stored as a temporary
+    // "♪ " preset (removed when the next song loads) and set as that tone's session override; the
+    // knob values are applied after the chain loads (the engine restores VST state, not params).
+    const RIG_PREFIX = '♪ ';
+
+    // Pure (tested): a song-rig preset from a base preset and {pre, post} pedal stages.
+    function buildRigPreset(base, rig, label) {
+        let chain = [];
+        try { chain = (JSON.parse(base.nativePreset || '{}').chain) || []; } catch (_) { chain = []; }
+        const vst = (s) => ({ type: 0, name: s.name, path: s.path, bypassed: false });
+        const pre = (rig.pre || []).map(vst), post = (rig.post || []).map(vst);
+        const full = pre.concat(chain, post).map((s, i) => Object.assign({}, s, { id: i + 1 }));
+        const pedals = [];
+        (rig.pre || []).forEach((s, i) => pedals.push({ index: i, path: s.path, params: s.params || {} }));
+        (rig.post || []).forEach((s, i) => pedals.push({ index: pre.length + chain.length + i, path: s.path, params: s.params || {} }));
+        const names = (rig.pre || []).concat(rig.post || []).map(s => s.name).join(' + ');
+        return {
+            name: `${RIG_PREFIX}${label}: ${names}`,
+            preset: Object.assign({}, base, {
+                nativePreset: JSON.stringify({ version: 1, chain: full }, null, 2),
+                items: full.map(s => ({ type: ['vst', 'nam', 'ir'][s.type] || 'vst', path: s.path, name: s.name })),
+                generatedBy: 'tone_pack:song', rigBase: label, rsPedals: pedals, created: Date.now(),
+            }),
+        };
+    }
+
+    // Set the song pedals' knobs on the loaded chain (slots are in chain order).
+    async function applyRigParams(preset) {
+        const api = window.slopsmithDesktop && window.slopsmithDesktop.audio;
+        if (!api || !preset || !Array.isArray(preset.rsPedals) || !preset.rsPedals.length) return;
+        let slots = [];
+        try { slots = (await api.getChainState()) || []; } catch (_) { return; }
+        for (const p of preset.rsPedals) {
+            const slot = slots[p.index];
+            if (!slot || String(slot.path || '').replace(/\\/g, '/').toLowerCase() !== p.path.toLowerCase()) continue;
+            let params = [];
+            try { params = (await api.getParameters(slot.id)) || []; } catch (_) { continue; }
+            const byName = new Map(params.map(x => [String(x.name).toLowerCase(), x.index]));
+            for (const [name, v] of Object.entries(p.params)) {
+                const idx = byName.get(String(name).toLowerCase());
+                if (idx === undefined) continue;
+                try { await api.setParameter(slot.id, idx, Math.max(0, Math.min(1, Number(v) || 0))); } catch (_) { /* ignore */ }
+            }
+        }
+    }
+
+    // Wrap the song's switcher so every load of a "♪ " preset gets its pedal knobs. Tone Automation
+    // installs a fresh switcher per song (window._toneSwitcher = ...), sometimes after our per-song
+    // step has run, so the assignment itself is watched and each new switcher is hooked at once.
+    function watchSwitcher() {
+        if (typeof window === 'undefined' || window.__tpSwitcherWatched) return;
+        let current = window._toneSwitcher;
+        try {
+            Object.defineProperty(window, '_toneSwitcher', {
+                configurable: true,
+                get() { return current; },
+                set(v) { current = v; try { hookSwitcher(v); } catch (_) { /* ignore */ } },
+            });
+            window.__tpSwitcherWatched = true;
+        } catch (_) { /* fall back to hooking from applySongRigs */ }
+        hookSwitcher(current);
+    }
+
+    function hookSwitcher(sw) {
+        sw = sw || window._toneSwitcher;
+        if (!sw || !sw.taSwitcher || sw.__tpRigHook || typeof sw._doSwitch !== 'function') return;
+        const orig = sw._doSwitch.bind(sw);
+        sw._doSwitch = async (input) => {
+            const before = sw.activePreset;
+            await orig(input);
+            const now = sw.activePreset;
+            if (now && now !== before && String(now).startsWith(RIG_PREFIX)) {
+                await applyRigParams(readJson(PRESETS_KEY, {})[now]);
+            }
+        };
+        sw.__tpRigHook = true;
+    }
+
+    async function applySongRigs(filename, arrangement, songKey, seq) {
+        const ta = window._aeToneAutomation;
+        let rigs = {};
+        try {
+            const r = await fetch('/api/plugins/tone_pack/song_rigs?filename=' + encodeURIComponent(filename)
+                + '&arrangement=' + encodeURIComponent(arrangement));
+            if (r.ok) rigs = (await r.json()).tones || {};
+        } catch (_) { return; }
+        if (seq !== _songSeq) return;
+        const presets = readJson(PRESETS_KEY, {});
+        // drop the previous song's song-rig presets
+        const keep = new Set();
+        const cfg = ta.getConfig ? ta.getConfig() : {};
+        const cur = window._aeTaSessionOverrides || {};
+        const added = {};
+        for (const [tone, rig] of Object.entries(rigs)) {
+            const key = tone === '$song' ? songKey : tone;
+            if (!key || !rig || !((rig.pre || []).length || (rig.post || []).length)) continue;
+            const prev = cur[key];
+            if (prev && !String(prev).startsWith(RIG_PREFIX) && !(window._tpGearOverrides || {})[key]) continue; // a manual pick wins
+            const eff = (ta.getSessionEffectivePreset && ta.getSessionEffectivePreset(key, cfg)) || {};
+            const baseName = prev && String(prev).startsWith(RIG_PREFIX)
+                ? (presets[prev] && presets[prev].rigBase) : eff.effectiveName;
+            const base = baseName && presets[baseName];
+            if (!base || base.generatedBy === 'tone_pack:song') continue;
+            const built = buildRigPreset(base, rig, baseName);
+            presets[built.name] = built.preset;
+            keep.add(built.name);
+            cur[key] = built.name;
+            added[key] = built.name;
+        }
+        for (const name of Object.keys(presets)) {
+            if (name.startsWith(RIG_PREFIX) && !keep.has(name)) delete presets[name];
+        }
+        writeJson(PRESETS_KEY, presets);
+        window._aeTaSessionOverrides = cur;
+        hookSwitcher();
+        if (!Object.keys(added).length) return;
+        console.log('[tone-pack] Rocksmith pedals for this song:', added);
+        const sw = window._toneSwitcher;
+        if (sw && sw.taSwitcher && sw.activeTone) {
+            const before = sw.activePreset;
+            try { await sw.switchToTone(sw.activeTone); } catch (_) { /* ignore */ }
+            // Already loaded (e.g. by a switcher installed before this hook): the switch above was a
+            // no-op, so set the knobs now.
+            if (sw.activePreset === before && String(before || '').startsWith(RIG_PREFIX)) {
+                await applyRigParams(presets[before]);
+            }
+        }
+    }
+
     let _songSeq = 0;
     async function applySongOverrides() {
         const ta = window._aeToneAutomation;
@@ -244,13 +376,23 @@
         const ov = songOverrides(cats, (n) => ta.classify(n, cfg), cfg.targets || {},
             { songKey: window._currentSongFile || filename, bass: /\bbass\b/i.test(arrangement),
                 metalPreset: metal });
-        if (!Object.keys(ov).length) return;
-        const cur = window._aeTaSessionOverrides || {};
-        for (const [k, v] of Object.entries(ov)) {
-            if (!Object.prototype.hasOwnProperty.call(cur, k)) cur[k] = v;   // a manual pick wins
+        const songKey = window._currentSongFile || filename;
+        if (Object.keys(ov).length) {
+            const cur = window._aeTaSessionOverrides || {};
+            for (const [k, v] of Object.entries(ov)) {
+                if (!Object.prototype.hasOwnProperty.call(cur, k)) cur[k] = v;   // a manual pick wins
+            }
+            window._aeTaSessionOverrides = cur;
+            window._tpGearOverrides = ov;   // ours, so the song pedals may replace them
+            console.log('[tone-pack] gear-based tones for this song:', ov);
+        } else {
+            window._tpGearOverrides = {};
         }
-        window._aeTaSessionOverrides = cur;
-        console.log('[tone-pack] gear-based tones for this song:', ov);
+        if (/\.sloppak\/?$/i.test(filename)) {
+            await applySongRigs(filename, arrangement, songKey, seq);   // re-switches if it added any
+            return;
+        }
+        if (!Object.keys(ov).length) return;
         // re-apply the tone that's playing now (the switcher skips a preset that's already loaded)
         const sw = window._toneSwitcher;
         if (sw && sw.taSwitcher && sw.activeTone) {
@@ -296,7 +438,7 @@
     if (typeof window !== 'undefined') window._tonePackDefaultMetal = DEFAULT_METAL_ARTISTS.slice();
 
     if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { mergePack, songOverrides, withTrim, homePresetName, isMetalArtist, _norm };
+        module.exports = { mergePack, songOverrides, withTrim, homePresetName, isMetalArtist, _norm, buildRigPreset };
         return;
     }
     try {
@@ -314,6 +456,7 @@
             });
         }
     } catch (_) { /* no host */ }
+    watchSwitcher();   // song pedals: hook every Tone Automation switcher as it is installed
     // Run once the Audio plugin has had a chance to start (its UI reads localStorage on render).
     setTimeout(install, 1500);
 })();

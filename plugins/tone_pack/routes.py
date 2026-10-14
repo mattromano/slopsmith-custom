@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import os
 from pathlib import Path
 
@@ -266,6 +267,111 @@ def song_tone_categories(song: Path, arrangement: str) -> dict:
     return out
 
 
+PRE_SLOTS = ("PrePedal1", "PrePedal2", "PrePedal3", "PrePedal4")
+POST_SLOTS = ("PostPedal1", "PostPedal2", "PostPedal3", "PostPedal4", "Rack1", "Rack2", "Rack3", "Rack4")
+
+
+def _rig_builder_tools(plugins_dir: Path, config_dir: Path):
+    """(apply_vst_state module, rs_gear_to_vst, knob table, rig builder plugin dir) or None.
+
+    The song pedals use Rig Builder's bundled pedal set and its knob translation, read from the
+    user's data copy (<config>/nam_rig_builder/data) like Rig Builder itself does."""
+    import importlib.util
+    rb = plugins_dir / "nam_rig_builder"
+    tool = rb / "tools" / "apply_vst_state.py"
+    if not tool.exists():
+        return None
+    import sys
+    spec = importlib.util.spec_from_file_location("_tp_apply_vst_state", tool)
+    mod = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(tool.parent))          # it imports its sibling tools/common.py
+    try:
+        spec.loader.exec_module(mod)
+    finally:
+        sys.path.remove(str(tool.parent))
+    data = config_dir / "nam_rig_builder" / "data"
+    if not (data / "rs_knob_to_vst_param.json").exists():
+        data = rb / "data"
+    gear = json.loads((data / "rs_gear_to_vst.json").read_text(encoding="utf-8"))
+    knobs = json.loads((data / "rs_knob_to_vst_param.json").read_text(encoding="utf-8"))
+    return mod, gear, knobs, rb
+
+
+def _pedal_stage(g: dict, slot: str, tools) -> dict | None:
+    """One Rocksmith pedal/rack -> a bundled-pedal stage with its knob values, or None when the
+    gear has no bundled pedal or no knob translation (left out rather than played at defaults)."""
+    mod, gear_map, knob_table, rb = tools
+    key = g.get("Key") or g.get("Type") or ""
+    if not key or re.search(r"NoiseGate", key, re.I):
+        return None
+    entries = gear_map.get(key)
+    if not isinstance(entries, list) or not entries or not isinstance(entries[0], dict):
+        return None
+    bundled = entries[0].get("bundled")
+    if not bundled:
+        return None
+    path = (rb / bundled.replace("\\", "/")).resolve()
+    if not path.exists():
+        return None
+    knobs = {}
+    for k, v in (g.get("KnobValues") or {}).items():
+        knobs[str(k).split("_")[-1]] = v          # "Pedal_Chorus_Rate" -> "Rate", as Rig Builder does
+    built = mod._build_params_for_piece(key, str(path), json.dumps(knobs), knob_table)
+    if built is None:
+        return None
+    params, _skipped = built
+    return {"gear": key, "slot": slot, "name": path.stem, "path": str(path).replace("\\", "/"),
+            "params": params}
+
+
+def song_tone_rigs(song: Path, arrangement: str, tools) -> dict:
+    """{tone name (or "$song"): {"pre": [stage], "post": [stage]}} for an arrangement's tones:
+    the Rocksmith pedals before the amp and the post pedals / racks after it."""
+    import zipfile
+
+    import yaml
+
+    def read(rel):
+        if song.is_dir():
+            return (song / rel).read_bytes()
+        with zipfile.ZipFile(song) as z:
+            return z.read(rel)
+
+    man = yaml.safe_load(read("manifest.yaml")) or {}
+    out = {}
+    for a in man.get("arrangements", []):
+        if (a.get("name") or "") != arrangement or not a.get("file"):
+            continue
+        try:
+            t = (json.loads(read(a["file"])) or {}).get("tones") or {}
+        except (KeyError, ValueError, OSError):
+            continue
+        defs = {}
+        for d in t.get("definitions") or []:
+            if isinstance(d, dict):
+                for k in (d.get("Key"), d.get("Name")):
+                    if k:
+                        defs[str(k).lower()] = d
+
+        def rig(d):
+            gl = (d or {}).get("GearList") or {}
+            pre = [s for s in (_pedal_stage(gl[x], x, tools) for x in PRE_SLOTS if gl.get(x)) if s]
+            post = [s for s in (_pedal_stage(gl[x], x, tools) for x in POST_SLOTS if gl.get(x)) if s]
+            return {"pre": pre, "post": post} if (pre or post) else None
+
+        names = [t.get("base")] + [c.get("name") for c in (t.get("changes") or []) if isinstance(c, dict)]
+        if not any(names) and defs:
+            r = rig(next(iter(defs.values())))
+            if r:
+                out.setdefault("$song", r)
+        for n in names:
+            if n and n not in out:
+                r = rig(defs.get(n.lower()))
+                if r:
+                    out[n] = r
+    return out
+
+
 def setup(app, context):
     import sys
     config_dir = Path(context["config_dir"])
@@ -289,4 +395,24 @@ def setup(app, context):
         try:
             return {"tones": song_tone_categories(song, arrangement)}
         except Exception as e:            # malformed song: no overrides
+            return {"tones": {}, "error": str(e)}
+
+    _rb_tools = {}
+
+    @app.get("/api/plugins/tone_pack/song_rigs")
+    def tone_pack_song_rigs(filename: str, arrangement: str):
+        """Per-tone Rocksmith pedals (Rig Builder's bundled pedals + knob values) for a sloppak."""
+        dlc = Path(get_dlc_dir()) if callable(get_dlc_dir) else None
+        if dlc is None:
+            return {"tones": {}}
+        song = (dlc / filename).resolve()
+        if dlc.resolve() not in song.parents or song.suffix.lower() != ".sloppak" or not song.exists():
+            return {"tones": {}}
+        try:
+            if "t" not in _rb_tools:
+                _rb_tools["t"] = _rig_builder_tools(Path(here).parent, config_dir)
+            if not _rb_tools["t"]:
+                return {"tones": {}, "error": "Rig Builder not installed"}
+            return {"tones": song_tone_rigs(song, arrangement, _rb_tools["t"])}
+        except Exception as e:
             return {"tones": {}, "error": str(e)}
