@@ -647,7 +647,8 @@
 // A third view next to Grid and Artist/Album: one dense row per song with
 // sortable columns (click a header; again to reverse) for plays, best
 // score, Rocksmith mastery, full combo, last played and time practised.
-// Honours the library's search box and format filter. PSARC/sloppak copies
+// Honours the library's search box, format filter and the Filters drawer's tuning and
+// arrangement filters (stems / lyrics aren't in the table data). PSARC/sloppak copies
 // of the same song are merged by default (their stats are shared anyway;
 // clicking plays the sloppak). Rows are virtualised, so the DOM stays
 // small (see the highway_tweaks notes on DOM-size-driven jank).
@@ -707,6 +708,18 @@
         }).catch(() => { /* keep old data */ });
     }
 
+    // The library's Filters drawer state (app.js keeps it in a top-level `let _libFilters`, visible
+    // to other scripts by name but not as window._libFilters; localStorage as a fallback).
+    function libFilters() {
+        try {
+            // eslint-disable-next-line no-undef
+            if (typeof _libFilters !== 'undefined' && _libFilters) return _libFilters;
+        } catch (_) { /* not in scope */ }
+        try { return JSON.parse(localStorage.getItem('slopsmith.libFilters') || '{}') || {}; } catch (_) { return {}; }
+    }
+    // Parts column = arrangement initials (L, R, B, C...); arrangement filters match on those.
+    const partLetter = (a) => String(a || '').trim().charAt(0).toUpperCase();
+
     function filtered() {
         const q = ((document.getElementById('lib-filter') || {}).value || '').trim().toLowerCase();
         const fmt = (document.getElementById('lib-format') || {}).value || '';
@@ -726,6 +739,19 @@
             rows = [...by.values()];
         }
         if (fmt) rows = rows.filter((r) => r.formats.includes(fmt));
+        const lf = libFilters();
+        if (Array.isArray(lf.tunings) && lf.tunings.length) {
+            const want = new Set(lf.tunings.map((t) => String(t).toLowerCase()));
+            rows = rows.filter((r) => want.has(String(r.tuning || '').toLowerCase()));
+        }
+        if (Array.isArray(lf.arrHas) && lf.arrHas.length) {
+            const need = lf.arrHas.map(partLetter).filter(Boolean);
+            rows = rows.filter((r) => need.every((l) => String(r.parts || '').includes(l)));
+        }
+        if (Array.isArray(lf.arrLacks) && lf.arrLacks.length) {
+            const bad = lf.arrLacks.map(partLetter).filter(Boolean);
+            rows = rows.filter((r) => !bad.some((l) => String(r.parts || '').includes(l)));
+        }
         if (q) {
             const terms = q.split(/\s+/);
             rows = rows.filter((r) => terms.every((t) => r.search.includes(t)));
@@ -892,6 +918,17 @@
             b.innerHTML = '<svg class="w-4 h-4" fill="currentColor" viewBox="0 0 16 16"><rect x="1" y="1.5" width="14" height="2" rx=".5"/><rect x="1" y="5.5" width="14" height="2" rx=".5"/><rect x="1" y="9.5" width="14" height="2" rx=".5"/><rect x="1" y="13" width="14" height="2" rx=".5"/></svg>';
             b.onclick = show;
             tree.after(b);
+        }
+        // Ticking a filter in the drawer (or clearing it) calls loadLibrary(), which re-renders the
+        // hidden grid / tree; refresh the table too.
+        const origLoad = window.loadLibrary;
+        if (typeof origLoad === 'function' && !origLoad.__pcTable) {
+            const wrappedLoad = function () {
+                if (active) { if (wrap) wrap.scrollTop = 0; refresh(); }
+                return origLoad.apply(this, arguments);
+            };
+            wrappedLoad.__pcTable = true;
+            window.loadLibrary = wrappedLoad;
         }
         const orig = window.setLibView;
         if (!orig.__pcTable) {

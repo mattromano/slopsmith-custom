@@ -1,7 +1,7 @@
 {
   "id": "live_retune",
   "name": "_Live Retune (pitch your playing up/down)",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "private": true,
   "script": "screen.js",
   "description": "Shift the pitch of the guitar you're playing by semitones and cents inside the native engine (no VST, ~10-15 ms). Note detection follows the shift; the tuner keeps reading your real strings. Needs the patched slopsmith_audio.node (slopsmith-custom/tools/install_native_audio.py)."

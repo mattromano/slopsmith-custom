@@ -102,6 +102,34 @@
         // of the highway speed so they stay on screen for the verdict window.
         const __RB_PAST_SPEED = 0.3;
         function __rbKey(t, s) { return Math.round(t * 1e4) * 10 + s; }
+        // Late hits: with the engine verifier a note's verdict lands after its sustain ends
+        // (~t + sus + 0.1 s), by which time this highway has stopped drawing the gem (it is culled
+        // 0.75 s after its start, a chord frame latches at 0.55 s). Such hits counted in the HUD
+        // but never flashed. Every scored hit is queued here; one the gem's own latch hasn't shown
+        // within 0.15 s gets its burst drawn on the now line at that string / fret.
+        const __rbQ = [];
+        window.addEventListener('notedetect:hit', (e) => {
+            const j = e && e.detail;
+            if (j && Number.isFinite(j.noteTime)) { __rbQ.push(j); if (__rbQ.length > 64) __rbQ.shift(); }
+        });
+        function __rbLateHits(now) {
+            for (let i = __rbQ.length - 1; i >= 0; i--) {
+                const j = __rbQ[i], t = j.noteTime;
+                if (now - t < 0.15 && now - t > -1) continue;   // the gem's own latch goes first
+                __rbQ.splice(i, 1);
+                if (now - t > 4 || now - t < -1) continue;        // stale / seeked away
+                const ns = j.chord ? (j.notes || []) : [j.chartNote || j.note];
+                for (const n of ns) {
+                    if (!n || !Number.isFinite(n.s)) continue;
+                    const k = __rbKey(t, n.s);
+                    if (__rbV.has(k)) continue;                     // already flashed (or latched)
+                    const f = n.f | 0;
+                    __rbV.set(k, { v: 'hit', t0: performance.now(), t, end: now, s: n.s,
+                        x: f === 0 ? curX : xFretMid(f), y: sY(n.s),
+                        w: f === 0 ? (40 * K / NW) : 1, h: f === 0 ? 0.15 : 1 });
+                }
+            }
+        }
         function __rbFxMesh(x, y, z, sx, sy, sz, hex, op) {
             const m = __rbFx.get();
             m.position.set(x, y, z);
@@ -120,6 +148,7 @@
         }
         function __rbDrawFx(now) {
             if (!__rbFx) return;
+            __rbLateHits(now);
             __rbFx.reset();
             if (__rbPlate) __rbPlate.reset();
             const pn = performance.now();
@@ -394,37 +423,6 @@
             // same precise clock.
             code = code.replace(/(transport\.baseOffset = transportPlayhead\(\);\r?\n\s*)transport\.baseCtxTime = ctx\.currentTime;/,
                 (m, a) => { hits.push('rate-anchor'); return a + 'transport.baseCtxTime = __hwtCtxNow();'; });
-            // Cent-accurate pitch shift (UI: the pitch_shift plugin). Reuses the
-            // master-bus SoundTouch worklet that already cancels the speed
-            // slider's pitch change: target pitch = 2^(cents/1200) / rate.
-            // All-or-nothing on a copy, so a future stems update that breaks
-            // one anchor drops only this feature, not the fixes above.
-            const pitchHits = [];
-            let pc = code;
-            pc = pc.replace('try { pitchNode.port.postMessage({ pitch: 1 / r }); } catch (_) {}', () => {
-                pitchHits.push('cents');
-                return 'try { pitchNode.port.postMessage({ pitch: Math.pow(2, (Number(window.__hwtPitchCents) || 0) / 1200) / r }); } catch (_) {}';
-            });
-            // Keep the highway delay-compensated whenever the worklet is engaged
-            // for a cents shift, not only at non-1x speed.
-            pc = pc.replace('        if (Math.abs(r - 1) < 1e-3) return 0;', () => {
-                pitchHits.push('latency');
-                return '        if (Math.abs(r - 1) < 1e-3 && !(Number(window.__hwtPitchCents) || 0)) return 0;';
-            });
-            // The worklet bypasses itself when |pitch - 1| < 1e-3 (~1.7 cents);
-            // load a copy with a 1e-6 threshold so single-cent shifts are heard.
-            pc = pc.replace('? ctx.audioWorklet.addModule(PITCH_WORKLET_URL).then(() => true)', () => {
-                pitchHits.push('worklet');
-                return '? fetch(PITCH_WORKLET_URL).then((r) => r.text())' +
-                    '.then((src) => URL.createObjectURL(new Blob([src.split("Math.abs(p - 1) < 1e-3").join("Math.abs(p - 1) < 1e-6")], { type: "text/javascript" })))' +
-                    '.catch(() => PITCH_WORKLET_URL)' +
-                    '.then((u) => ctx.audioWorklet.addModule(u)).then(() => true)';
-            });
-            pc = pc.replace(/ {4}function applyPitchForRate\(\) \{\r?\n/, (m) => {
-                pitchHits.push('expose');
-                return '    window.__stemsApplyPitch = () => applyPitchForRate();\n' + m;
-            });
-            if (pitchHits.length === 4) { code = pc; hits.push(...pitchHits); }
             return code;
         },
         note_detect(code, hits) {
@@ -455,15 +453,13 @@
                 return '            bestFret = (fret > 0 && capo) ? fret + capo : fret;\n';
             });
             if (cp.length === 5) { code = cc; hits.push(...cp); }
-            // Keep scoring right when the song is pitch-shifted (pitch_shift
-            // plugin, window.__hwtPitchCents): expected pitch = chart pitch +
-            // the song shift, e.g. an E♭ song shifted +100¢ expects E standard.
-            // Browser detector: exact fractional semitones. Native verifier
-            // takes integer tuning offsets, so it gets the rounded semitones;
-            // any remainder (≤50 ¢) sits inside the pitch tolerance.
-            // Plus window.__hwtDetectExtraCents: Live Retune's "Match song" shifts the guitar by the
-            // recording's own offset (e.g. +45c), so the guitar sounds that far off the nominal chart.
-            const OFF = '(((Number(window.__hwtPitchCents) || 0) + (Number(window.__hwtDetectExtraCents) || 0)) / 100)';
+            // Keep scoring right when Live Retune's "Match song" shifts the guitar by the
+            // recording's own offset (window.__hwtDetectExtraCents, e.g. +45c): expected pitch =
+            // chart pitch + that offset. Browser detector: exact fractional semitones. Native
+            // verifier takes integer tuning offsets, so it gets the rounded semitones; any
+            // remainder (<=50c) sits inside the pitch tolerance. (The song pitch-shift feature
+            // that used to feed this was removed 2026-10-14; Live Retune replaces it.)
+            const OFF = '((Number(window.__hwtDetectExtraCents) || 0) / 100)';
             const ph = [];
             let pc = code;
             // (Matches the stock line or the capo-patched one above.)

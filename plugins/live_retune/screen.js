@@ -7,7 +7,6 @@
 // getDeviceMetrics().livePitch. A stock .node ignores the pitch payload and has no livePitch
 // field, which is how "not installed" is detected.
 //
-// This is separate from the pitch_shift plugin (which shifts the song's stems, not your playing).
 //
 // "Match song" adds the current song's recording offset (song_cents plugin, e.g. +45c on a sharp
 // Oasis record) so a standard-tuned guitar plays in tune with the record. That part is also handed
