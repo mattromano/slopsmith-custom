@@ -58,3 +58,33 @@ For each fork:
 1. Run `git fetch upstream`.
 2. On `custom`, run `git merge upstream/main`.
 3. If one of our PRs got merged upstream, its branch is already in `upstream/main` and the merge is a no-op for it.
+
+## Ported from the PC (2026-10-13)
+
+The PC's Slopsmith 0.2.9 work through `fef43a0` (2026-10-12) is on the `custom` branches.
+
+| Piece | Where now | Notes |
+|---|---|---|
+| drums 5.10 → 5.18.3 | feedBack-plugin-drums 4.5.0 | Timing, split view, sounds, MIDI monitor, direct MIDI (WinMM), auto kick/cymbals, one drum highway, Clone Hero kit map. In Auto it leaves guitar parts alone. |
+| multiplayer 1.1.0 | feedBack-plugin-multiplayer 1.1.0 | Clock stamps, output latency, min-RTT sync, seek-only correction. |
+| highway_tweaks | core `plugins/highway_tweaks` 2.0.0 | Only the parts 0.3 doesn't already do. It still provides `__hwtFrameTime`, `__hwtStemsSmooth` and `__hwtRenderAheadMs`. |
+| sync_lab | core `plugins/sync_lab` 2.0.0 | Also fixes the A/V suggestion drifting after Apply. |
+| tone_pack, guitar_volume | core `plugins/tone_pack`, `plugins/guitar_volume` | Desktop app only. |
+| play_counts, play_queue, player_bar | dropped | Covered by core #49 / #1093 / #1095, scorecard and the v3 player. |
+| `tools/patch_chain_lock.py` | not needed | 0.3's native engine serialises chain ops itself (`chainMutationMutex`). Don't run it on 0.3. |
+
+Core fixes we added on `custom`:
+- **Split view:** panel highways now get the A/V offset.
+- **MIDI timing:** Web MIDI listeners get each message's arrival time.
+- **MIDI discovery:** a hung `requestMIDIAccess` no longer blocks other MIDI providers.
+- **Drum views in Auto:** the bundled `drum_highway_3d` steps aside when the drums plugin is installed.
+
+### Still open
+
+- **Kit samples:** the DRS and 15-mic Crocell `.ogg` files exist only on the PC, and they are not committed. Copy `%APPDATA%\slopsmith-desktop\plugins\drums\sounds\kits\drs` (and `crocell`) into the drums checkout's `assets/sounds/kits/`, or build them with `tools/build_drumgizmo_kit.py`.
+- **tone_pack IRs:** these are EQ'd Rocksmith cab IRs, kept out of the public fork. Copy the old `plugins/tone_pack/irs/*.wav` to `<config>/nam_irs/tone_pack/` on each machine.
+- **Library Drums filter:** a Drums arrangement filter, and renaming the stems "Drums" pill to "Drum audio" (old d65ac91), would need a core library change.
+- **Split-view score boxes / results card:** these need panel support in scorecard.
+- **play_queue extras:** count-in Auto mode and skipping the count-in on queue advance. Track numbers should come from writing `track:` in song-builder.
+- **Song builder:** still lives in this repo, on the old core.
+- **Needs a real kit and guitar:** the stems clock with real audio, split view, and drum timing are only covered by unit tests so far.
