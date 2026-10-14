@@ -100,8 +100,11 @@ def main():
     if not os.path.exists(BACKUP):
         copy(APP_NODE, BACKUP)
         print(f"backed up original -> {BACKUP}")
-    elif sha(APP_NODE) not in (sha(BACKUP), sha(args.node)):
-        # The app was updated since the backup: keep the new original instead.
+    elif (sha(APP_NODE) not in (sha(BACKUP), sha(args.node))
+          and os.path.getmtime(APP_NODE) < os.path.getmtime(APP_VERSION_FILE) + 3600):
+        # The app was updated since the backup (its .node is as old as the install, not one we
+        # copied in later): keep the new original instead. A different patched build installed
+        # by this script is newer than the app install and must not replace the stock backup.
         copy(APP_NODE, BACKUP)
         print(f"app engine changed since last backup; refreshed {BACKUP}")
     copy(args.node, APP_NODE)
