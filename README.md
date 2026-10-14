@@ -1,5 +1,7 @@
 # slopsmith-custom
 
+> **Moving to feedBack:** our build now comes from the `mattromano/*` forks of got-feedBack. See [feedback-fork/](feedback-fork/README.md) for setup on Mac and PC, the CI build, and what is merged.
+
 My customized [Slopsmith](https://github.com/byrongamatos/slopsmith) setup, plus the **song builder**: a
 workflow that turns Guitar Pro tabs plus my own album MP3s into graded, stem-split Slopsmith charts
 (`.sloppak`), with a Claude Code skill that drives it.

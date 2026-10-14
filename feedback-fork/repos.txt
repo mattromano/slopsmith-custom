@@ -1,0 +1,10 @@
+# <fork repo>  <upstream repo, or - for our own>  <branch to check out>  <plugin id, if it is a plugin>
+feedBack                     got-feedBack/feedBack                      custom  -
+feedBack-desktop             got-feedBack/feedBack-desktop              custom  -
+feedpak-spec                 got-feedBack/feedpak-spec                  custom  -
+feedBack-plugin-drums        got-feedBack/feedBack-plugin-drums         custom  drums
+feedBack-plugin-multiplayer  got-feedBack/feedBack-plugin-multiplayer   custom  multiplayer
+feedBack-plugin-nam-tone     got-feedBack/feedBack-plugin-nam-tone      custom  nam_tone
+feedBack-plugin-notedetect   got-feedBack/feedBack-plugin-notedetect    custom  note_detect
+feedBack-plugin-autotune     -                                          main    autotune
+feedBack-plugin-scorecard    -                                          main    scorecard
