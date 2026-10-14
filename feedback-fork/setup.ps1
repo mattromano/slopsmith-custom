@@ -16,10 +16,13 @@ function Git { & git @args; if ($LASTEXITCODE -ne 0) { throw "git $args failed" 
 foreach ($line in Get-Content "$here\repos.txt") {
     if ($line -match '^\s*(#|$)') { continue }
     $repo, $up, $branch, $plugin = -split $line
+    # "owner/repo" = a stock repo cloned from there; a bare name is one of our forks.
+    if ($repo -match '/') { $url = "https://github.com/$repo.git"; $repo = $repo.Split('/')[1] }
+    else { $url = "https://github.com/mattromano/$repo.git" }
     $dir = "$Root\$repo"
     if (-not (Test-Path "$dir\.git")) {
         $extra = @(); if ($repo -eq 'feedBack-desktop') { $extra = @('--filter=blob:none') }  # vendors JUCE
-        Git clone -q @extra "https://github.com/mattromano/$repo.git" $dir
+        Git clone -q @extra $url $dir
     }
     Git -C $dir config user.name mattromano
     Git -C $dir config user.email 42412983+mattromano@users.noreply.github.com

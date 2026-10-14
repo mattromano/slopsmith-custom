@@ -9,10 +9,13 @@ ROOT="${FB_ROOT:-$HOME/Desktop/repos/feedback-upstream}"
 mkdir -p "$ROOT/dev-plugins"
 grep -v '^#' "$HERE/repos.txt" | while read -r repo up branch plugin; do
   [ -n "$repo" ] || continue
+  # "owner/repo" = a stock repo cloned from there; a bare name is one of our forks.
+  case "$repo" in */*) url="https://github.com/$repo.git"; repo="${repo#*/}" ;;
+                  *) url="https://github.com/mattromano/$repo.git" ;; esac
   dir="$ROOT/$repo"
   if [ ! -d "$dir/.git" ]; then
     extra=(); [ "$repo" = feedBack-desktop ] && extra=(--filter=blob:none)  # vendors JUCE
-    git clone -q "${extra[@]}" "https://github.com/mattromano/$repo.git" "$dir"
+    git clone -q "${extra[@]}" "$url" "$dir"
   fi
   git -C "$dir" config user.name mattromano
   git -C "$dir" config user.email 42412983+mattromano@users.noreply.github.com

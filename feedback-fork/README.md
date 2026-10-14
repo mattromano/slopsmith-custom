@@ -29,7 +29,7 @@ The upstream PRs stay open. See [../UPSTREAM.md](../UPSTREAM.md).
 powershell -ExecutionPolicy Bypass -File setup.ps1   # PC
 ```
 
-Both scripts clone every fork into `~/Desktop/repos/feedback-upstream/` (the list is in `repos.txt`) and check out `custom`. They also link the plugin checkouts into `dev-plugins/` and create the core venv. Re-run them any time to update; a repo with uncommitted changes is left alone.
+Both scripts clone every fork, plus the stock stems and splitscreen plugins for dev runs, into `~/Desktop/repos/feedback-upstream/` (the list is in `repos.txt`) and check out `custom`. They also link the plugin checkouts into `dev-plugins/` and create the core venv. Re-run them any time to update; a repo with uncommitted changes is left alone.
 
 ## Day to day
 
