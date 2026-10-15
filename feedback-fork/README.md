@@ -47,15 +47,38 @@ Both scripts clone every fork, plus the stock stems and splitscreen plugins for 
 - **Change something meant for upstream:** make a branch off `upstream/main`, open the PR, then merge that branch into `custom`.
 - **Commit identity:** `mattromano <42412983+mattromano@users.noreply.github.com>`, `git commit -s`. GitHub rejects the gmail address.
 
+## Update the installed app (Mac)
+
+Two scripts here. Neither needs you to delete the app.
+
+- **Core or plugin change (JS / Python / HTML): `./dev-sync.sh`.** No build. Copies the working trees in
+  `feedback-upstream/` (core + every plugin linked in `dev-plugins/`, matched by plugin id) straight into
+  `/Applications/feedback.app/Contents/Resources/slopsmith`, then restarts feedback if it was running.
+  - Takes seconds. `--dry-run` lists what would change.
+  - It mirrors the build's layout: it keeps the build's Tailwind CSS and leaves out the on-demand venue packs.
+  - Needs a build instead for: desktop / Electron / native audio changes, new Python dependencies, and new
+    Tailwind classes.
+- **Desktop change, or a clean install: build, then `./install-build.sh`.**
+  1. Start a build: `gh workflow run build.yml -R mattromano/feedBack-desktop --ref custom`. It builds the Mac only
+     (about 11 min); add `-f platforms=all` for Windows + Linux.
+  2. Run `./install-build.sh` (latest green build) or `./install-build.sh <run-id>`.
+  3. It downloads the build and quits feedback, then replaces the app **in place**. The old app is kept, so
+     `./install-build.sh --rollback` undoes it. Quarantine is cleared and feedback restarts.
+
+  The downloads and the rollback copy live in `~/.cache/feedback-builds` (about 2 GB).
+- Why in place works now: macOS blocks a process from replacing an app it didn't install. Our installs come from
+  these scripts, so they can replace them. A copy dragged in via Finder may need deleting by hand once.
+
 ## Build the app (CI)
 
-Go to `mattromano/feedBack-desktop`, open Actions, choose **Build**, then **Run workflow** on branch `custom`. The defaults bundle `mattromano/feedBack@custom` and the plugin list in `scripts/build-common.sh`.
+Go to `mattromano/feedBack-desktop`, open Actions, choose **Build**, then **Run workflow** on branch `custom`. The defaults bundle `mattromano/feedBack@custom` and the plugin list in `scripts/build-common.sh`. Manual runs build the Mac only unless **platforms** is set to `all`; release tag pushes build all three.
 
-- **Windows:** download the Velopack `Setup.exe`.
-- **Mac:** download `fee[dB]ack-macos-arm64.zip`. It is unsigned, so clear Gatekeeper once:
+- **Windows:** download the Velopack `Setup.exe` (needs `platforms: all`).
+- **Mac:** use `./install-build.sh` above. Done by hand: the app is `feedback.app`, and it's unsigned, so clear
+  Gatekeeper once:
 
   ```bash
-  xattr -dr com.apple.quarantine "/Applications/fee[dB]ack.app"
+  xattr -dr com.apple.quarantine /Applications/feedback.app
   ```
 
 - **Updates:** don't switch the app's update channel to Nightly. That would replace our build with stock upstream.
