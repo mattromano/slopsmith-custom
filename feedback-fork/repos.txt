@@ -11,4 +11,4 @@ feedBack-plugin-autotune     -                                          main    
 feedBack-plugin-scorecard    -                                          main    scorecard
 # Stock plugins we don't fork (owner/repo = clone straight from there), for dev runs;
 # the desktop build bundles these itself.
-got-feedBack/feedBack-plugin-splitscreen     -                          main    splitscreen
+feedBack-plugin-splitscreen  got-feedBack/feedBack-plugin-splitscreen   custom  splitscreen
