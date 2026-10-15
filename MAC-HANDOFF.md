@@ -120,13 +120,62 @@ Drums parts. That's the first thing to check.
 
 - **Drum kits (drums 4.5.2, drums fork `custom` e254e4f):** the DRS kit and the 15-mic Crocell rebuild are now in the
   drums fork, so every app build ships them. Build [38796960768](https://github.com/mattromano/feedBack-desktop/actions/runs/38796960768)
-  includes them; use it instead of 38783736763.
+  includes them; use it instead of 38783736763 (still running when this was written: check it went green).
 - **Guitar tones:** the private repo `mattromano/feedback-tones` holds the 0.2.9 app's tones, pushed from the PC
   (commit a96bac2):
   - 74 presets, 66 mappings, 51 NAM models, 457 IRs (tone_pack included), rig-builder data
   - all 13,248 referenced files found; no third-party VSTs
   - `pull-tones.sh` on the Mac **replaces** the Mac's tone DB (6,057 presets → 74), with a backup taken first.
     Decide before pulling whether those 6,057 matter.
+
+## Song library over the LAN (set up 2026-10-15)
+
+The PC shares its library as an SMB share, so the Mac uses the same songs with no copying.
+
+- **Share:** `smb://192.168.4.77/RSDLC` → `C:\Program Files (x86)\Steam\steamapps\common\Rocksmith2014\dlc`.
+  - 2,331 `.psarc` + 2,271 `.sloppak`, 38 GB total.
+  - Only the PC account `mattr` has access, with read/write. Sign in with the Windows login password, or
+    `MATT_PC_2\mattr` if the plain name fails.
+  - The PC network (Ethernet 3, 10 GbE) is now Private, with File and Printer Sharing on.
+- **Mac side:**
+  - Finder ⌘K → `smb://192.168.4.77/RSDLC` (use the IP: the underscore in the PC name breaks Mac name lookup).
+    It mounts at `/Volumes/RSDLC`.
+  - In fee[dB]ack, set the library folder to `/Volumes/RSDLC`.
+  - Add the mounted drive to Login Items so it reconnects at login.
+  - Test with `nc -vz 192.168.4.77 445`.
+- **Caveats:**
+  - The PC must be on and awake while playing on the Mac.
+  - Reserve 192.168.4.77 for the PC in the router's DHCP.
+  - The File and Printer Sharing SMB-In rule is also enabled for the Public profile; consider disabling it.
+
+## Still missing on the Mac vs the PC
+
+1. **Six PC-only plugins**, in `%APPDATA%\slopsmith-desktop\plugins`. They're in no git repo and not in the
+   build, so they're at risk if the PC dies. They were written for 0.2.9, so each needs a 0.3 compatibility check
+   before going into the build.
+   - `disc_extract` 1.0.0 (base-game song extractor; needs the Rocksmith game files, PC only)
+   - `rs1_extract` 1.0.0 (Rocksmith 1 song extractor; also needs the game files)
+   - `ultimate_guitar` 1.0.0 ("Create from Tab")
+   - `slopscale` 0.7.22 (has its own docs and roadmap)
+   - `midi_capo` 1.5.3
+   - `guitar-theory-lab` 1.0.1
+
+   Plan: back them up to a private repo, then port the useful ones into the build.
+2. **User data** in `%APPDATA%\slopsmith-desktop\slopsmith-config`, about 2 MB, not synced yet:
+   - `play_counts.db` (0.2.9 play counts and FCs)
+   - `song_cents.json` (measured tuning offsets, saves a rescan)
+   - `setlists.db`, `practice_journal.db`, `studio.db`, `midi_mappings.db`, `tuner.json`
+
+   Plan: add them to `feedback-tones` so push-tones / pull-tones carry them. The 0.2.9 `play_counts.db` would
+   need converting into 0.3's native play-count store.
+3. **Per-machine calibration** isn't synced, by design. Redo it on the Mac:
+   - A/V offset and guitar latency in Sync Lab
+   - drums input offset with the timing meter's Apply button
+4. **PC-only by nature:**
+   - the direct MIDI fallback (WinMM); on the Mac, Web MIDI normally sees the kit
+   - the Rocksmith profile play-count import (reads the Steam save on the PC)
+5. **Song builder** (`song-builder/`, Demucs + Whisper) is in git but needs those Python dependencies installed
+   on the Mac to run there.
 
 ## Upstream PRs still open (got-feedBack)
 
