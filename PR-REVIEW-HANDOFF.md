@@ -12,6 +12,14 @@ gh api repos/got-feedBack/<repo>/issues/<n>/comments     # conversation (bot sum
 gh api repos/got-feedBack/<repo>/pulls/<n>/reviews       # review summaries
 ```
 
+> **Update 2026-10-14 (later): PRs consolidated.** Sections 1-2 and the PR table below describe the old set.
+> Open now (15): feedBack#1083, #1085, #1087, #1089, #1091, #1099, #1101, #1105; drums#25 (scoring, replaces #20),
+> drums#26 (3D highway, stacked on #25, replaces #22); notedetect#84 (replaces #72/#74/#76/#78/#80/#82);
+> nam-tone#17, #19; multiplayer#22; feedpak-spec#68. #1091/#1105/spec#68 are the drum-metadata chain drums#25 uses.
+> Closed: drums#20/#22/#23/#24, notedetect#72-#82, feedBack#1092/#1094/#1096, desktop#132, multiplayer#24/#25/#27.
+> Review fixes done: nam-tone#17 (d1c4400), feedBack#1083 (94c37d8), feedBack#1087 CHANGELOG (5b060c0).
+> New worktrees: wt-drums-scoring, wt-drums-rbhighway, wt-nd-scoring. Multiplayer work is deliberately not carried.
+
 ## 1. Where the reviews stand
 
 Only two reviewers have commented: **CodeRabbit** (automated) on most PRs and **odntht** (a person, who tested
