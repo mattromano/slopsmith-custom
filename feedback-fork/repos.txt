@@ -6,9 +6,9 @@ feedBack-plugin-drums        got-feedBack/feedBack-plugin-drums         custom  
 feedBack-plugin-multiplayer  got-feedBack/feedBack-plugin-multiplayer   custom  multiplayer
 feedBack-plugin-nam-tone     got-feedBack/feedBack-plugin-nam-tone      custom  nam_tone
 feedBack-plugin-notedetect   got-feedBack/feedBack-plugin-notedetect    custom  note_detect
+feedBack-plugin-stems        got-feedBack/feedBack-plugin-stems         custom  stems
 feedBack-plugin-autotune     -                                          main    autotune
 feedBack-plugin-scorecard    -                                          main    scorecard
 # Stock plugins we don't fork (owner/repo = clone straight from there), for dev runs;
 # the desktop build bundles these itself.
-got-feedBack/feedBack-plugin-stems           -                          main    stems
 got-feedBack/feedBack-plugin-splitscreen     -                          main    splitscreen

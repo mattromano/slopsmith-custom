@@ -19,6 +19,15 @@ The app we run on both machines is built from the `mattromano/*` forks of [got-f
 
 The upstream PRs stay open. See [../UPSTREAM.md](../UPSTREAM.md).
 
+
+## Update 2026-10-15
+
+- **All 43 got-feedBack repos are forked** under `mattromano/`. The desktop build (`scripts/build-common.sh`) now pulls the core and every bundled plugin from the forks: `custom` for feedBack, drums, multiplayer, nam-tone, notedetect and stems, the default branch for the rest. The updater only checks `mattromano/feedBack-desktop`.
+- **`mattromano/feedBack-desktop`'s default branch is `custom`** so the Build workflow can be run from the Actions tab. Nightly and rc are disabled on the fork.
+- **New on `custom`:** stems (#42 stutter fix); notedetect = the consolidated scoring branch (got-feedBack/feedBack-plugin-notedetect#84); drums 4.5.1 (review fixes: input offset on the engine clock, velocity /127, star power key/pad, script retry); nam-tone preset fix; desktop: Live Retune (bundled plugin `src/renderer/live-retune`, IPC `setLivePitch`/`getLivePitch`), backing-track pitch shift removed; core: upstream #974/#1046/#1017, late-verdict hit flash, PSARC CentOffset fix, drum downloads + align, `rs_profile_counts`, instrument view takeover, count-in extras, `song_cents`.
+- **Backups:** each fork's previous `custom` is tagged `custom-backup-2026-10-15`.
+- **Known:** two core tests (`test_convert_cli_reports_errors`, `test_export_cli_without_drums`) fail only in the full Windows run (log capture empty after earlier tests); they pass alone. Soundfonts still download from got-feedBack (the fork has no `soundfonts-v1` release).
+
 ## Set up a machine
 
 ```bash
