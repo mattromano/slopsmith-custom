@@ -109,14 +109,24 @@ Drums parts. That's the first thing to check.
    (plugins dir, drumjoin, drums_library). Not yet bisected, and it doesn't affect the app.
    - 10 other Windows-only failures are known (symlink, tailwind, feedpak_extension, packaging).
 4. **Not ported yet:**
-   - kit samples (DRS / 15-mic Crocell `.ogg`, PC only): copy from `%APPDATA%\slopsmith-desktop\plugins\drums\sounds\kits\`
-   - tone_pack IRs (copy to `<config>/nam_irs/tone_pack/`)
    - the library "Drums" chart filter vs the "Drum audio" stem pill
    - split-view score boxes in scorecard
    - the song builder, which still runs on the old core in this repo
 5. **Community fork, later.** `get-flashbacks` (cchacs) is the only other active fork: keys/piano, security,
    dependencies, CI. We may want to contact them, or take their security commits. If this goes public: a new
    org/name, transfer the repos, CONTRIBUTING.
+
+## Added after this doc was first written
+
+- **Drum kits (drums 4.5.2, drums fork `custom` e254e4f):** the DRS kit and the 15-mic Crocell rebuild are now in the
+  drums fork, so every app build ships them. Build [38796960768](https://github.com/mattromano/feedBack-desktop/actions/runs/38796960768)
+  includes them; use it instead of 38783736763.
+- **Guitar tones:** the private repo `mattromano/feedback-tones` holds the 0.2.9 app's tones, pushed from the PC
+  (commit a96bac2):
+  - 74 presets, 66 mappings, 51 NAM models, 457 IRs (tone_pack included), rig-builder data
+  - all 13,248 referenced files found; no third-party VSTs
+  - `pull-tones.sh` on the Mac **replaces** the Mac's tone DB (6,057 presets → 74), with a backup taken first.
+    Decide before pulling whether those 6,057 matter.
 
 ## Upstream PRs still open (got-feedBack)
 
