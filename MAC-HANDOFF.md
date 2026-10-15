@@ -148,34 +148,47 @@ The PC shares its library as an SMB share, so the Mac uses the same songs with n
   - Reserve 192.168.4.77 for the PC in the router's DHCP.
   - The File and Printer Sharing SMB-In rule is also enabled for the Public profile; consider disabling it.
 
-## Still missing on the Mac vs the PC
+## PC-only plugins and user data (done 2026-10-15)
 
-1. **Six PC-only plugins**, in `%APPDATA%\slopsmith-desktop\plugins`. They're in no git repo and not in the
-   build, so they're at risk if the PC dies. They were written for 0.2.9, so each needs a 0.3 compatibility check
-   before going into the build.
-   - `disc_extract` 1.0.0 (base-game song extractor; needs the Rocksmith game files, PC only)
-   - `rs1_extract` 1.0.0 (Rocksmith 1 song extractor; also needs the game files)
-   - `ultimate_guitar` 1.0.0 ("Create from Tab")
-   - `slopscale` 0.7.22 (has its own docs and roadmap)
-   - `midi_capo` 1.5.3
-   - `guitar-theory-lab` 1.0.1
+Both go through the private repo `mattromano/feedback-tones`, with the same two commands as the tones:
 
-   Plan: back them up to a private repo, then port the useful ones into the build.
-2. **User data** in `%APPDATA%\slopsmith-desktop\slopsmith-config`, about 2 MB, not synced yet:
-   - `play_counts.db` (0.2.9 play counts and FCs)
-   - `song_cents.json` (measured tuning offsets, saves a rescan)
-   - `setlists.db`, `practice_journal.db`, `studio.db`, `midi_mappings.db`, `tuner.json`
+```bash
+cd ~/Desktop/repos/feedback-tones && git pull && ./pull-tones.sh
+```
 
-   Plan: add them to `feedback-tones` so push-tones / pull-tones carry them. The 0.2.9 `play_counts.db` would
-   need converting into 0.3's native play-count store.
-3. **Per-machine calibration** isn't synced, by design. Redo it on the Mac:
-   - A/V offset and guitar latency in Sync Lab
-   - drums input offset with the timing meter's Apply button
-4. **PC-only by nature:**
-   - the direct MIDI fallback (WinMM); on the Mac, Web MIDI normally sees the kit
-   - the Rocksmith profile play-count import (reads the Steam save on the PC)
-5. **Song builder** (`song-builder/`, Demucs + Whisper) is in git but needs those Python dependencies installed
-   on the Mac to run there.
+Run it with fee[dB]ack quit, the library share mounted, and after one library scan in the app.
+
+- **Plugins**, in `plugins/` in the repo. `pull-tones.sh` installs five into
+  `~/Library/Application Support/feedback-desktop/plugins/`, moving older copies to `tone-backups/plugins-<ts>/`.
+  This repo is now the only copy of most of them: the original GitHub repos for disc_extract, rs1_extract,
+  ultimate_guitar, slopscale and Theory Lab are gone (404).
+  - **disc_extract:** ported. It now writes sloppaks via a new pure-Python SNG reader. It needs the RS2014 game
+    folder, so it's PC-only, and all 70 base-game songs are already in the library anyway.
+  - **rs1_extract:** ported. The RS1 disc pack works anywhere, including over the share. **51 of the 52 RS1 disc
+    songs aren't in the library yet**; run it in the app on the PC to add them. The DLC pack needs the game, so PC only.
+  - **ultimate_guitar ("Create from Tab"):** ported, and now escapes UG text before showing it.
+  - **midi_capo:** ported. Its badge is in the v3 plugin slot, and 4/5-string bass tunings now shift properly.
+  - **slopscale:** ported, using 0.3's names to borrow the 3D highway / Jumping Tab. Its 16 Playwright suites pass.
+  - **guitar_theory (Theory Lab):** backup only, not installed. 0.3 bundles a newer copy, and a user copy would
+    shadow it.
+- **User data**, snapshotted from the PC's 0.2.9 config:
+  - `practice_journal.db`, 675 sessions: merged, deduped on filename + started_at.
+  - `midi_mappings.db`: merged; `bank_number` → `bank_msb`.
+  - `song_cents.json`, 84 entries: merged, PC wins. Entries stay valid while the pack's size and mtime match.
+  - `tuner.json`: custom tunings only.
+  - **286 play_counts runs:** converted into scorecard runs (all 286), and into core `song_stats` in `web_library.db`
+    (plays, play_count for runs of 30 s or more, best score/accuracy, seconds, last played).
+    - Drum runs (16) go to scorecard only.
+    - Runs whose song isn't scanned yet wait and retry on the next pull.
+    - A ledger, `feedback_tones_import.db`, prevents double counting. Restore it together with `web_library.db` /
+      `scorecard.db` if you ever restore those from a backup.
+  - Possible change: play_count counts scored runs (240). 0.2.9 showed 578 "plays" from journal sessions; ask Matt
+    if he'd rather use that.
+- **Not carried, by design:** calibration (A/V offset, guitar latency, drums input offset). Redo it on the Mac with
+  Sync Lab and the drums timing meter.
+- **PC-only by nature:** the direct MIDI (WinMM) fallback, the Rocksmith profile play-count import (Steam save),
+  and the game-file extractors.
+- **Song builder** (`song-builder/`, Demucs + Whisper) needs its Python dependencies installed on the Mac.
 
 ## Upstream PRs still open (got-feedBack)
 
