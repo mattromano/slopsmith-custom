@@ -268,7 +268,10 @@ Conventions:
 - Commit as `mattromano <42412983+mattromano@users.noreply.github.com>` with `-s`.
 - Push to `mattromano/*` only; never to got-feedBack.
 - Never play audio in browser tests; seek while paused.
-- To rebuild the app, run Build on the desktop fork's `custom` branch:
+- **Matt's rule: ship core / plugin changes with `feedback-fork/dev-sync.sh`.** Don't run a CI build, and don't ask
+  him to delete or reinstall the app. It restarts feedback, so say so.
+- Only desktop / Electron / native audio changes, new Python dependencies or new Tailwind classes need a build, Mac
+  only by default. Then run `feedback-fork/install-build.sh`, which replaces the app in place:
 
 ```bash
 gh workflow run build.yml -R mattromano/feedBack-desktop --ref custom
