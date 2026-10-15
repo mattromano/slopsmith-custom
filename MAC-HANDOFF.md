@@ -120,7 +120,7 @@ Drums parts. That's the first thing to check.
 
 - **Drum kits (drums 4.5.2, drums fork `custom` e254e4f):** the DRS kit and the 15-mic Crocell rebuild are now in the
   drums fork, so every app build ships them. Build [38796960768](https://github.com/mattromano/feedBack-desktop/actions/runs/38796960768)
-  includes them; use it instead of 38783736763 (still running when this was written: check it went green).
+  includes them: green, Mac zip verified (drums 4.5.2, kits drs/crocell/virtuosity). Use it instead of 38783736763.
 - **Guitar tones:** the private repo `mattromano/feedback-tones` holds the 0.2.9 app's tones, pushed from the PC
   (commit a96bac2):
   - 74 presets, 66 mappings, 51 NAM models, 457 IRs (tone_pack included), rig-builder data
