@@ -220,6 +220,27 @@ Backups of every touched branch: tag `custom-backup-2026-10-15b`. Build run 3881
    `tone-backups/config-before-lead-profile-2026-10-15.json`.
 4. **Multiplayer 1.1.1** (`bc06f6b`): Drums is in the part picker with an empty queue (`DEFAULT_ARRANGEMENTS`), tested.
 
+**Follow-up, same day: Bass came back after the profile fix.** Two writers set the instrument behind
+`/api/settings`'s back:
+- **Virtuoso** keeps its own instrument in localStorage `virtuoso.instrument`. At boot, if that disagrees with the
+  host settings, Virtuoso writes its copy back ("local wins"). Its copy said `bass_4_standard`, so every launch reset
+  the profile to Bass. It only follows a host change it hears as an `instrument:changed` event, so a bare POST, or
+  editing config.json, gets undone at the next launch.
+  - Fixed by POSTing `guitar-lead` and emitting `instrument:changed` in the page. Virtuoso now holds
+    `guitar_6_standard`, and Lead survives a restart.
+  - **Rule:** change the instrument through the host badge, or POST and emit `instrument:changed`. Never edit
+    config.json for it.
+- **input_setup** (core `abb2180`, `ee37f6a`, 0.1.1): each guitar/bass step POSTs its instrument, so walking
+  Guitar → Bass → Drums ended on Bass. It now restores the starting profile when the wizard ends (if that
+  instrument was set up in the pass, else the first guitar/bass step's profile) and emits `instrument:changed`.
+
+**String colours:** the 0.2.9 G/B colorblind patch isn't in 0.3. Set on the Mac in localStorage
+`highwayStringColors = {"G":"#ff7300","B":"#b4f8ff"}`, plus a saved theme "PC colorblind G/B" (Settings →
+String Colors). Other strings are stock. This is per-machine browser storage, so it isn't synced by feedback-tones.
+
+**Builds are Mac-only now:** desktop `7952d9c` adds a `platforms` input (`mac` default, `all`); release tag pushes
+still build all three.
+
 ## Upstream PRs still open (got-feedBack)
 
 Left open on purpose:
