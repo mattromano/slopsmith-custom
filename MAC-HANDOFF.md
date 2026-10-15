@@ -190,6 +190,36 @@ Run it with fee[dB]ack quit, the library share mounted, and after one library sc
   and the game-file extractors.
 - **Song builder** (`song-builder/`, Demucs + Whisper) needs its Python dependencies installed on the Mac.
 
+## NEXT-FIXES done on the Mac (2026-10-15)
+
+Backups of every touched branch: tag `custom-backup-2026-10-15b`. Build run 38818372555.
+
+1. **Hit/miss effects.**
+   - Guitar: highway_tweaks 2.2 (core `dd7b3dd`) restores the stock 3D Highway look by default. The Rock Band
+     verdicts are now opt-in: `localStorage.highwayTweaksRbVerdicts = '1'`. The frame clock is unchanged.
+     8aa5cd3 only lengthens windows for sustained notes, so it doesn't cut the stock fade.
+   - Drums 4.5.3 (`e0ee36f`): the stock 3D Drum Highway's effects in our Rock Band view:
+     - gems tinted green/red that run past the line and fade over 0.4 s
+     - timing-coloured sparks that grow with the streak
+     - lane flashes
+     - HUD score pops, combo ring, milestone bursts and the streak-break wash
+
+     Scoring is unchanged; session hit events gained `combo` / `offsetMs` / `points`.
+     - Not ported: the kick camera dip and floor pulse, bloom, the approach scale-up, the flam disc.
+     - Never seen on screen yet, only tested on a stub three.js. The per-gem fade is a shader patch; if it fails, gems
+       draw without the fade.
+2. **Picker** (core `da95f72`): Auto, 3D Highway, Drums and Keys 3D only.
+   - Everything else keeps a hidden `<option>`, so a saved selection or Auto still works.
+   - Shared as `window._vizHiddenInPicker`. Split view uses it: `feedBack-plugin-splitscreen` now has a `custom`
+     branch (`3c79eda`, 1.11.1), and the build takes it (desktop `2fc83dd`, `feedback-fork/repos.txt`).
+   - Auto falls back to the 3D Highway, not 2D, when nothing claims a song (except notation-only parts and no WebGL2).
+3. **Lead by default:** a settings fix, not code. The Mac's active instrument profile was **Bass** (4-string), and
+   the server's instrument routing sends every song to Bass before it looks at `default_arrangement` (already
+   `Lead`). Switched to Lead Guitar via `/api/settings`; afimiss / All-Star / Where Is My Mind now open on Lead. The
+   "most notes" fallback is unchanged, since it only runs with no default set. Old config:
+   `tone-backups/config-before-lead-profile-2026-10-15.json`.
+4. **Multiplayer 1.1.1** (`bc06f6b`): Drums is in the part picker with an empty queue (`DEFAULT_ARRANGEMENTS`), tested.
+
 ## Upstream PRs still open (got-feedBack)
 
 Left open on purpose:
