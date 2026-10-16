@@ -5,7 +5,7 @@ tracks, builds every song with gp_to_sloppak.py, grades the result with
 tab_check.py and writes a quality report.
 
   python scripts/song_builder.py plan  ALBUM.yaml            # show track picks, no building
-  python scripts/song_builder.py build ALBUM.yaml [--only "Doom Boy,Possession"] [--refine-beats]
+  python scripts/song_builder.py build ALBUM.yaml [--only "Doom Boy,Possession"] [--refine-beats] [--beam]
   python scripts/song_builder.py build ALBUM.yaml --notation-only   # charts only, keep stems + sync
   python scripts/song_builder.py check ALBUM.yaml            # (re)grade existing builds
   python scripts/song_builder.py tune  ALBUM.yaml            # settle close DTW-vs-constant-tempo calls by lift
@@ -439,6 +439,8 @@ def main():
     ap.add_argument("target", help="album YAML (or a tab file for survey)")
     ap.add_argument("--only", help='comma-separated titles ("Hollow, As You Figured" works)')
     ap.add_argument("--refine-beats", action="store_true")
+    ap.add_argument("--beam", action="store_true",
+                    help="refine each sync map with lib/beatalign (RockForge beam search); see gp_to_sloppak --beam")
     ap.add_argument("--no-stems", action="store_true")
     ap.add_argument("--notation-only", action="store_true",
                     help="rebuild charts only: reuse each existing build's stems + sync map (seconds per song)")
@@ -478,7 +480,8 @@ def main():
     if a.cmd == "tune":
         tune(cfg, jobs)
     if a.cmd == "build":
-        extra = (["--refine-beats"] if a.refine_beats else []) + (["--no-stems"] if a.no_stems else [])
+        extra = ((["--refine-beats"] if a.refine_beats else []) + (["--beam"] if a.beam else [])
+                 + (["--no-stems"] if a.no_stems else []))
         for j in jobs:
             ex = list(extra)
             if a.notation_only and j["out"].exists():

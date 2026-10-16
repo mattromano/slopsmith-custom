@@ -146,6 +146,12 @@ shown as AUTO in the game). Old file → `_build/backup/`. Report: `ALBUM_drums.
 4. **Wrong sync method**: force it with `--method dtw|linear` (or a `method:` key in the YAML song entry).
 5. `--refine-beats` (livechord refiner) exists, but a controlled A/B on 12 weak songs gave identical
    lift with and without it (98% same downbeats). Not worth it by default.
+6. `--beam` (on `gp_to_sloppak.py` / `song_builder.py build`) refines the chosen map with `lib/beatalign.py`,
+   a port of RockForge's beam search: each beat moves so the notes land on attacks, with slowly changing tempo.
+   On 60 builder songs (`scripts/sync_compare.py`, 2026-10-16) it raised the Basic Pitch hit rate a mean
+   +0.7 pt (33 better, 6 worse, worst -3.9 pt) once refinements moving beats a median 100+ ms are rejected
+   (those had locked onto the wrong beat). Small but consistent; opt-in for now. It can't rescue a wrong map:
+   seeded from one constant tempo it recovered the build's sync on only 27 of 60.
 
 ## feedBack Studio: what it is and isn't good for
 
