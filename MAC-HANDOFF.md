@@ -241,6 +241,18 @@ String Colors). Other strings are stock. This is per-machine browser storage, so
 **Builds are Mac-only now:** desktop `7952d9c` adds a `platforms` input (`mac` default, `all`); release tag pushes
 still build all three.
 
+## To try on the PC: song builder `--beam` (2026-10-16)
+
+RockForge's beam-search beat refinement is ported (`slopsmith/lib/beatalign.py`) as an **opt-in**
+`--beam` flag. Matt wants to try it on a real build before making it the default.
+- **Try it:** `python scripts/song_builder.py build ALBUM.yaml --only "Some Song" --beam`, then
+  `song_builder.py check` and compare lift against the build without it. The build log prints
+  `beam refine: ... (not kept)` when the guard rejects it.
+- **Measured on the Mac:** 60 existing builds re-synced (`scripts/sync_compare.py`, summary via
+  `sync_compare_summary.py`). Hit rate +0.7 pt mean, 33 better and 6 worse, with refinements that
+  move beats a median 100+ ms rejected. It has never run inside a full `gp_to_sloppak` build; that
+  needs the PC's tabs, MP3s, beat_this and Demucs.
+
 ## Upstream PRs still open (got-feedBack)
 
 Left open on purpose:
