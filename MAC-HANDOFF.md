@@ -253,6 +253,46 @@ RockForge's beam-search beat refinement is ported (`slopsmith/lib/beatalign.py`)
   move beats a median 100+ ms rejected. It has never run inside a full `gp_to_sloppak` build; that
   needs the PC's tabs, MP3s, beat_this and Demucs.
 
+## To do on the PC: new Prince Daddy songs (also the `--beam` trial)
+
+On 2026-10-16 the Mac compared Songsterr (`/api/songs?pattern=Prince Daddy`, read-only) against the library.
+These have tabs on Songsterr but no build yet:
+
+| Song | Songsterr id | Tab | Tracks |
+|---|---|---|---|
+| If I'm Still Broke By Christmas | 3230845 | human | 6 (2 dist gtr, bass, flute, drums, sax) |
+| Thrashville 1 | 3315471 | human | 6 |
+| Adult Summers (PART 1) | 6829448 | human | 6 |
+| Adult Summers (Part 2) | 6404194 | human | 8 |
+| Moo Moo Meadows | 6536714 | human | 6 |
+| Thrashville 2/3 | 1314023 | **AI** | 4 |
+| Rory | 677910 | **AI** | 4 |
+
+Not new:
+- "Nika's Got It Wrong (remaster)": itydel.yaml already uses it.
+- "Brocker Cheddlie" (6922688): another version of Broc Ched, which is already built.
+- "Broc Ched (unfinished)", "Clever Girl unfinished", "Hollow ... (Unfinished)", "Cosmic ... full song": versions
+  of built songs.
+
+Steps (song-builder skill, "Workflow for a new album / batch"):
+1. **Audio.** Check that Matt has an MP3 for each song and which album folder it's in. Don't guess the album.
+   Ask him if one is missing. A song whose tab length is more than a few seconds off the MP3 is the wrong
+   version.
+2. **Tabs.** Download the .gp files from his logged-in Chrome (Songsterr Plus, real click on the GP export
+   button). Ask first: it's a file download. Then move them into `gc pro tabs/songsterr`. AI tabs: tell
+   Matt, and build them only if he wants them (expect a low Rhythm lift).
+3. **YAML.** Add the songs to the right album YAMLs (`adult_summers.yaml` already covers some of that
+   album), then run `song_builder.py plan` and sanity-check the track picks.
+4. **Build twice, as the `--beam` trial.**
+   1. Build normally, run `check`, and note each song's lift.
+   2. Build again with `--beam` (same `--only`), run `check` again, and note the lift and whether the log
+      says `beam refine ... (not kept)`.
+
+   Keep the better build of each (`_build/backup` has the replaced file). Report both lifts per song to Matt,
+   plus how often `--beam` was kept and helped. That decides whether `--beam` becomes the default.
+5. The drums and solos steps run automatically at the end of `build`. Update `_build/HANDOFF.md` and give Matt
+   the graded list.
+
 ## Upstream PRs still open (got-feedBack)
 
 Left open on purpose:
