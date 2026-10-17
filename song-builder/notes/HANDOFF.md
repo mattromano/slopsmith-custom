@@ -172,3 +172,30 @@ Guitar Pro tabs, synced to the user's own MP3s, with split stems.
   `tracks`), and every arrangement carries tone names per section from the source track (gp_to_sloppak
   `tone_block`): Til The Morning Acoustic<->Crunch, moody Acoustic<->Clean, Murder Distortion, rest Clean.
 - Tone Pack seeds +4 dB trims for Clean and Acoustic once (`tone-pack-trims-seed`); adjust in Settings -> Tone Pack.
+
+## New Prince Daddy songs + `--beam` trial (2026-10-16)
+- New YAML `_build/albums/vol420.yaml` (split with Pictures of Vernon / Mom Jeans.; only the PDATH songs);
+  `adult_summers.yaml` gained PART 1 / Part 2 (tabs downloaded 2026-10-16). Tab lengths all within 2 s of the MP3s.
+- Skipped (no MP3 on the PC): If I'm Still Broke By Christmas, Moo Moo Meadows, Rory (AI). Their tabs are already
+  in `gc pro tabs/songsterr`; add the MP3 + a YAML entry to build them.
+- Grades (normal build, kept): A Thrashville 1 (L 2.32 R 1.82 B 2.61); B Adult Summers PART 1 (L 2.38 R 1.40 B 1.96,
+  onset 1.14 holds it at B); B Adult Summers Part 2 (L 2.08 R 1.34 B 1.83); C Thrashville 2/3 (AI tab, ~1.23 all).
+- Drums: GP drum track on Thrashville 1 (82% <30 ms) and Part 2 (64%); flagged, none written, on Thrashville 2/3 (37%)
+  and PART 1 (44%). No Chorus charts. Solos (detected, confirm by ear): Thrashville 1 2:35-2:43, Part 2 0:38-0:44,
+  Thrashville 2/3 1:15-1:17 (2 s, probably bogus).
+- `--beam` (patch from the repo commit 2c29fe0 applied to this checkout, uncommitted): kept on 2 of 4
+  (Thrashville 1 onset 1.90->2.17, Part 2 1.27->1.38); rejected on PART 1 (downbeats 95->72%) and 2/3 (median move 953 ms).
+  Where kept, lift moved +0.02..+0.07 (T1) and -0.06..+0.01 (Part 2), inside the ~±0.07 noise of re-splitting stems,
+  but tab_check best_shift went +0.02 -> 0.00 and GP drums landed -23 / -17 ms early (82->60%, 64->55% <30 ms):
+  the beam map pulls beats ~20 ms early. Kept the normal builds. Don't make `--beam` the default until that bias is fixed
+  (likely onset-envelope lead in beatalign). Both rounds saved in `_build/beam_trial/{normal,beam}`.
+- **Bias fixed (2026-10-16, uncommitted):** the sign above was backwards. drumalign's offset is onset minus note,
+  so -23 ms means the chart was 23 ms LATE, and the beam moved beats a median +19 ms later on 13 library songs.
+  Cause: librosa's onset strength peaks 10-20 ms after the attack, and the beam put notes on the peak. Fix in
+  `lib/beatalign.py`: `onset_envelope` moves the envelope `ONSET_LAG_S` (20 ms) earlier, and `keep_refinement`
+  rejects a net (signed median) move over 12 ms. Re-check (`scripts/sync_compare.py`, which now prints
+  shift/bp_off/best_shift, run on the 4 trial songs plus 14 library songs): net shift -9..+3 ms, best_shift
+  +0.02..+0.04 kept on 15 of 18. The rest were wrong-beat locks or a -23 ms shift, all rejected by the guards.
+  GP drums re-timed through the new beam map: Thrashville 1 -3 ms / 82% within 30 ms, Part 2 +2 ms / 63%,
+  the same as the normal builds. With the bias gone the beam's lift gain is about zero (the old gain was mostly
+  the late shift matching Basic Pitch's lateness), so `--beam` is safe to use but buys little. Keep it opt-in.

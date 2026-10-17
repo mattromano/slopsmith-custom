@@ -1,0 +1,11 @@
+artist: Prince Daddy & The Hyena
+album: "Now That's What I Call Music Vol. 420"
+year: 2017
+audio_dir: "C:/Users/mattr/Desktop/P-Daddy Albums/Prince Daddy & The Hyena - Now That's What I Call Music Vol. 420"
+tab_dir: C:/Users/mattr/Desktop/gc pro tabs/songsterr
+cover: "C:/Users/mattr/Desktop/P-Daddy Albums/Prince Daddy & The Hyena - Now That's What I Call Music Vol. 420/cover.png"
+short: Prince_Daddy
+# Split with Pictures of Vernon and Mom Jeans.; only the Prince Daddy songs are built.
+songs:
+  - {title: Thrashville 1, tab: Thrashville 1, audio: "- 01 "}
+  - {title: Thrashville 2/3, tab: Thrashville 2_3, audio: "- 04 "}   # AI tab on Songsterr (1314023)
