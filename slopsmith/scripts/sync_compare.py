@@ -17,6 +17,9 @@ Metrics per candidate (onset-weighted over the pitched arrangements):
   iqr    spread of stem-minus-chart offsets of hits, ms (tighter = steadier sync)
   onset  beatalign's onset evidence (what the beam maximises: biased, for reference)
   moved  median |beat - base beat|, ms
+  shift  median signed beat - base beat, ms (+ = later; the beam should not move the map as a whole)
+  bp_off median stem-minus-chart offset of hits, ms (Basic Pitch reads ~20-40 ms late)
+  best_shift  tab_check's global shift that maximises hits, s
 
 Needs the analysis venv (librosa, basic-pitch --no-deps, onnxruntime):
   _build/.mirvenv-mac/bin/python scripts/sync_compare.py SONG.sloppak [...] [--json out.json]
@@ -42,6 +45,7 @@ import tab_check  # noqa: E402
 
 SR = 22050
 CANDIDATES = ("base", "base+beam", "line", "line+beam")
+SHIFTS = np.arange(-0.2, 0.201, 0.02)   # tab_check's best_shift grid
 
 
 def load_mix(z, man):
@@ -131,6 +135,7 @@ def compare(path: Path) -> dict | None:
         n_on = hit_n = 0
         chance_w = 0.0
         offs_all = []
+        shift_hits = np.zeros(len(SHIFTS))
         for a in arrs:
             t_new = np.interp(a["tab_t"], tab_b, m) + offset
             ons = [(float(t), pcs) for t, (_, pcs) in zip(t_new, a["ons"])]
@@ -139,6 +144,7 @@ def compare(path: Path) -> dict | None:
             hit_n += int(flags.sum())
             chance_w += chance * len(ons)
             offs_all += list(offs)
+            shift_hits += [tab_check.hits(ons, a["bp"], sh)[0].sum() for sh in SHIFTS]
         hit = hit_n / n_on
         chance = chance_w / n_on
         q75, q25 = (np.percentile(offs_all, [75, 25]) if offs_all else (np.nan, np.nan))
@@ -148,6 +154,9 @@ def compare(path: Path) -> dict | None:
             "iqr_ms": round(float(q75 - q25) * 1000, 1),
             "onset": round(onset_evidence(all_t), 3),
             "moved_ms": round(float(np.median(np.abs(m - base))) * 1000, 1),
+            "shift_ms": round(float(np.median(m - base)) * 1000, 1),
+            "bp_off_ms": round(float(np.median(offs_all)) * 1000, 1) if offs_all else None,
+            "best_shift": round(float(SHIFTS[int(np.argmax(shift_hits))]), 2),
         }
     return out
 
@@ -169,7 +178,8 @@ def main():
         print(f"{r['title']}  [{r['method']}, {r['beats']} beats, beam {r['beam_seconds']}s]", flush=True)
         for name, d in r["candidates"].items():
             print(f"  {name:<10} hit {d['hit']:.1%}  lift {d['lift']}  iqr {d['iqr_ms']}ms  "
-                  f"onset {d['onset']}  moved {d['moved_ms']}ms", flush=True)
+                  f"onset {d['onset']}  moved {d['moved_ms']}ms  shift {d['shift_ms']:+}ms  "
+                  f"bp_off {d['bp_off_ms']}ms  best_shift {d['best_shift']:+.2f}", flush=True)
     if a.json:
         Path(a.json).write_text(json.dumps(results, indent=1), encoding="utf-8")
 

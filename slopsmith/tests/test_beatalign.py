@@ -105,3 +105,55 @@ def test_keep_rule_rejects_big_moves_and_lost_downbeats():
     assert not keep(1.70, 1.65, 0.95, 0.95, 18.0)        # onsets got worse
     assert not keep(1.70, 1.80, 0.95, 0.85, 18.0)        # lost >5 pt of bars on downbeats
     assert keep(1.70, 1.80, 0.95, 0.91, 18.0)            # a small downbeat dip is fine
+
+
+def plucks(onsets, dur, sr=22050, seed=0):
+    """Plucked-string notes (a short pick noise, then decaying harmonics) starting at the given times."""
+    rng = np.random.default_rng(seed)
+    y = np.zeros(int(dur * sr))
+    n = int(0.35 * sr)
+    tt = np.arange(n) / sr
+    for t in onsets:
+        f = rng.choice([82.4, 110.0, 147.0, 196.0])
+        s = sum(np.sin(2 * np.pi * f * k * tt + rng.uniform(0, 6)) / k for k in range(1, 10)) * np.exp(-tt * 9)
+        s[:int(0.004 * sr)] += rng.normal(0, 0.6, int(0.004 * sr))
+        i = int(round(t * sr))
+        y[i:i + n] += s[:len(y) - i]
+    return y
+
+
+@pytest.mark.parametrize("seed_off", [-0.04, 0.0, 0.04])
+def test_beats_are_not_pulled_after_the_attack(seed_off):
+    # librosa's onset strength peaks after the attack starts (~10 ms on these plucks, ~20 ms
+    # on band mixes). Scored raw, every beam-refined beat landed that much late: +9 ms here,
+    # a median +19 ms on library songs, GP drums 17-23 ms behind the drum stem on the
+    # 2026-10-16 --beam trial. onset_envelope now moves the envelope ONSET_LAG_S earlier.
+    pytest.importorskip("librosa")
+    sr = 22050
+    true = 0.5 + 0.5 * np.arange(40) + np.random.default_rng(3).uniform(0, 0.003, 40)
+    env, hop = beatalign.onset_envelope(plucks(true, 22, sr), sr)
+    seed = true + seed_off
+    r = beatalign.align_beats(env, hop, seed.tolist(), seed.tolist())
+    err = np.median(np.array(r["times"]) - true)
+    assert -0.015 <= err <= 0.003          # never late; the 20 ms (band-mix) lag may read early here
+    raw, _ = beatalign.onset_envelope(plucks(true, 22, sr), sr, lag=0.0)
+    r_raw = beatalign.align_beats(raw, hop, seed.tolist(), seed.tolist())
+    assert np.median(np.array(r_raw["times"]) - true) > 0.005   # the bias this guards against
+
+
+def test_onset_envelope_is_moved_earlier_by_the_lag():
+    pytest.importorskip("librosa")
+    sr = 22050
+    y = plucks([0.5, 1.0, 1.5], 2.5, sr)
+    raw, hop = beatalign.onset_envelope(y, sr, lag=0.0)
+    env, _ = beatalign.onset_envelope(y, sr)
+    k = int(round(beatalign.ONSET_LAG_S / hop))
+    assert len(env) == len(raw)
+    assert env[:-k] == raw[k:]
+
+
+def test_keep_rule_rejects_a_map_moved_one_way():
+    keep = beatalign.keep_refinement
+    assert keep(1.70, 1.80, 0.95, 0.95, 18.0, 4.0)
+    assert not keep(1.70, 1.80, 0.95, 0.95, 20.0, 19.0)   # whole map 19 ms late
+    assert not keep(1.70, 1.80, 0.95, 0.95, 20.0, -19.0)  # or early

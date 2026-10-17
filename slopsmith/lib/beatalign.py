@@ -189,24 +189,39 @@ def align_beats(env, hop, beats, notes, *, beam=ALIGN_BEAM, start_window=ALIGN_S
 
 MIN_GAP_S = 0.03   # smallest seed beat length refine_map passes on (0.8-1.25x window >= 1 frame)
 MAX_MOVE_MS = 100  # median beat move above which a refinement is rejected
+MAX_SHIFT_MS = 12  # median SIGNED beat move above which a refinement is rejected: the beam
+                   # refines tempo; moving the whole map one way is a timing bias, not a fix
+# librosa's onset strength peaks once an attack has filled its analysis window, after the
+# attack itself starts: ~10 ms on clean synthetic plucks, ~20 ms on the band mixes. Scoring
+# against the raw envelope put beam-refined beats a median +19 ms late on 13 song-builder
+# sloppaks (+14..+23 ms; GP drums 17-23 ms behind the drum stem on the 2026-10-16 --beam
+# trial). Shifting the envelope 20 ms earlier brought that to -9..+3 ms (median -1.7) and
+# Basic Pitch's offsets back to the base maps' (scratch sweep, 2026-10-16).
+ONSET_LAG_S = 0.02
 
 
-def keep_refinement(score, new_score, bars, new_bars, moved_ms):
+def keep_refinement(score, new_score, bars, new_bars, moved_ms, shift_ms=0.0):
     """Whether gp_to_sloppak --beam keeps a refined map.
 
     Measured on 60 song-builder sloppaks (scripts/sync_compare.py, 2026-10-16): every
     refinement that moved beats a median 300+ ms had locked onto the wrong beat (Basic
     Pitch hit rate -5 to -14 pt); below 100 ms, 33 songs gained and 6 lost (mean +0.7 pt).
-    So: a small move, a better onset score, and bars on downbeats down 5 pt at most."""
-    return moved_ms < MAX_MOVE_MS and new_score > score and new_bars >= bars - 0.05
+    So: a small move, a better onset score, and bars on downbeats down 5 pt at most. And
+    ``shift_ms``, the median signed move, within MAX_SHIFT_MS: a map moved early or late as a
+    whole is the envelope's timing bias (see ONSET_LAG_S), not a better fit."""
+    return (moved_ms < MAX_MOVE_MS and abs(shift_ms) <= MAX_SHIFT_MS
+            and new_score > score and new_bars >= bars - 0.05)
 
-def onset_envelope(y, sr, hop=ALIGN_HOP_S):
-    """The recording's onset strength (librosa), one value per ``hop`` seconds."""
+def onset_envelope(y, sr, hop=ALIGN_HOP_S, lag=ONSET_LAG_S):
+    """The recording's onset strength (librosa), one value per ``hop`` seconds, moved
+    ``lag`` seconds earlier so its peaks sit on the attacks (see ONSET_LAG_S)."""
     import librosa
     import numpy as np
 
     hop_len = max(1, int(round(hop * sr)))
     env = librosa.onset.onset_strength(y=np.asarray(y, dtype=float), sr=sr, hop_length=hop_len)
+    k = max(0, int(round(lag * sr / hop_len)))
+    env = np.concatenate([env[k:], np.zeros(min(k, len(env)))])
     return [float(v) for v in env], hop_len / sr
 
 

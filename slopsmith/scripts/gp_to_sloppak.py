@@ -744,7 +744,8 @@ def main():
     ap.add_argument("--beam", action="store_true",
                     help="refine the chosen sync map with lib/beatalign (RockForge's beam search: moves "
                     "each beat so notes land on attacks, tempo changing slowly); kept only if beats moved "
-                    "a median < 100 ms, the onset score improves and bars on downbeats drop 5 points at most")
+                    "a median < 100 ms (net shift within 12 ms), the onset score improves and bars on "
+                    "downbeats drop 5 points at most")
     ap.add_argument("--anchors", help="feedBack Studio syncpoints.json, or an edited .feedpak/.sloppak "
                     "containing sync/syncpoints.json: pins those bars to the marked times")
     ap.add_argument("--reuse", help="existing build of this song: keep its stems, cover and sync map and "
@@ -889,10 +890,13 @@ def main():
             cur_score = alignment_score(env, [make_warp_fn(tab_beats, amap)(t) for t in on])
             cur_bars = bar_hit_rate(amap, tab_is_bar, downs)
             beam_info.update(onset_score=float(b_score), bar_hit=float(b_bars),
-                             moved_ms=round(float(np.median(np.abs(bmap - amap))) * 1000, 1))
-            keep = beatalign.keep_refinement(cur_score, b_score, cur_bars, b_bars, beam_info["moved_ms"])
+                             moved_ms=round(float(np.median(np.abs(bmap - amap))) * 1000, 1),
+                             shift_ms=round(float(np.median(bmap - amap)) * 1000, 1))
+            keep = beatalign.keep_refinement(cur_score, b_score, cur_bars, b_bars, beam_info["moved_ms"],
+                                             beam_info["shift_ms"])
             log(f"  beam refine: onset score {cur_score:.2f} -> {b_score:.2f}, bars on downbeats "
-                f"{cur_bars:.0%} -> {b_bars:.0%}, median move {beam_info['moved_ms']:.0f} ms"
+                f"{cur_bars:.0%} -> {b_bars:.0%}, median move {beam_info['moved_ms']:.0f} ms "
+                f"({beam_info['shift_ms']:+.0f} ms net)"
                 + ("" if keep else "  (not kept)"))
             if beam_info["after_gap"]:
                 log(f"  beam refine: {beam_info['after_gap']} beat(s) right after long rests: check by ear")
