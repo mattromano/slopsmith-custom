@@ -50,6 +50,13 @@ def stem_notes(z: zipfile.ZipFile, stem_file: str, key: str) -> np.ndarray:
     cache = CACHE / f"{key}.npy"
     if cache.exists():
         return np.load(cache)
+    try:
+        # onnxruntime's telemetry can hang interpreter exit flushing uploads
+        # (seen on macOS, onnxruntime 1.31: 90 min at 100% CPU after the work was done)
+        import onnxruntime
+        onnxruntime.disable_telemetry_events()
+    except Exception:
+        pass
     from basic_pitch import ICASSP_2022_MODEL_PATH
     from basic_pitch.inference import predict
     model = Path(ICASSP_2022_MODEL_PATH)
